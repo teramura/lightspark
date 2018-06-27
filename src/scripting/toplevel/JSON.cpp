@@ -71,7 +71,10 @@ ASFUNCTIONBODY_ATOM(JSON,_parse)
 			throwError<TypeError>(kCheckTypeFailedError);
 		reviver = args[1];
 	}
-	ret = asAtom::fromObject(doParse(text,reviver));
+	ASObject* res = doParse(text,reviver);
+	if (!res)
+		throwError<TypeError>(kJSONInvalidParseInput);
+	ret = asAtom::fromObject(res);
 }
 
 ASFUNCTIONBODY_ATOM(JSON,_stringify)
@@ -403,7 +406,7 @@ int JSON::parseString(const tiny_string &jsonstring, int pos,ASObject** parent,c
 					if (it==sub.end()) 
 						throwError<SyntaxError>(kJSONInvalidParseInput);
 				}
-				int64_t hexnum;
+				number_t hexnum;
 				if (Integer::fromStringFlashCompatible(strhex.raw_buf(),hexnum,16))
 				{
 					if (hexnum < 0x20 && hexnum != 0xf)

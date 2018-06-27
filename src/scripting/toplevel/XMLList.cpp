@@ -723,11 +723,11 @@ void XMLList::getTargetVariables(const multiname& name,XML::XMLVector& retnodes)
 	}
 }
 
-bool XMLList::getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt)
+GET_VARIABLE_RESULT XMLList::getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt)
 {
 	if((opt & SKIP_IMPL)!=0 || !implEnable)
 	{
-		bool res = getVariableByMultinameIntern(ret,name,this->getClass(),opt);
+		GET_VARIABLE_RESULT res = getVariableByMultinameIntern(ret,name,this->getClass(),opt);
 
 		//If a method is not found on XMLList object and this
 		//is a single element list with simple content,
@@ -755,11 +755,11 @@ bool XMLList::getVariableByMultiname(asAtom& ret, const multiname& name, GET_VAR
 			retnodes.insert(retnodes.end(), o.getObject()->as<XMLList>()->nodes.begin(), o.getObject()->as<XMLList>()->nodes.end());
 		}
 
-		if(retnodes.size()==0 && (opt & XML_STRICT)!=0)
-			return false;
+		if(retnodes.size()==0 && (opt & FROM_GETLEX)!=0)
+			return GET_VARIABLE_RESULT::GETVAR_NORMAL;
 
 		ret = asAtom::fromObject(create(getSystemState(),retnodes,this,name));
-		return false;
+		return GET_VARIABLE_RESULT::GETVAR_NORMAL;
 	}
 	unsigned int index=0;
 	if(XML::isValidMultiname(getSystemState(),name,index))
@@ -786,12 +786,12 @@ bool XMLList::getVariableByMultiname(asAtom& ret, const multiname& name, GET_VAR
 			retnodes.insert(retnodes.end(), o.getObject()->as<XMLList>()->nodes.begin(), o.getObject()->as<XMLList>()->nodes.end());
 		}
 
-		if(retnodes.size()==0 && (opt & XML_STRICT)!=0)
-			return false;
+		if(retnodes.size()==0 && (opt & FROM_GETLEX)!=0)
+			return GET_VARIABLE_RESULT::GETVAR_NORMAL;
 
 		ret = asAtom::fromObject(create(getSystemState(),retnodes,this,name));
 	}
-	return false;
+	return GET_VARIABLE_RESULT::GETVAR_NORMAL;
 }
 
 bool XMLList::hasPropertyByMultiname(const multiname& name, bool considerDynamic, bool considerPrototype)
@@ -1210,7 +1210,7 @@ int64_t XMLList::toInt64()
 		return 0;
 
 	tiny_string str = toString_priv();
-	int64_t value;
+	number_t value;
 	bool valid=Integer::fromStringFlashCompatible(str.raw_buf(), value, 0);
 	if (!valid)
 		return 0;

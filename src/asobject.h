@@ -278,6 +278,7 @@ public:
 	asAtom asTypelate(asAtom& atomtype);
 	FORCE_INLINE number_t toNumber();
 	FORCE_INLINE int32_t toInt();
+	FORCE_INLINE int32_t toIntStrict();
 	FORCE_INLINE int64_t toInt64();
 	FORCE_INLINE uint32_t toUInt();
 	tiny_string toString(SystemState *sys);
@@ -518,6 +519,8 @@ public:
 	void destroyContents();
 };
 
+enum GET_VARIABLE_RESULT {GETVAR_NORMAL=0x00, GETVAR_CACHEABLE=0x01, GETVAR_ISGETTER=0x02};
+
 enum METHOD_TYPE { NORMAL_METHOD=0, SETTER_METHOD=1, GETTER_METHOD=2 };
 //for toPrimitive
 enum TP_HINT { NO_HINT, NUMBER_HINT, STRING_HINT };
@@ -662,9 +665,9 @@ public:
 	*/
 	inline virtual void finalize() {}
 
-	enum GET_VARIABLE_OPTION {NONE=0x00, SKIP_IMPL=0x01, XML_STRICT=0x02, DONT_CALL_GETTER=0x04};
+	enum GET_VARIABLE_OPTION {NONE=0x00, SKIP_IMPL=0x01, FROM_GETLEX=0x02, DONT_CALL_GETTER=0x04};
 
-	virtual bool getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt=NONE)
+	virtual GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt=NONE)
 	{
 		return getVariableByMultinameIntern(ret,name,classdef,opt);
 	}
@@ -678,7 +681,7 @@ public:
 	 * then the prototype chain, and then instance variables.
 	 * If the property found is a getter, it is called and its return value returned.
 	 */
-	bool getVariableByMultinameIntern(asAtom& ret, const multiname& name, Class_base* cls, GET_VARIABLE_OPTION opt=NONE);
+	GET_VARIABLE_RESULT getVariableByMultinameIntern(asAtom& ret, const multiname& name, Class_base* cls, GET_VARIABLE_OPTION opt=NONE);
 	virtual int32_t getVariableByMultiname_i(const multiname& name);
 	/* Simple getter interface for the common case */
 	void getVariableByMultiname(asAtom& ret, const tiny_string& name, std::list<tiny_string> namespaces);
@@ -743,6 +746,7 @@ public:
 		Variables.setSlotNoCoerce(n,o);
 	}
 	void initSlot(unsigned int n, const multiname& name);
+	void initAdditionalSlots(std::vector<multiname*> additionalslots);
 	unsigned int numVariables() const;
 	inline tiny_string getNameAt(int i) const
 	{
@@ -768,6 +772,7 @@ public:
 	tiny_string toLocaleString();
 	uint32_t toStringId();
 	virtual int32_t toInt();
+	virtual int32_t toIntStrict() { return toInt(); }
 	virtual uint32_t toUInt();
 	virtual int64_t toInt64();
 	uint16_t toUInt16();
@@ -1101,6 +1106,26 @@ FORCE_INLINE int32_t asAtom::toInt()
 			return 0;
 		default:
 			return checkObject()->toInt();
+	}
+}
+FORCE_INLINE int32_t asAtom::toIntStrict()
+{
+	switch(type)
+	{
+		case T_INTEGER:
+			return intval;
+		case T_UINTEGER:
+			return uintval;
+		case T_NUMBER:
+			return NumbertoInt(numberval);
+		case T_BOOLEAN:
+			return boolval;
+		case T_UNDEFINED:
+		case T_NULL:
+		case T_INVALID:
+			return 0;
+		default:
+			return checkObject()->toIntStrict();
 	}
 }
 FORCE_INLINE number_t asAtom::toNumber()
@@ -1715,7 +1740,7 @@ FORCE_INLINE void asAtom::convert_i()
 {
 	if (type == T_INTEGER)
 		return;
-	int32_t v = toInt();
+	int32_t v = toIntStrict();
 	decRef();
 	setInt(v);
 }

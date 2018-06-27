@@ -484,6 +484,13 @@ bool ByteArray::readUTFBytes(uint32_t length,tiny_string& ret)
 	ret = buf;
 	return true;
 }
+bool ByteArray::readBytes(uint32_t offset, uint32_t length,uint8_t* ret)
+{
+	assert_and_throw(offset+length <= this->len);
+	uint8_t *bufStart=bytes+offset;
+	memcpy(ret,bufStart,(size_t)length);
+	return true;
+}
 
 void ByteArray::writeUTF(const tiny_string& str)
 {
@@ -1014,7 +1021,7 @@ bool ByteArray::hasPropertyByMultiname(const multiname& name, bool considerDynam
 	return index<len;
 }
 
-bool ByteArray::getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt)
+GET_VARIABLE_RESULT ByteArray::getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt)
 {
 	unsigned int index=0;
 	if((opt & ASObject::SKIP_IMPL)!=0  || !implEnable || !Array::isValidMultiname(getSystemState(),name,index))
@@ -1026,10 +1033,10 @@ bool ByteArray::getVariableByMultiname(asAtom& ret, const multiname& name, GET_V
 	{
 		uint8_t value = bytes[index];
 		ret.setUInt(static_cast<uint32_t>(value));
-		return false;
+		return GET_VARIABLE_RESULT::GETVAR_NORMAL;
 	}
 	ret.setUndefined();
-	return false;
+	return GET_VARIABLE_RESULT::GETVAR_NORMAL;
 }
 
 int32_t ByteArray::getVariableByMultiname_i(const multiname& name)
