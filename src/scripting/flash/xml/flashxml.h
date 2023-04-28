@@ -39,15 +39,14 @@ protected:
 	tiny_string toString_priv(pugi::xml_node outputNode);
 	pugi::xml_node getParentNode();
 public:
-	XMLNode(Class_base* c):ASObject(c),root(NullRef),node(NULL){}
-	XMLNode(Class_base* c, _R<XMLDocument> _r, pugi::xml_node _n);
+	XMLNode(ASWorker* wrk,Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_XMLNODE),root(NullRef),node(nullptr){}
+	XMLNode(ASWorker* wrk,Class_base* c, _NR<XMLDocument> _r, pugi::xml_node _n);
 	bool destruct()
 	{
 		root.reset();
-		return ASObject::destruct();
+		return destructIntern();
 	}
 	static void sinit(Class_base*);
-	static void buildTraits(ASObject* o);
 	tiny_string toString();
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(firstChild);
@@ -71,11 +70,13 @@ class XMLDocument: public XMLNode, public XMLBase
 friend class XMLNode;
 private:
 	pugi::xml_node rootNode;
+protected:
+	int32_t status; // only needed for AVM1
+	bool needsActionScript3;
 public:
-	XMLDocument(Class_base* c, tiny_string s="");
-	void parseXMLImpl(const std::string& str);
+	XMLDocument(ASWorker* wrk,Class_base* c, tiny_string s="");
+	int parseXMLImpl(const std::string& str);
 	static void sinit(Class_base*);
-	static void buildTraits(ASObject* o);
 	tiny_string toString();
 	ASPROPERTY_GETTER_SETTER(bool, ignoreWhite);
 	ASFUNCTION_ATOM(_constructor);
@@ -86,8 +87,8 @@ public:
 	//Serialization interface
 	void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap);
+				std::map<const Class_base*, uint32_t>& traitsMap, ASWorker* wrk);
 };
 
-};
+}
 #endif /* SCRIPTING_FLASH_XML_FLASHXML */

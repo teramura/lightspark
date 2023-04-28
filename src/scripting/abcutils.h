@@ -30,7 +30,8 @@ class method_info;
 class ABCContext;
 class ASObject;
 class Class_base;
-class asAtom;
+union asAtom;
+class SyntheticFunction;
 
 struct scope_entry
 {
@@ -45,53 +46,90 @@ class scope_entry_list: public RefCountable
 public:
 	std::vector<scope_entry> scope;
 };
+struct variable;
 struct call_context
 {
-#include "packed_begin.h"
-	struct
-	{
-		asAtom* locals;
-		asAtom* stack;
-		asAtom* stackp;
-		struct preloadedcodedata* exec_pos;
-	} PACKED;
-#include "packed_end.h"
-	uint32_t locals_size;
+	asAtom* locals;
+	asAtom* stack;
+	asAtom* stackp;
+	struct preloadedcodedata* exec_pos;
 	asAtom* max_stackp;
-	int32_t argarrayposition; // position of argument array in locals ( -1 if no argument array needed)
-	_NR<scope_entry_list> parent_scope_stack;
-	uint32_t max_scope_stack;
+	asAtom* lastlocal;
+	scope_entry_list* parent_scope_stack;
 	uint32_t curr_scope_stack;
+	int32_t argarrayposition; // position of argument array in locals ( -1 if no argument array needed)
 	asAtom* scope_stack;
 	bool* scope_stack_dynamic;
+	asAtom** localslots;
 	method_info* mi;
 	/* This is the function's inClass that is currently executing. It is used
 	 * by {construct,call,get,set}Super
 	 * */
 	Class_base* inClass;
+	SystemState* sys;
+	class ASWorker* worker;
 	/* Current namespace set by 'default xml namespace = ...'.
 	 * Defaults to empty string according to ECMA-357 13.1.1.1
 	 */
 	uint32_t defaultNamespaceUri;
-	asAtom& returnvalue;
-	bool returning;
-	call_context(method_info* _mi,Class_base* _inClass, asAtom& ret);
+	ASObject* exceptionthrown;
+	call_context(method_info* _mi):
+		locals(nullptr),stack(nullptr),
+		stackp(nullptr),exec_pos(nullptr),
+		max_stackp(nullptr),
+		parent_scope_stack(nullptr),curr_scope_stack(0),argarrayposition(-1),
+		scope_stack(nullptr),scope_stack_dynamic(nullptr),localslots(nullptr),mi(_mi),
+		inClass(nullptr),sys(nullptr),worker(nullptr),defaultNamespaceUri(0),exceptionthrown(nullptr)
+	{
+	}
 	static void handleError(int errorcode);
 	inline void runtime_stack_clear()
 	{
 		while(stackp != stack)
 		{
-			ASATOM_DECREF_POINTER((--stackp));
+			--stackp;
+			ASATOM_DECREF_POINTER(stackp);
 		}
 	}
 };
+typedef ASObject* (*synt_function)(call_context* cc);
+
+class AVM1context
+{
+friend class AVM1Function;
+private:
+	std::vector<uint32_t> avm1strings;
+public:
+	AVM1context():keepLocals(true) {}
+	void AVM1ClearConstants()
+	{
+		avm1strings.clear();
+	}
+	void AVM1AddConstant(uint32_t nameID)
+	{
+		avm1strings.push_back(nameID);
+	}
+	asAtom AVM1GetConstant(uint16_t index)
+	{
+		if (index < avm1strings.size())
+			return asAtomHandler::fromStringID(avm1strings[index]);
+		LOG(LOG_ERROR,"AVM1:constant not found in pool:"<<index<<" "<<avm1strings.size());
+		return asAtomHandler::undefinedAtom;
+	}
+	bool keepLocals;
+};
+
+
+#define CONTEXT_GETLOCAL(context,pos) \
+	(*(context->localslots[pos]))
+
 #define RUNTIME_STACK_PUSH(context,val) \
 if(USUALLY_FALSE(context->stackp==context->max_stackp)) \
 	context->handleError(kStackOverflowError); \
-else (context->stackp++)->set(val)
+else asAtomHandler::set(*(context->stackp++),val)
 
 #define RUNTIME_STACK_POP(context,ret) \
-	if(USUALLY_TRUE(context->stackp!=context->stack)) ret.set(*(--context->stackp)); \
+	if(USUALLY_TRUE(context->stackp!=context->stack)) asAtomHandler::set(ret,*(--context->stackp)); \
 	else context->handleError(kStackUnderflowError);
 
 
@@ -102,23 +140,29 @@ else (context->stackp++)->set(val)
 	  context->handleError(kStackUnderflowError); \
 	asAtom* ret= --context->stackp; 
 
-#define RUNTIME_STACK_POP_ASOBJECT(context,ret, sys) \
-	if(USUALLY_TRUE(context->stackp!=context->stack)) ret=(--context->stackp)->toObject(sys); \
+#define RUNTIME_STACK_POP_N_CREATE(context,n,ret) \
+	if(USUALLY_FALSE(context->stackp<context->stack+n)) \
+	  context->handleError(kStackUnderflowError); \
+	context->stackp-=n; \
+	asAtom* ret= context->stackp;
+
+#define RUNTIME_STACK_POP_ASOBJECT(context,ret) \
+	if(USUALLY_TRUE(context->stackp!=context->stack)) ret=asAtomHandler::toObject(*(--context->stackp),context->worker); \
 	else context->handleError(kStackUnderflowError);
 
-#define RUNTIME_STACK_POP_CREATE_ASOBJECT(context,ret, sys) \
+#define RUNTIME_STACK_POP_CREATE_ASOBJECT(context,ret) \
 	if(USUALLY_FALSE(context->stackp==context->stack)) \
 		context->handleError(kStackUnderflowError); \
-	ASObject* ret = (--context->stackp)->toObject(sys);
+	ASObject* ret = asAtomHandler::toObject(*(--context->stackp),context->worker);
 
 #define RUNTIME_STACK_PEEK(context,ret) \
-	ret= USUALLY_TRUE(context->stackp != context->stack) ? (context->stackp-1) : NULL; 
+	ret= USUALLY_TRUE(context->stackp != context->stack) ? (context->stackp-1) : nullptr; 
 
-#define RUNTIME_STACK_PEEK_ASOBJECT(context,ret, sys) \
-	ret= USUALLY_TRUE(context->stackp != context->stack) ? (context->stackp-1)->toObject(sys) : NULL; 
+#define RUNTIME_STACK_PEEK_ASOBJECT(context,ret) \
+	ret= USUALLY_TRUE(context->stackp != context->stack) ? asAtomHandler::toObject(*(context->stackp-1),context->worker) : nullptr; 
 
 #define RUNTIME_STACK_PEEK_CREATE(context,ret) \
-	asAtom* ret = USUALLY_TRUE(context->stackp != context->stack) ? (context->stackp-1) : NULL; 
+	asAtom* ret = USUALLY_TRUE(context->stackp != context->stack) ? (context->stackp-1) : nullptr; 
 
 #define RUNTIME_STACK_POINTER_CREATE(context,ret) \
 	if(USUALLY_FALSE(context->stackp==context->stack)) \

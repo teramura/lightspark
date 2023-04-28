@@ -53,7 +53,7 @@ void URLStreamThread::setBytesLoaded(uint32_t b)
 		{
 			timestamp_last_progress = cur;
 			loader->incRef();
-			getVm(loader->getSystemState())->addEvent(loader,_MR(Class<ProgressEvent>::getInstanceS(loader->getSystemState(),b,bytes_total)));
+			getVm(loader->getSystemState())->addEvent(loader,_MR(Class<ProgressEvent>::getInstanceS(loader->getInstanceWorker(),b,bytes_total)));
 		}
 	}
 }
@@ -74,10 +74,10 @@ void URLStreamThread::execute()
 	if(!downloader->hasFailed())
 	{
 		loader->incRef();
-		getVm(loader->getSystemState())->addEvent(loader,_MR(Class<Event>::getInstanceS(loader->getSystemState(),"open")));
+		getVm(loader->getSystemState())->addEvent(loader,_MR(Class<Event>::getInstanceS(loader->getInstanceWorker(),"open")));
 		streambuffer = cache->createReader();
 		loader->incRef();
-		getVm(loader->getSystemState())->addEvent(loader,_MR(Class<ProgressEvent>::getInstanceS(loader->getSystemState(),0,bytes_total)));
+		getVm(loader->getSystemState())->addEvent(loader,_MR(Class<ProgressEvent>::getInstanceS(loader->getInstanceWorker(),0,bytes_total)));
 		cache->waitForTermination();
 		if(!downloader->hasFailed() && !threadAborting)
 		{
@@ -100,21 +100,21 @@ void URLStreamThread::execute()
 	if(success && !threadAborting)
 	{
 		loader->incRef();
-		getVm(loader->getSystemState())->addEvent(loader,_MR(Class<ProgressEvent>::getInstanceS(loader->getSystemState(),downloader->getLength(),downloader->getLength())));
+		getVm(loader->getSystemState())->addEvent(loader,_MR(Class<ProgressEvent>::getInstanceS(loader->getInstanceWorker(),downloader->getLength(),downloader->getLength())));
 		//Send a complete event for this object
 		loader->incRef();
-		getVm(loader->getSystemState())->addEvent(loader,_MR(Class<Event>::getInstanceS(loader->getSystemState(),"complete")));
+		getVm(loader->getSystemState())->addEvent(loader,_MR(Class<Event>::getInstanceS(loader->getInstanceWorker(),"complete")));
 	}
 	else if(!success && !threadAborting)
 	{
 		//Notify an error during loading
 		loader->incRef();
-		getVm(loader->getSystemState())->addEvent(loader,_MR(Class<IOErrorEvent>::getInstanceS(loader->getSystemState())));
+		getVm(loader->getSystemState())->addEvent(loader,_MR(Class<IOErrorEvent>::getInstanceS(loader->getInstanceWorker())));
 	}
 
 	{
 		//Acquire the lock to ensure consistency in threadAbort
-		SpinlockLocker l(downloaderLock);
+		Locker l(downloaderLock);
 		getSys()->downloadManager->destroy(downloader);
 		downloader = NULL;
 	}
@@ -150,7 +150,7 @@ void URLStream::sinit(Class_base* c)
 	IDataInput::linkTraits(c);
 }
 
-ASFUNCTIONBODY_GETTER(URLStream,connected);
+ASFUNCTIONBODY_GETTER(URLStream,connected)
 
 void URLStream::buildTraits(ASObject* o)
 {
@@ -162,7 +162,7 @@ void URLStream::threadFinished(IThreadJob* finishedJob)
 	// equal, finishedJob is a job that was cancelled when load()
 	// was called again, and we have to still wait for the correct
 	// job.
-	SpinlockLocker l(spinlock);
+	Locker l(spinlock);
 	if(finishedJob==job)
 		job=NULL;
 
@@ -171,17 +171,17 @@ void URLStream::threadFinished(IThreadJob* finishedJob)
 
 ASFUNCTIONBODY_ATOM(URLStream,_constructor)
 {
-	EventDispatcher::_constructor(ret,sys,obj,NULL,0);
+	EventDispatcher::_constructor(ret,wrk,obj,NULL,0);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,load)
 {
-	URLStream* th=obj.as<URLStream>();
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
 	_NR<URLRequest> urlRequest;
-	ARG_UNPACK_ATOM (urlRequest);
+	ARG_CHECK(ARG_UNPACK (urlRequest));
 
 	{
-		SpinlockLocker l(th->spinlock);
+		Locker l(th->spinlock);
 		if(th->job)
 			th->job->threadAbort();
 	}
@@ -191,7 +191,7 @@ ASFUNCTIONBODY_ATOM(URLStream,load)
 	{
 		//Notify an error during loading
 		th->incRef();
-		sys->currentVm->addEvent(_MR(th),_MR(Class<IOErrorEvent>::getInstanceS(sys)));
+		wrk->getSystemState()->currentVm->addEvent(_MR(th),_MR(Class<IOErrorEvent>::getInstanceS(wrk)));
 		return;
 	}
 
@@ -209,8 +209,8 @@ ASFUNCTIONBODY_ATOM(URLStream,load)
 
 ASFUNCTIONBODY_ATOM(URLStream,close)
 {
-	URLStream* th=obj.as<URLStream>();
- 	SpinlockLocker l(th->spinlock);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+ 	Locker l(th->spinlock);
 	if(th->job)
 		th->job->threadAbort();
 	th->connected = false;
@@ -222,120 +222,120 @@ void URLStream::finalize()
 	data.reset();
 }
 
-URLStream::URLStream(Class_base *c):EventDispatcher(c),data(_MNR(Class<ByteArray>::getInstanceS(c->getSystemState()))),job(NULL),connected(false) 
+URLStream::URLStream(ASWorker* wrk, Class_base *c):EventDispatcher(wrk,c),data(_MNR(Class<ByteArray>::getInstanceS(wrk))),job(NULL),connected(false) 
 {
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,bytesAvailable) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::_getBytesAvailable(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::_getBytesAvailable(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,_getEndian) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::_getEndian(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::_getEndian(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,_setEndian) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::_setEndian(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::_setEndian(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,_getObjectEncoding) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::_getObjectEncoding(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::_getObjectEncoding(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,_setObjectEncoding) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::_setObjectEncoding(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::_setObjectEncoding(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readBoolean) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readBoolean(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readBoolean(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readByte) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readByte(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readByte(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readBytes) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readBytes(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readBytes(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readDouble) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readDouble(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readDouble(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readFloat) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readFloat(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readFloat(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readInt) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readInt(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readInt(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readMultiByte) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readMultiByte(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readMultiByte(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readObject) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readObject(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readObject(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readShort) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readShort(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readShort(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readUnsignedByte) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readUnsignedByte(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readUnsignedByte(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readUnsignedInt) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readUnsignedInt(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readUnsignedInt(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readUnsignedShort) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readUnsignedShort(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readUnsignedShort(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readUTF) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readUTF(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readUTF(ret,wrk,v, args, argslen);
 }
 
 ASFUNCTIONBODY_ATOM(URLStream,readUTFBytes) {
-	URLStream* th=obj.as<URLStream>();
-	asAtom v = asAtom::fromObject(th->data.getPtr());
-	ByteArray::readUTFBytes(ret,sys,v, args, argslen);
+	URLStream* th=asAtomHandler::as<URLStream>(obj);
+	asAtom v = asAtomHandler::fromObject(th->data.getPtr());
+	ByteArray::readUTFBytes(ret,wrk,v, args, argslen);
 }

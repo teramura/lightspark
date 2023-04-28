@@ -23,7 +23,14 @@
 #include "scripting/abc.h"
 #include "scripting/flash/events/flashevents.h"
 #include "scripting/flash/utils/flashutils.h"
+#include "scripting/flash/utils/IntervalManager.h"
+#include "scripting/flash/media/flashmedia.h"
+#include "scripting/flash/filesystem/flashfilesystem.h"
 #include "scripting/toplevel/ASString.h"
+#include "scripting/toplevel/Number.h"
+#include "scripting/toplevel/Boolean.h"
+#include "scripting/toplevel/Vector.h"
+#include "scripting/avm1/avm1display.h"
 #include "logger.h"
 #include "parsing/streams.h"
 #include "asobject.h"
@@ -34,7 +41,10 @@
 #include "backends/image.h"
 #include "backends/extscriptobject.h"
 #include "backends/input.h"
+#include "backends/locale.h"
+#include "backends/currency.h"
 #include "memory_support.h"
+#include "parsing/tags.h"
 
 #ifdef ENABLE_CURL
 #include <curl/curl.h>
@@ -54,36 +64,57 @@ using namespace lightspark;
 DEFINE_AND_INITIALIZE_TLS(tls_system);
 SystemState* lightspark::getSys()
 {
-	SystemState* ret = (SystemState*)tls_get(&tls_system);
+	SystemState* ret = (SystemState*)tls_get(tls_system);
 	return ret;
 }
 
 void lightspark::setTLSSys(SystemState* sys)
 {
-        tls_set(&tls_system,sys);
+        tls_set(tls_system,sys);
 }
 
 DEFINE_AND_INITIALIZE_TLS(parse_thread_tls);
 ParseThread* lightspark::getParseThread()
 {
-	ParseThread* pt = (ParseThread*)tls_get(&parse_thread_tls);
+	ParseThread* pt = (ParseThread*)tls_get(parse_thread_tls);
 	assert(pt);
 	return pt;
 }
 
-RootMovieClip::RootMovieClip(_NR<LoaderInfo> li, _NR<ApplicationDomain> appDomain, _NR<SecurityDomain> secDomain, Class_base* c):
-	MovieClip(c),
-	parsingIsFailed(false),Background(0xFF,0xFF,0xFF),frameRate(0),
+DEFINE_AND_INITIALIZE_TLS(tls_worker);
+void lightspark::setTLSWorker(ASWorker* worker)
+{
+	tls_set(tls_worker,worker);
+}
+ASWorker* lightspark::getWorker()
+{
+	return (ASWorker*)tls_get(tls_worker);
+}
+
+
+RootMovieClip::RootMovieClip(ASWorker* wrk, _NR<LoaderInfo> li, _NR<ApplicationDomain> appDomain, _NR<SecurityDomain> secDomain, Class_base* c):
+	MovieClip(wrk,c),
+	parsingIsFailed(false),waitingforparser(false),Background(0xFF,0xFF,0xFF),frameRate(0),
 	finishedLoading(false),applicationDomain(appDomain),securityDomain(secDomain)
 {
 	subtype=SUBTYPE_ROOTMOVIECLIP;
 	loaderInfo=li;
+	parsethread=nullptr;
+	hasSymbolClass=false;
+	hasMainClass=false;
+	usesActionScript3=false;
 }
 
 RootMovieClip::~RootMovieClip()
 {
 	for(auto it=dictionary.begin();it!=dictionary.end();++it)
-		delete *it;
+		delete it->second;
+}
+
+void RootMovieClip::destroyTags()
+{
+	for(auto it=frames.begin();it!=frames.end();++it)
+		it->destroyTags();
 }
 
 void RootMovieClip::parsingFailed()
@@ -128,25 +159,40 @@ const URLInfo& RootMovieClip::getBaseURL()
 		return origin;
 }
 
-void SystemState::registerFrameListener(_R<DisplayObject> obj)
+void SystemState::registerFrameListener(DisplayObject* obj)
 {
 	Locker l(mutexFrameListeners);
-	obj->incRef();
 	frameListeners.insert(obj);
 }
 
-void SystemState::unregisterFrameListener(_R<DisplayObject> obj)
+void SystemState::unregisterFrameListener(DisplayObject* obj)
 {
 	Locker l(mutexFrameListeners);
 	frameListeners.erase(obj);
 }
 
-RootMovieClip* RootMovieClip::getInstance(_NR<LoaderInfo> li, _R<ApplicationDomain> appDomain, _R<SecurityDomain> secDomain)
+void SystemState::addBroadcastEvent(const tiny_string& event)
+{
+	Locker l(mutexFrameListeners);
+	if(!frameListeners.empty())
+	{
+		_R<Event> e(Class<Event>::getInstanceS(this->worker,event));
+		auto it=frameListeners.begin();
+		for(;it!=frameListeners.end();it++)
+		{
+			(*it)->incRef();
+			getVm(this)->addEvent(_MR(*it),e);
+		}
+	}
+}
+
+RootMovieClip* RootMovieClip::getInstance(ASWorker* wrk,_NR<LoaderInfo> li, _R<ApplicationDomain> appDomain, _R<SecurityDomain> secDomain)
 {
 	Class_base* movieClipClass = Class<MovieClip>::getClass(getSys());
-	RootMovieClip* ret=new (movieClipClass->memoryAccount) RootMovieClip(li, appDomain, secDomain, movieClipClass);
+	RootMovieClip* ret=new (movieClipClass->memoryAccount) RootMovieClip(wrk,li, appDomain, secDomain, movieClipClass);
 	ret->constructIndicator = true;
 	ret->constructorCallComplete = true;
+	ret->loadedFrom=ret;
 	return ret;
 }
 
@@ -157,12 +203,21 @@ void SystemState::staticInit()
 	curl_global_init(CURL_GLOBAL_ALL);
 #endif
 #ifdef ENABLE_LIBAVCODEC
+#if ( LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(58,10,100) )
 	avcodec_register_all();
 	av_register_all();
 #endif
+#endif
 
 	// seed the random number generator
-	srand(time(NULL));
+	char *envvar = getenv("LIGHTSPARK_RANDOM_SEED");
+	if (envvar)
+	{
+		LOG(LOG_INFO,"using static random seed:"<<envvar);
+		srand(atoi(envvar));
+	}
+	else
+		srand(time(nullptr));
 }
 
 void SystemState::staticDeinit()
@@ -175,29 +230,47 @@ void SystemState::staticDeinit()
 }
 
 //See BUILTIN_STRINGS enum
-static const char* builtinStrings[] = {"any", "void", "prototype", "Function", "__AS3__.vec","Class", "http://adobe.com/AS3/2006/builtin","http://www.w3.org/XML/1998/namespace","xml","toString","valueOf","length","constructor" };
+static const char* builtinStrings[] = {"any", "void", "prototype", "Function", "__AS3__.vec","Class", "http://adobe.com/AS3/2006/builtin","http://www.w3.org/XML/1998/namespace","xml","toString","valueOf","length","constructor",
+									   "_target","this","_root","_parent","_global","super",
+									   "onEnterFrame","onMouseMove","onMouseDown","onMouseUp","onPress","onRelease","onReleaseOutside","onMouseWheel","onLoad",
+									   "object","undefined","boolean","number","string","function","onRollOver","onRollOut",
+									   "__proto__","target","flash.events:IEventDispatcher","addEventListener","removeEventListener","dispatchEvent","hasEventListener",
+									   "onConnect","onData","onClose","onSelect"
+									  };
 
 extern uint32_t asClassCount;
 
 SystemState::SystemState(uint32_t fileSize, FLASH_MODE mode):
-	terminated(0),renderRate(0),error(false),shutdown(false),
-	renderThread(NULL),inputThread(NULL),engineData(NULL),mainThread(0),dumpedSWFPathAvailable(0),
+	terminated(0),renderRate(0),error(false),shutdown(false),firsttick(true),localstorageallowed(false),
+	renderThread(nullptr),inputThread(nullptr),engineData(nullptr),dumpedSWFPathAvailable(0),
 	vmVersion(VMNONE),childPid(0),
 	parameters(NullRef),
 	invalidateQueueHead(NullRef),invalidateQueueTail(NullRef),lastUsedStringId(0),lastUsedNamespaceId(0x7fffffff),
-	showProfilingData(false),flashMode(mode),
-	currentVm(NULL),builtinClasses(NULL),useInterpreter(true),useFastInterpreter(false),useJit(false),exitOnError(ERROR_NONE),
-	downloadManager(NULL),extScriptObject(NULL),scaleMode(SHOW_ALL),unaccountedMemory(NULL),tagsMemory(NULL),stringMemory(NULL)
+	showProfilingData(false),allowFullscreen(false),flashMode(mode),swffilesize(fileSize),avm1global(nullptr),
+	currentVm(nullptr),builtinClasses(nullptr),useInterpreter(true),useFastInterpreter(false),useJit(false),ignoreUnhandledExceptions(false),exitOnError(ERROR_NONE),
+	systemDomain(nullptr),worker(nullptr),workerDomain(nullptr),singleworker(true),
+	downloadManager(nullptr),extScriptObject(nullptr),scaleMode(SHOW_ALL),unaccountedMemory(nullptr),tagsMemory(nullptr),stringMemory(nullptr),textTokenMemory(nullptr),shapeTokenMemory(nullptr),morphShapeTokenMemory(nullptr),bitmapTokenMemory(nullptr),spriteTokenMemory(nullptr),
+	static_SoundMixer_bufferTime(0),static_Multitouch_inputMode("gesture"),isinitialized(false)
 {
 	//Forge the builtin strings
-	getUniqueStringId("");
+	uniqueStringIDMap.reserve(LAST_BUILTIN_STRING);
+	tiny_string sempty;
+	uniqueStringMap.emplace(make_pair(sempty,lastUsedStringId));
+	uniqueStringIDMap.push_back(sempty);
+	lastUsedStringId++;
 	for(uint32_t i=1;i<BUILTIN_STRINGS_CHAR_MAX;i++)
 	{
-		getUniqueStringId(tiny_string::fromChar(i));
+		tiny_string s = tiny_string::fromChar(i);
+		uniqueStringMap.emplace(make_pair(s,lastUsedStringId));
+		uniqueStringIDMap.push_back(s);
+		lastUsedStringId++;
 	}
 	for(uint32_t i=BUILTIN_STRINGS_CHAR_MAX;i<LAST_BUILTIN_STRING;i++)
 	{
-		getUniqueStringId(builtinStrings[i-BUILTIN_STRINGS_CHAR_MAX]);
+		tiny_string s(builtinStrings[i-BUILTIN_STRINGS_CHAR_MAX]);
+		uniqueStringMap.emplace(make_pair(s,lastUsedStringId));
+		uniqueStringIDMap.push_back(s);
+		lastUsedStringId++;
 	}
 	//Forge the empty namespace and make sure it gets id 0
 	nsNameAndKindImpl emptyNs(BUILTIN_STRINGS::EMPTY, NAMESPACE);
@@ -210,65 +283,98 @@ SystemState::SystemState(uint32_t fileSize, FLASH_MODE mode):
 	getUniqueNamespaceId(as3Ns, BUILTIN_NAMESPACES::AS3_NS, nsId, baseId);
 	assert(nsId==1 && baseId==1);
 
-	cookiesFileName = NULL;
+	cookiesFileName = nullptr;
 
 	setTLSSys(this);
 	// it seems Adobe ignores any locale date settings
 	setlocale(LC_TIME, "C");
 	setlocale(LC_NUMERIC, "POSIX");
-	
-	mainThread = Thread::self();
 
 	unaccountedMemory = allocateMemoryAccount("Unaccounted");
 	tagsMemory = allocateMemoryAccount("Tags");
 	stringMemory = allocateMemoryAccount("Tiny_string");
-
-	null=_MR(new (unaccountedMemory) Null);
-	null->setSystemState(this);
-	null->setConstant();
-	undefined=_MR(new (unaccountedMemory) Undefined);
-	undefined->setSystemState(this);
-	undefined->setConstant();
+	textTokenMemory = allocateMemoryAccount("Tokens.Text");
+	shapeTokenMemory = allocateMemoryAccount("Tokens.Shape");
+	morphShapeTokenMemory = allocateMemoryAccount("Tokens.MorphShape");
+	bitmapTokenMemory = allocateMemoryAccount("Tokens.Bitmap");
+	spriteTokenMemory = allocateMemoryAccount("Tokens.Sprite");
 
 	builtinClasses = new Class_base*[asClassCount];
 	memset(builtinClasses,0,asClassCount*sizeof(Class_base*));
 
 	//Untangle the messy relationship between class objects and the Class class
 	Class_object* classObject = Class_object::getClass(this);
+
+	worker = new (unaccountedMemory) ASWorker(this);
+	worker->setRefConstant();
+	Class<ASWorker>::getClass(this)->setupDeclaredTraits(worker);
+	worker->setClass(Class<ASWorker>::getClass(this));
+	worker->constructionComplete();
+	worker->setConstructIndicator();
+
+	// needs to be done after worker is constructed
+	classObject->setWorker(this->worker);
+	classObject->setRefConstant();
+
+	null=new (unaccountedMemory) Null;
+	null->setSystemState(this);
+	null->setWorker(this->worker);
+	null->setRefConstant();
+	undefined=new (unaccountedMemory) Undefined;
+	undefined->setSystemState(this);
+	undefined->setWorker(this->worker);
+	undefined->setRefConstant();
+
+
+	classObject->setWorker(worker);
+
 	//Getting the Object class object will set the classdef to the Class_object
 	//like any other class. This happens inside Class_base constructor
 	_R<Class_base> asobjectClass = Class<ASObject>::getRef(this);
+
 	//The only bit remaining is setting the Object class as the super class for Class
 	classObject->setSuper(asobjectClass);
 	classObject->decRef();
 	objClassRef = asobjectClass.getPtr();
 
-	trueRef=_MR(Class<Boolean>::getInstanceS(this,true));
-	trueRef->setConstant();
-	falseRef=_MR(Class<Boolean>::getInstanceS(this,false));
-	falseRef->setConstant();
+	trueRef=Class<Boolean>::getInstanceS(this->worker,true);
+	trueRef->setRefConstant();
+	falseRef=Class<Boolean>::getInstanceS(this->worker,false);
+	falseRef->setRefConstant();
+	
+	nanAtom = asAtomHandler::fromNumber(this->worker,Number::NaN,true);
 
-	systemDomain = _MR(Class<ApplicationDomain>::getInstanceS(this));
-	_NR<ApplicationDomain> applicationDomain=_MR(Class<ApplicationDomain>::getInstanceS(this,systemDomain));
-	_NR<SecurityDomain> securityDomain = _MR(Class<SecurityDomain>::getInstanceS(this));
+	systemDomain = Class<ApplicationDomain>::getInstanceS(this->worker);
+	systemDomain->setRefConstant();
+	_NR<ApplicationDomain> applicationDomain=_MR(Class<ApplicationDomain>::getInstanceS(this->worker,_MR(systemDomain)));
+	_NR<SecurityDomain> securityDomain = _MR(Class<SecurityDomain>::getInstanceS(this->worker));
 
+	static_SoundMixer_soundTransform  = _MR(Class<SoundTransform>::getInstanceS(this->worker));
+	static_SoundMixer_soundTransform->setRefConstant();
 	threadPool=new ThreadPool(this);
+	downloadThreadPool=new ThreadPool(this);
+
 	timerThread=new TimerThread(this);
 	frameTimerThread=new TimerThread(this);
-	audioManager=NULL;
+	audioManager=nullptr;
 	intervalManager=new IntervalManager();
 	securityManager=new SecurityManager();
+	localeManager = new LocaleManager();
+	currencyManager = new CurrencyManager();
 
-	_NR<LoaderInfo> loaderInfo=_MR(Class<LoaderInfo>::getInstanceS(this));
+	_NR<LoaderInfo> loaderInfo=_MR(Class<LoaderInfo>::getInstanceS(this->worker));
 	loaderInfo->applicationDomain = applicationDomain;
 	loaderInfo->setBytesLoaded(0);
 	loaderInfo->setBytesTotal(0);
-	mainClip=RootMovieClip::getInstance(loaderInfo, applicationDomain, securityDomain);
-	stage=Class<Stage>::getInstanceS(this);
-	mainClip->incRef();
+	mainClip=RootMovieClip::getInstance(this->worker,loaderInfo, applicationDomain, securityDomain);
+	mainClip->setRefConstant();
+	worker->rootClip = _MR(mainClip);
+	workerDomain = Class<WorkerDomain>::getInstanceSNoArgs(this->worker);
+	workerDomain->setRefConstant();
+	addWorker(worker);
+	stage=Class<Stage>::getInstanceS(this->worker);
+	stage->setRefConstant();
 	stage->setRoot(_MR(mainClip));
-	mainClip->incRef();
-	stage->_addChildAt(_MR(mainClip),0);
 	//Get starting time
 	startTime=compat_msectiming();
 	
@@ -321,12 +427,12 @@ void SystemState::parseParametersFromFlashvars(const char* v)
 
 	_NR<ASObject> params=getParameters();
 	if(params.isNull())
-		params=_MNR(Class<ASObject>::getInstanceS(getSys()));
+		params=_MNR(Class<ASObject>::getInstanceS(this->worker));
 	//Add arguments to SystemState
 	string vars(v);
 	uint32_t cur=0;
 	char* pfile = getenv("LIGHTSPARK_PLUGIN_PARAMFILE");
-        ofstream f;
+	ofstream f;
 	if(pfile)
 		f.open(pfile, ios::binary|ios::out);
 	while(cur<vars.size())
@@ -378,11 +484,11 @@ void SystemState::parseParametersFromFlashvars(const char* v)
 				f << varName << endl << varValue << endl;
 
 			/* That does occur in the wild */
-			if(params->hasPropertyByMultiname(QName(getUniqueStringId(varName),BUILTIN_STRINGS::EMPTY), true, true))
+			if(params->hasPropertyByMultiname(QName(getUniqueStringId(varName),BUILTIN_STRINGS::EMPTY), true, true,this->worker))
 				LOG(LOG_ERROR,"Flash parameters has duplicate key '" << varName << "' - ignoring");
 			else
 				params->setVariableByQName(varName,"",
-					lightspark::Class<lightspark::ASString>::getInstanceS(this,varValue),DYNAMIC_TRAIT);
+					lightspark::Class<lightspark::ASString>::getInstanceS(this->worker,varValue),DYNAMIC_TRAIT);
 		}
 		cur=n2+1;
 	}
@@ -394,17 +500,17 @@ void SystemState::parseParametersFromFile(const char* f)
 	ifstream i(f, ios::in|ios::binary);
 	if(!i)
 	{
-		LOG(LOG_ERROR,_("Parameters file not found"));
+		LOG(LOG_ERROR,"Parameters file not found");
 		return;
 	}
-	_R<ASObject> ret=_MR(Class<ASObject>::getInstanceS(this));
+	_R<ASObject> ret=_MR(Class<ASObject>::getInstanceS(this->worker));
 	while(!i.eof())
 	{
 		string name,value;
 		getline(i,name);
 		getline(i,value);
 
-		ret->setVariableByQName(name,"",abstract_s(this,value),DYNAMIC_TRAIT);
+		ret->setVariableByQName(name,"",abstract_s(this->worker,value),DYNAMIC_TRAIT);
 		cout << name << ' ' << value << endl;
 	}
 	setParameters(ret);
@@ -415,7 +521,7 @@ void SystemState::parseParametersFromURL(const URLInfo& url)
 {
 	_NR<ASObject> params=getParameters();
 	if(params.isNull())
-		params=_MNR(Class<ASObject>::getInstanceS(this));
+		params=_MNR(Class<ASObject>::getInstanceS(this->worker));
 
 	parseParametersFromURLIntoObject(url, params);
 	setParameters(params);
@@ -427,11 +533,11 @@ void SystemState::parseParametersFromURLIntoObject(const URLInfo& url, _R<ASObje
 	std::list< std::pair<tiny_string, tiny_string> >::iterator it;
 	for (it=queries.begin(); it!=queries.end(); ++it)
 	{
-		if(outParams->hasPropertyByMultiname(QName(outParams->getSystemState()->getUniqueStringId(it->first),BUILTIN_STRINGS::EMPTY), true, true))
+		if(outParams->hasPropertyByMultiname(QName(outParams->getSystemState()->getUniqueStringId(it->first),BUILTIN_STRINGS::EMPTY), true, true,outParams->getInstanceWorker()))
 			LOG(LOG_ERROR,"URL query parameters has duplicate key '" << it->first << "' - ignoring");
 		else
 			outParams->setVariableByQName(it->first,"",
-			   lightspark::Class<lightspark::ASString>::getInstanceS(outParams->getSystemState(),it->second),DYNAMIC_TRAIT);
+			   lightspark::Class<lightspark::ASString>::getInstanceS(outParams->getInstanceWorker(),it->second),DYNAMIC_TRAIT);
 	}
 }
 
@@ -448,6 +554,10 @@ _NR<ASObject> SystemState::getParameters() const
 
 void SystemState::stopEngines()
 {
+	if (audioManager)
+		audioManager->stopAllSounds();
+	if(downloadThreadPool)
+		downloadThreadPool->forceStop();
 	if(threadPool)
 		threadPool->forceStop();
 	timerThread->wait();
@@ -456,14 +566,20 @@ void SystemState::stopEngines()
 	if(currentVm)
 		currentVm->shutdown();
 	delete downloadManager;
-	downloadManager=NULL;
+	downloadManager=nullptr;
 	delete securityManager;
-	securityManager=NULL;
+	securityManager=nullptr;
+	delete localeManager;
+	localeManager=nullptr;
+	delete currencyManager;
+	currencyManager=nullptr;
 	delete threadPool;
-	threadPool=NULL;
+	threadPool=nullptr;
+	delete downloadThreadPool;
+	downloadThreadPool=nullptr;
 	//Now stop the managers
 	delete audioManager;
-	audioManager=NULL;
+	audioManager=nullptr;
 }
 
 #ifdef PROFILING_SUPPORT
@@ -487,7 +603,7 @@ MemoryAccount* SystemState::allocateMemoryAccount(const tiny_string& name)
 	memoryAccounts.emplace_back(name);
 	return &memoryAccounts.back();
 #else
-	return NULL;
+	return nullptr;
 #endif
 }
 
@@ -521,24 +637,49 @@ void SystemState::saveMemoryUsageInformation(ofstream& out, int snapshotCount) c
 
 void SystemState::systemFinalize()
 {
+	_NR<DisplayObject> cur=invalidateQueueHead;
+	while(!cur.isNull())
+	{
+		_NR<DisplayObject> next=cur->invalidateQueueNext;
+		cur->invalidateQueueNext=NullRef;
+		cur=next;
+	}
 	invalidateQueueHead.reset();
 	invalidateQueueTail.reset();
 	parameters.reset();
+	static_SoundMixer_soundTransform.reset();
 	frameListeners.clear();
-	systemDomain.reset();
-
-	mainClip->decRef();
-	//Free the stage. This should free all objects on the displaylist
-	stage->decRef();
+	auto it = sharedobjectmap.begin();
+	while (it != sharedobjectmap.end())
+	{
+		it->second->doFlush(worker);
+		it = sharedobjectmap.erase(it);
+	}
+	mainClip->destroyTags();
 }
-
+#ifndef NDEBUG
+extern std::set<ASObject*> memcheckset;
+#endif
 SystemState::~SystemState()
 {
+	// finalize main worker
+	worker->finalize();
+	workerDomain->finalize();
+	delete worker;
+	delete workerDomain;
+	delete stage;
+	delete objClassRef;
+	if (mainClip)
+		delete mainClip;
 	delete[] builtinClasses;
-	null.forceDestruct();
-	undefined.forceDestruct();
-	trueRef.forceDestruct();
-	falseRef.forceDestruct();
+	builtinClasses=nullptr;
+#ifndef NDEBUG
+	for (auto it = memcheckset.begin(); it != memcheckset.end(); it++)
+	{
+		LOG(LOG_ERROR,"memcheck leak found:"<<(*it)<<" "<<(*it)->getObjectType()<<" "<<(*it)->getSubtype());
+	}
+	LOG(LOG_ERROR,"memleaks found:"<<memcheckset.size());
+#endif
 }
 
 void SystemState::destroy()
@@ -558,6 +699,7 @@ void SystemState::destroy()
 		//we will start it here.
 		if(!currentVm->hasEverStarted())
 			currentVm->start();
+		l.release();
 		currentVm->shutdown();
 	}
 
@@ -586,6 +728,8 @@ void SystemState::destroy()
 	if(downloadManager)
 		downloadManager->stopAll();
 	//The thread pool should be stopped before everything
+	if(downloadThreadPool)
+		downloadThreadPool->forceStop();
 	if(threadPool)
 		threadPool->forceStop();
 	stopEngines();
@@ -596,61 +740,41 @@ void SystemState::destroy()
 	systemFinalize();
 
 	/*
-	 * 1) call finalize on all objects, this will free all referenced objects and thereby
+	 * 1) call finalize on all objects, this will free all non constant referenced objects and thereby
 	 * cut circular references. After that, all ASObjects but classes and templates should
 	 * have been deleted through decRef. Else it is an error.
 	 * 2) decRef all the classes and templates to which we hold a reference through the
 	 * 'classes' and 'templates' maps.
 	 */
 
-	for(uint32_t i=0;i<asClassCount;i++)
-	{
-		if(builtinClasses[i])
-			builtinClasses[i]->finalize();
-	}
-	for(auto it = customClasses.begin(); it != customClasses.end(); ++it)
-		(*it)->finalize();
-	for(auto it = templates.begin(); it != templates.end(); ++it)
-		it->second->finalize();
+	setTLSWorker(this->worker);
 
 	//Here we clean the events queue
 	if(currentVm)
 		currentVm->finalize();
 
-	//Free classes by decRef'ing them
-	for(uint32_t i=0;i<asClassCount;i++)
-	{
-		if(builtinClasses[i])
-			builtinClasses[i]->decRef();
-	}
-	for(auto i = customClasses.begin(); i != customClasses.end(); ++i)
-		(*i)->decRef();
-
-	//Free templates by decRef'ing them
-	for(auto i = templates.begin(); i != templates.end(); ++i)
-		i->second->decRef();
-
 	//The Vm must be destroyed this late to clean all managed integers and numbers
 	//This deletes the {int,uint,number}_managers; therefore no Number/.. object may be
 	//decRef'ed after this line as it would cause a manager->put()
 	delete currentVm;
-	currentVm = NULL;
+	currentVm = nullptr;
 
 	//Some objects needs to remove the jobs when destroyed so keep the timerThread until now
 	delete timerThread;
-	timerThread=NULL;
+	timerThread=nullptr;
 	delete frameTimerThread;
-	frameTimerThread= NULL;
+	frameTimerThread= nullptr;
 	
 	delete renderThread;
-	renderThread=NULL;
+	renderThread=nullptr;
 	delete inputThread;
-	inputThread=NULL;
+	inputThread=nullptr;
 	delete engineData;
-	engineData=NULL;
+	engineData=nullptr;
 
 	for(auto it=profilingData.begin();it!=profilingData.end();it++)
 		delete *it;
+	uniqueStringMap.clear();
 }
 
 bool SystemState::isOnError() const
@@ -695,17 +819,64 @@ void SystemState::setShutdownFlag()
 	Locker l(rootMutex);
 	if(currentVm)
 	{
+		workerDomain->stopAllBackgroundWorkers();
 		_R<ShutdownEvent> e(new (unaccountedMemory) ShutdownEvent);
 		currentVm->addEvent(NullRef,e);
 	}
+	else
+	{
+		terminated.signal();
+	}
 	shutdown=true;
-
+}
+void SystemState::signalTerminated()
+{
+	Locker l(rootMutex);
 	terminated.signal();
+}
+void SystemState::setLocalStorageAllowed(bool allowed)
+{
+	localstorageallowed = allowed;
+	getEngineData()->setLocalStorageAllowedMarker(allowed);
 }
 
 float SystemState::getRenderRate()
 {
 	return renderRate;
+}
+
+void SystemState::addWorker(ASWorker *w)
+{
+	Locker l(workerMutex);
+	asAtom a = asAtomHandler::fromObject(w);
+	w->incRef();
+	workerDomain->workerlist->append(a);
+	singleworker=workerDomain->workerlist->size() <= 1;
+}
+
+void SystemState::removeWorker(ASWorker *w)
+{
+	Locker l(workerMutex);
+	workerDomain->removeWorker(w);
+	singleworker=workerDomain->workerlist->size() <= 1;
+
+}
+void SystemState::addEventToBackgroundWorkers(_NR<EventDispatcher> obj, _R<Event> ev)
+{
+	if(obj.isNull())
+		return;
+	
+	if (ev->is<WaitableEvent>())
+		return;
+	Locker l(workerMutex);
+	for (uint32_t i= 0; i < workerDomain->workerlist->size(); i++)
+	{
+		asAtom w = workerDomain->workerlist->at(i);
+		if (asAtomHandler::is<ASWorker>(w) && !asAtomHandler::as<ASWorker>(w)->isPrimordial && obj->hasEventListener(ev->type))
+		{
+			asAtomHandler::as<ASWorker>(w)->addEvent(obj,ev);
+		}
+	}
 }
 
 void SystemState::startRenderTicks()
@@ -733,12 +904,16 @@ void SystemState::EngineCreator::threadAbort()
 void SystemState::delayedCreation(SystemState* sys)
 {
 	sys->audioManager=new AudioManager(sys->engineData);
-	int32_t reqWidth=sys->mainClip->getFrameSize().Xmax/20;
-	int32_t reqHeight=sys->mainClip->getFrameSize().Ymax/20;
+	sys->localstorageallowed =sys->getEngineData()->getLocalStorageAllowedMarker();
+	int32_t reqWidth=((sys->mainClip->getFrameSize().Xmax-sys->mainClip->getFrameSize().Xmin)/20)*sys->engineData->startscalefactor;
+	int32_t reqHeight=((sys->mainClip->getFrameSize().Ymax-sys->mainClip->getFrameSize().Ymin)/20)*sys->engineData->startscalefactor;
 
 	if (EngineData::enablerendering)
+	{
 		sys->engineData->showWindow(reqWidth, reqHeight);
-
+		if (sys->engineData->startInFullScreenMode)
+			sys->engineData->setDisplayState("fullScreen",sys);
+	}
 	sys->inputThread->start(sys->engineData);
 
 	if(EngineData::enablerendering && Config::getConfig()->isRenderingEnabled())
@@ -758,6 +933,12 @@ void SystemState::delayedCreation(SystemState* sys)
 
 	if(sys->renderRate)
 		sys->startRenderTicks();
+	
+	{
+		Locker l(sys->initializedMutex);
+		sys->isinitialized=true;
+		sys->initializedCond.broadcast();
+	}
 }
 
 void SystemState::delayedStopping()
@@ -766,7 +947,7 @@ void SystemState::delayedStopping()
 	//This is called from the plugin, also kill the stream
 	engineData->stopMainDownload();
 	stopEngines();
-	setTLSSys(NULL);
+	setTLSSys(nullptr);
 }
 
 void SystemState::createEngines()
@@ -778,7 +959,7 @@ void SystemState::createEngines()
 		return;
 	}
 	//Check if we should fall back on gnash
-	if(vmVersion!=AVM2)
+	if(vmVersion==AVM1)
 	{
 		l.release();
 		launchGnash();
@@ -831,7 +1012,7 @@ void SystemState::launchGnash()
 	if(dumpedSWFPath.empty())
 		return;
 
-	LOG(LOG_INFO,_("Trying to invoke gnash!"));
+	LOG(LOG_INFO,"Trying to invoke gnash!");
 	//Dump the cookies to a temporary file
 	int file=g_file_open_tmp("lightsparkcookiesXXXXXX",&cookiesFileName,NULL);
 	if(file!=-1)
@@ -845,7 +1026,7 @@ void SystemState::launchGnash()
 			res = write(file, data.c_str()+written, data.size()-written);
 			if(res < 0)
 			{
-				LOG(LOG_ERROR, _("Error during writing of cookie file for Gnash"));
+				LOG(LOG_ERROR, "Error during writing of cookie file for Gnash");
 				break;
 			}
 			written += res;
@@ -950,7 +1131,7 @@ void SystemState::launchGnash()
 			ret = write(gnash_stdin, data+written, swfStream.gcount()-written);
 			if(ret < 0)
 			{
-				LOG(LOG_ERROR, _("Error during writing of SWF file to Gnash"));
+				LOG(LOG_ERROR, "Error during writing of SWF file to Gnash");
 				stop = true;
 				break;
 			}
@@ -984,7 +1165,7 @@ void SystemState::needsAVM2(bool avm2)
 		//needsAVM2 is only called for the SystemState movie
 		assert(!currentVm);
 		vmVersion=AVM2;
-		LOG(LOG_INFO,_("Creating VM"));
+		LOG(LOG_INFO,"Creating VM");
 		MemoryAccount* vmDataMemory=this->allocateMemoryAccount("VM_Data");
 		currentVm=new ABCVm(this, vmDataMemory);
 	}
@@ -1000,6 +1181,14 @@ void SystemState::setParamsAndEngine(EngineData* e, bool s)
 	Locker l(rootMutex);
 	engineData=e;
 	standalone=s;
+	if (flashMode == SystemState::AIR)
+	{
+		static_ASFile_applicationDirectory=_MNR(Class<ASFile>::getInstanceS(this->worker,getEngineData()->FileFullPath(this,""),true));
+		static_ASFile_applicationDirectory->setRefConstant();
+		static_ASFile_applicationStorageDirectory=_MNR(Class<ASFile>::getInstanceS(this->worker,getEngineData()->FileGetApplicationStorageDir(),true));
+		static_ASFile_applicationStorageDirectory->setRefConstant();
+	}
+	
 	if(vmVersion)
 		addJob(new EngineCreator);
 }
@@ -1007,17 +1196,27 @@ void SystemState::setParamsAndEngine(EngineData* e, bool s)
 void SystemState::setRenderRate(float rate)
 {
 	Locker l(rootMutex);
-	if(renderRate>=rate)
+	if(renderRate==rate)
 		return;
 	
-	//The requested rate is higher, let's reschedule the job
+	//The requested rate is different than the current rate, let's reschedule the job
 	renderRate=rate;
 	startRenderTicks();
+
+	if (this->mainClip && this->mainClip->isConstructed())
+	{
+		removeJob(this);
+		addTick(1000/renderRate,this);
+	}
 }
 
 void SystemState::addJob(IThreadJob* j)
 {
 	threadPool->addJob(j);
+}
+void SystemState::addDownloadJob(IThreadJob* j)
+{
+	downloadThreadPool->addJob(j);
 }
 
 void SystemState::addTick(uint32_t tickTime, ITickJob* job)
@@ -1037,12 +1236,15 @@ void SystemState::addWait(uint32_t waitTime, ITickJob* job)
 
 void SystemState::removeJob(ITickJob* job)
 {
-	timerThread->removeJob(job);
+	if (job == this)
+		timerThread->removeJob_noLock(job);
+	else
+		timerThread->removeJob(job);
 }
 
 ThreadProfile* SystemState::allocateProfiler(const lightspark::RGB& color)
 {
-	SpinlockLocker l(profileDataSpinlock);
+	Locker l(profileDataSpinlock);
 	profilingData.push_back(new ThreadProfile(color,100,engineData));
 	ThreadProfile* ret=profilingData.back();
 	return ret;
@@ -1050,10 +1252,27 @@ ThreadProfile* SystemState::allocateProfiler(const lightspark::RGB& color)
 
 void SystemState::addToInvalidateQueue(_R<DisplayObject> d)
 {
-	SpinlockLocker l(invalidateQueueLock);
+	Locker l(invalidateQueueLock);
 	//Check if the object is already in the queue
 	if(!d->invalidateQueueNext.isNull() || d==invalidateQueueTail)
 		return;
+	if (d->getNeedsTextureRecalculation())
+	{
+		DisplayObject* o = d->getParent();
+		while (o)
+		{
+			if (o->getCachedBitmap())
+			{
+				// ancestor is cached as bitmap, needs to be redrawn
+				o->incRef();
+				o->hasChanged=true;
+				o->setNeedsTextureRecalculation();
+				addToInvalidateQueue(_MR(o));
+				return;
+			}
+			o = o->getParent();
+		}
+	}
 	if(!invalidateQueueHead)
 		invalidateQueueHead=invalidateQueueTail=d;
 	else
@@ -1065,25 +1284,91 @@ void SystemState::addToInvalidateQueue(_R<DisplayObject> d)
 
 void SystemState::flushInvalidationQueue()
 {
-	SpinlockLocker l(invalidateQueueLock);
+	if (isShuttingDown())
+		return;
+	Locker l(invalidateQueueLock);
 	_NR<DisplayObject> cur=invalidateQueueHead;
 	while(!cur.isNull())
 	{
-		if(cur->isOnStage() && cur->hasChanged)
+		if((cur->isOnStage() || cur->isMask()) && cur->hasChanged)
 		{
-			IDrawable* d=cur->invalidate(stage, MATRIX(),true);
+			_NR<DisplayObject> drawobj=cur;
+			_NR<DisplayObject> cachedBitmap;
+			float scalex, scaley;
+			int offx, offy;
+			stageCoordinateMapping(renderThread->windowWidth, renderThread->windowHeight, offx, offy, scalex, scaley);
+			IDrawable* d=cur->invalidate(stage, MATRIX(scalex, scaley), true, nullptr, &cachedBitmap);
 			//Check if the drawable is valid and forge a new job to
 			//render it and upload it to GPU
 			if(d)
-				addJob(new AsyncDrawJob(d,cur));
+			{
+				if (cachedBitmap)
+					drawobj = cachedBitmap;
+				if (drawobj->getNeedsTextureRecalculation() || !d->isCachedSurfaceUsable(drawobj.getPtr()))
+				{
+					drawjobLock.lock();
+					AsyncDrawJob* j = new AsyncDrawJob(d,drawobj);
+					if (!drawobj->getTextureRecalculationSkippable())
+					{
+						for (auto it = drawJobsPending.begin(); it != drawJobsPending.end(); it++)
+						{
+							if ((*it)->getOwner() == drawobj.getPtr())
+							{
+								// older drawjob currently running for this DisplayObject, abort it
+								(*it)->threadAborting=true;
+								drawJobsPending.erase(it);
+								break;
+							}
+						}
+						for (auto it = drawJobsNew.begin(); it != drawJobsNew.end(); it++)
+						{
+							if ((*it)->getOwner() == drawobj.getPtr())
+							{
+								// older drawjob currently running for this DisplayObject, abort it
+								(*it)->threadAborting=true;
+								drawJobsNew.erase(it);
+								break;
+							}
+						}
+						drawJobsNew.insert(j);
+					}
+					addJob(j);
+					drawjobLock.unlock();
+				}
+				else
+					renderThread->addRefreshableSurface(d,drawobj);
+				if (getRenderThread()->isStarted())
+					drawobj->resetNeedsTextureRecalculation();
+			}
+			drawobj->hasChanged=false;
 		}
 		_NR<DisplayObject> next=cur->invalidateQueueNext;
 		cur->invalidateQueueNext=NullRef;
 		cur=next;
 	}
+	renderThread->signalSurfaceRefresh();
 	invalidateQueueHead=NullRef;
 	invalidateQueueTail=NullRef;
 }
+void SystemState::AsyncDrawJobCompleted(AsyncDrawJob *j)
+{
+	drawjobLock.lock();
+	drawJobsNew.erase(j);
+	drawJobsPending.erase(j);
+	if (getRenderThread())
+		getRenderThread()->canrender = drawJobsPending.empty();
+	drawjobLock.unlock();
+}
+void SystemState::swapAsyncDrawJobQueue()
+{
+	drawjobLock.lock();
+	drawJobsPending.insert(drawJobsNew.begin(),drawJobsNew.end());
+	drawJobsNew.clear();
+	if (getRenderThread())
+		getRenderThread()->canrender = drawJobsPending.empty();
+	drawjobLock.unlock();
+}
+
 
 #ifdef PROFILING_SUPPORT
 void SystemState::setProfilingOutput(const tiny_string& t)
@@ -1136,8 +1421,8 @@ void ThreadProfile::plot(uint32_t maxTime, cairo_t *cr)
 
 	Locker locker(mutex);
 	RECT size=getSys()->mainClip->getFrameSize();
-	int width=size.Xmax/20;
-	int height=size.Ymax/20;
+	int width=(size.Xmax-size.Xmin)/20;
+	int height=(size.Ymax-size.Ymin)/20;
 	
 	float *vertex_coords = new float[data.size()*2];
 	float *color_coords = new float[data.size()*4];
@@ -1155,7 +1440,10 @@ void ThreadProfile::plot(uint32_t maxTime, cairo_t *cr)
 		color_coords[i*4+2] = color.Blue;
 		color_coords[i*4+3] = 1;
 	}
-	assert_and_throw(engineData);
+	if (!engineData)
+		engineData = getSys()->getEngineData();
+	if (!engineData)
+		return;
 	engineData->exec_glVertexAttribPointer(VERTEX_ATTRIB, 0, vertex_coords,FLOAT_2);
 	engineData->exec_glVertexAttribPointer(COLOR_ATTRIB, 0, color_coords,FLOAT_4);
 	engineData->exec_glEnableVertexAttribArray(VERTEX_ATTRIB);
@@ -1167,7 +1455,7 @@ void ThreadProfile::plot(uint32_t maxTime, cairo_t *cr)
 	cairo_set_source_rgb(cr, float(color.Red)/255.0, float(color.Green)/255.0, float(color.Blue)/255.0);
 
 	//Draw tags
-	string* curTag=NULL;
+	string* curTag=nullptr;
 	int curTagX=0;
 	int curTagY=maxTime;
 	int curTagLen=0;
@@ -1197,7 +1485,7 @@ void ThreadProfile::plot(uint32_t maxTime, cairo_t *cr)
 			{
 				//Tag is before this sample
 				getRenderThread()->renderText(cr, curTag->c_str(), curTagX, imax(curTagY-curTagH,0));
-				curTag=NULL;
+				curTag=nullptr;
 			}
 		}
 	}
@@ -1205,7 +1493,7 @@ void ThreadProfile::plot(uint32_t maxTime, cairo_t *cr)
 
 ParseThread::ParseThread(istream& in, _R<ApplicationDomain> appDomain, _R<SecurityDomain> secDomain, Loader *_loader, tiny_string srcurl)
   : version(0),applicationDomain(appDomain),securityDomain(secDomain),
-    f(in),uncompressingFilter(NULL),backend(NULL),loader(_loader),
+    f(in),uncompressingFilter(nullptr),backend(nullptr),bytearraybuf(nullptr),loader(_loader),
     parsedObject(NullRef),url(srcurl),fileType(FT_UNKNOWN)
 {
 	f.exceptions ( istream::eofbit | istream::failbit | istream::badbit );
@@ -1213,11 +1501,16 @@ ParseThread::ParseThread(istream& in, _R<ApplicationDomain> appDomain, _R<Securi
 
 ParseThread::ParseThread(std::istream& in, RootMovieClip *root)
   : version(0),applicationDomain(NullRef),securityDomain(NullRef), //The domains are not needed since the system state create them itself
-    f(in),uncompressingFilter(NULL),backend(NULL),loader(NULL),
+    f(in),uncompressingFilter(nullptr),backend(nullptr),bytearraybuf(nullptr),loader(nullptr),
     parsedObject(NullRef),url(),fileType(FT_UNKNOWN)
 {
 	f.exceptions ( istream::eofbit | istream::failbit | istream::badbit );
 	setRootMovie(root);
+	if (root)
+	{
+		root->parsethread=this;
+		bytearraybuf= f.rdbuf();
+	}
 }
 
 ParseThread::~ParseThread()
@@ -1262,7 +1555,7 @@ void ParseThread::parseSWFHeader(RootMovieClip *root, UI8 ver)
 	//Enable decompression if needed
 	if(fileType==FT_SWF)
 	{
-		LOG(LOG_INFO, _("Uncompressed SWF file: Version ") << (int)version);
+		LOG(LOG_INFO, "Uncompressed SWF file: Version " << (int)version);
 		root->loaderInfo->setBytesTotal(FileLength);
 	}
 	else
@@ -1271,12 +1564,12 @@ void ParseThread::parseSWFHeader(RootMovieClip *root, UI8 ver)
 		backend=f.rdbuf();
 		if(fileType==FT_COMPRESSED_SWF)
 		{
-			LOG(LOG_INFO, _("zlib compressed SWF file: Version ") << (int)version);
+			LOG(LOG_INFO, "zlib compressed SWF file: Version " << (int)version);
 			uncompressingFilter = new zlib_filter(backend);
 		}
 		else if(fileType==FT_LZMA_COMPRESSED_SWF)
 		{
-			LOG(LOG_INFO, _("lzma compressed SWF file: Version ") << (int)version);
+			LOG(LOG_INFO, "lzma compressed SWF file: Version " << (int)version);
 			uncompressingFilter = new liblzma_filter(backend);
 		}
 		else
@@ -1300,18 +1593,16 @@ void ParseThread::parseSWFHeader(RootMovieClip *root, UI8 ver)
 		frameRate = 30;
 	else
 		frameRate/=256;
-	LOG(LOG_INFO,_("FrameRate ") << frameRate);
+	LOG(LOG_INFO,"FrameRate " << frameRate);
 	root->setFrameRate(frameRate);
 	root->loaderInfo->setFrameRate(frameRate);
-	//TODO: setting render rate should be done when the clip is added to the displaylist
-	getSys()->setRenderRate(frameRate);
 	root->setFrameSize(FrameSize);
 	root->totalFrames_unreliable = FrameCount;
 }
 
 void ParseThread::execute()
 {
-	tls_set(&parse_thread_tls,this);
+	tls_set(parse_thread_tls,this);
 	try
 	{
 		UI8 Signature[4];
@@ -1332,44 +1623,46 @@ void ParseThread::execute()
 	}
 	catch(ParseException& e)
 	{
-		SpinlockLocker l(objectSpinlock);
+		Locker l(objectSpinlock);
 		parsedObject = NullRef;
 		// Set system error only for main SWF. Loader classes
 		// handle error for loaded SWFs.
 		if(!loader)
 		{
-			LOG(LOG_ERROR,_("Exception in ParseThread ") << e.cause);
+			LOG(LOG_ERROR,"Exception in ParseThread " << e.cause);
 			getSys()->setError(e.cause, SystemState::ERROR_PARSING);
 		}
 	}
 	catch(LightsparkException& e)
 	{
-		LOG(LOG_ERROR,_("Exception in ParseThread ") << e.cause);
+		LOG(LOG_ERROR,"Exception in ParseThread " << e.cause);
 		getSys()->setError(e.cause, SystemState::ERROR_PARSING);
 	}
 	catch(std::exception& e)
 	{
-		LOG(LOG_ERROR,_("Stream exception in ParseThread ") << e.what());
+		LOG(LOG_ERROR,"Stream exception in ParseThread " << e.what());
 	}
 }
-
 void ParseThread::parseSWF(UI8 ver)
 {
 	if (loader && !loader->allowLoadingSWF())
 	{
-		_NR<LoaderInfo> li=loader->getContentLoaderInfo();
-		li->incRef();
-		getVm(loader->getSystemState())->addEvent(li,_MR(Class<SecurityErrorEvent>::getInstanceS(loader->getSystemState(),
+		_R<LoaderInfo> li=loader->getContentLoaderInfo();
+		getVm(loader->getSystemState())->addEvent(li,_MR(Class<SecurityErrorEvent>::getInstanceS(loader->getInstanceWorker(),
 			"Cannot import a SWF file when LoaderContext.allowCodeImport is false."))); // 3226
 		return;
 	}
 
 	objectSpinlock.lock();
-	RootMovieClip* root=NULL;
+	RootMovieClip* root=nullptr;
 	if(parsedObject.isNull())
 	{
-		_NR<LoaderInfo> li=loader->getContentLoaderInfo();
-		root=RootMovieClip::getInstance(li, applicationDomain, securityDomain);
+		_R<LoaderInfo> li=loader->getContentLoaderInfo();
+		root=RootMovieClip::getInstance(applicationDomain->getInstanceWorker(),li, applicationDomain, securityDomain);
+		if (!applicationDomain->getInstanceWorker()->isPrimordial)
+		{
+			applicationDomain->getInstanceWorker()->rootClip = _MR(root);
+		}
 		parsedObject=_MNR(root);
 		li->setWaitedObject(parsedObject);
 		if(!url.empty())
@@ -1382,55 +1675,76 @@ void ParseThread::parseSWF(UI8 ver)
 	}
 	objectSpinlock.unlock();
 
+	TAGTYPE lasttagtype = TAG;
 	std::queue<const ControlTag*> queuedTags;
 	try
 	{
 		parseSWFHeader(root, ver);
 		if (loader)
 		{
-			_NR<LoaderInfo> li=loader->getContentLoaderInfo();
+			_R<LoaderInfo> li=loader->getContentLoaderInfo();
 			li->swfVersion = root->version;
 		}
+		
+		int usegnash = 0;
+		char *envvar = getenv("LIGHTSPARK_USE_GNASH");
+		if (envvar)
+			usegnash= atoi(envvar);
 		if(root->version < 9)
 		{
-			LOG(LOG_INFO,"SWF version " << root->version << " is not handled by lightspark, falling back to gnash (if available)");
-			//Enable flash fallback
-			root->getSystemState()->needsAVM2(false);
-			return; /* no more parsing necessary, handled by fallback */
+			if (usegnash)
+			{
+				LOG(LOG_INFO,"SWF version " << root->version << " is not handled by lightspark, falling back to gnash (if available)");
+				//Enable flash fallback
+				root->getSystemState()->needsAVM2(false);
+				return; /* no more parsing necessary, handled by fallback */
+			}
 		}
 
 		TagFactory factory(f);
 		Tag* tag=factory.readTag(root);
 
-		FileAttributesTag* fat = dynamic_cast<FileAttributesTag*>(tag);
-		if(!fat)
+		if (root->version >= 8)
 		{
-			LOG(LOG_ERROR,"Invalid SWF - First tag must be a FileAttributesTag!");
-			return;
+			FileAttributesTag* fat = dynamic_cast<FileAttributesTag*>(tag);
+			if(!fat)
+			{
+				LOG(LOG_ERROR,"Invalid SWF - First tag must be a FileAttributesTag!");
+				//Official implementation is not strict in this regard. Let's continue and hope for the best.
+			}
+			//Check if this clip is the main clip then honour its FileAttributesTag
+			root->usesActionScript3 = fat ? fat->ActionScript3 : root->version>9;
+			if(root == root->getSystemState()->mainClip)
+			{
+				root->getSystemState()->needsAVM2(!usegnash || root->usesActionScript3);
+				if (!usegnash || root->usesActionScript3)
+					parseExtensions(root);
+				
+				if(usegnash && fat && !fat->ActionScript3)
+				{
+					delete fat;
+					return; /* no more parsing necessary, handled by fallback */
+				}
+				if(fat && fat->UseNetwork
+						&& root->getSystemState()->securityManager->getSandboxType() == SecurityManager::LOCAL_WITH_FILE)
+				{
+					root->getSystemState()->securityManager->setSandboxType(SecurityManager::LOCAL_WITH_NETWORK);
+					LOG(LOG_INFO, "Switched to local-with-networking sandbox by FileAttributesTag");
+				}
+			}
 		}
-		//Check if this clip is the main clip then honour its FileAttributesTag
-		if(root == root->getSystemState()->mainClip)
+		else if(root == root->getSystemState()->mainClip)
 		{
-			root->getSystemState()->needsAVM2(fat->ActionScript3);
-			if(!fat->ActionScript3)
-			{
-				delete fat;
-				return; /* no more parsing necessary, handled by fallback */
-			}
-			if(fat->UseNetwork
-					&& root->getSystemState()->securityManager->getSandboxType() == SecurityManager::LOCAL_WITH_FILE)
-			{
-				root->getSystemState()->securityManager->setSandboxType(SecurityManager::LOCAL_WITH_NETWORK);
-				LOG(LOG_INFO, _("Switched to local-with-networking sandbox by FileAttributesTag"));
-			}
+			root->getSystemState()->needsAVM2(true);
+			parseExtensions(root);
 		}
-		delete fat;
+		root->setupAVM1RootMovie();
 
 		bool done=false;
 		bool empty=true;
 		while(!done)
 		{
-			tag=factory.readTag(root);
+			lasttagtype = tag->getType();
 			switch(tag->getType())
 			{
 				case END_TAG:
@@ -1449,6 +1763,7 @@ void ParseThread::parseSWF(UI8 ver)
 						root->commitFrame(false);
 					else
 						root->revertFrame();
+
 					RELEASE_WRITE(root->finishedLoading,true);
 					done=true;
 					root->check();
@@ -1462,10 +1777,20 @@ void ParseThread::parseSWF(UI8 ver)
 					break;
 				}
 				case DISPLAY_LIST_TAG:
+				{
 					root->addToFrame(static_cast<DisplayListTag*>(tag));
 					empty=false;
 					break;
+				}
+				case AVM1ACTION_TAG:
+				{
+					if (!(static_cast<AVM1ActionTag*>(tag)->empty()))
+						root->addToFrame(static_cast<AVM1ActionTag*>(tag));
+					empty=false;
+					break;
+				}
 				case SHOW_TAG:
+				{
 					// The whole frame has been parsed, now execute all queued SymbolClass tags,
 					// in the order in which they appeared in the file.
 					while(!queuedTags.empty())
@@ -1480,8 +1805,16 @@ void ParseThread::parseSWF(UI8 ver)
 					empty=true;
 					delete tag;
 					break;
+				}
 				case SYMBOL_CLASS_TAG:
+				{
+					root->hasSymbolClass = true;
+				}
+				// fall through
+				case ABC_TAG:
 				case ACTION_TAG:
+				case AVM1INITACTION_TAG:
+				case DEFINESCALINGGRID_TAG:
 				{
 					// Add symbol class tags or action to the queue, to be executed when the rest of the 
 					// frame has been parsed. This is to handle invalid SWF files that define ID's
@@ -1491,7 +1824,9 @@ void ParseThread::parseSWF(UI8 ver)
 					queuedTags.push(stag);
 					break;
 				}
+				case BACKGROUNDCOLOR_TAG:
 				case CONTROL_TAG:
+				{
 					/* The spec is not clear about that,
 					 * but it seems that all the CONTROL_TAGs
 					 * (=not one of the other tag types here)
@@ -1505,15 +1840,13 @@ void ParseThread::parseSWF(UI8 ver)
 						delete tag;
 						break;
 					}
-					//fall through
-				case ABC_TAG:
-				{
 					const ControlTag* ctag = static_cast<const ControlTag*>(tag);
 					ctag->execute(root);
 					delete tag;
 					break;
 				}
 				case FRAMELABEL_TAG:
+				{
 					/* No locking required, as the last frames is not
 					 * commited to the vm yet.
 					 */
@@ -1521,51 +1854,197 @@ void ParseThread::parseSWF(UI8 ver)
 					empty=false;
 					delete tag;
 					break;
+				}
+				case BUTTONSOUND_TAG:
+				{
+					if (!static_cast<DefineButtonSoundTag*>(tag)->button)
+						delete tag;
+					break;
+				}
+				case ENABLEDEBUGGER_TAG:
+				case METADATA_TAG:
+				case FILEATTRIBUTES_TAG:
+					delete tag;
+					break;
 				case TAG:
+				{
 					//Not yet implemented tag, ignore it
 					delete tag;
 					break;
-			}
+				}
+			}// end switch
 			if(root->getSystemState()->shouldTerminate() || threadAborting)
 				break;
-		}
+
+			if (!done)
+				tag=factory.readTag(root);
+		}// end while
 	}
 	catch(std::exception& e)
 	{
 		root->parsingFailed();
 		throw;
 	}
-	if (root->loaderInfo->getBytesLoaded() != root->loaderInfo->getBytesTotal())
+	if (lasttagtype != END_TAG || root->loaderInfo->getBytesLoaded() != root->loaderInfo->getBytesTotal())
 	{
 		LOG(LOG_NOT_IMPLEMENTED,"End of parsing, bytesLoaded != bytesTotal:"<< root->loaderInfo->getBytesLoaded()<<"/"<<root->loaderInfo->getBytesTotal());
+
+		// On compressed swf files bytesLoaded and bytesTotal do not always match (besides being loaded properly, I don't know why...)
+		// We just set bytesLoaded "manually" to ensure the "complete" event is dispatched
+		root->loaderInfo->setBytesLoaded(root->loaderInfo->getBytesTotal());
 	}
-	LOG(LOG_TRACE,_("End of parsing"));
+	root->markSoundFinished();
+	LOG(LOG_TRACE,"End of parsing");
+}
+
+void ParseThread::parseExtensions(RootMovieClip* root)
+{
+	for (auto it = extensions.begin(); it != extensions.end(); it++)
+	{
+		LOG(LOG_INFO,"loading extension:"<<(*it));
+		lsfilereader r((*it).raw_buf());
+		istream fext(&r);
+		UI8 Signature[4];
+		fext >> Signature[0] >> Signature[1] >> Signature[2] >> Signature[3];
+		FILE_TYPE extfileType=recognizeFile(Signature[0],Signature[1],Signature[2],Signature[3]);
+		if(extfileType==FT_SWF || extfileType==FT_COMPRESSED_SWF || extfileType==FT_LZMA_COMPRESSED_SWF)
+		{
+			uncompressing_filter* extuncompressingFilter=nullptr;
+			std::streambuf* extbackend=nullptr;
+			// read the SWF header of the extension, most values are ignored
+			UI32_SWF extFileLength;
+			RECT extFrameSize;
+			UI16_SWF extFrameRate;
+			UI16_SWF extFrameCount;
+			fext >> extFileLength;
+			//Enable decompression if needed
+			if(extfileType==FT_SWF)
+			{
+				LOG(LOG_INFO, "Uncompressed SWF extension: Version " << (int)Signature[3]);
+			}
+			else
+			{
+				//The file is compressed, create a filtering streambuf
+				extbackend=fext.rdbuf();
+				if(extfileType==FT_COMPRESSED_SWF)
+				{
+					LOG(LOG_INFO, "zlib compressed SWF extension: Version " << (int)Signature[3]);
+					extuncompressingFilter = new zlib_filter(extbackend);
+				}
+				else if(fileType==FT_LZMA_COMPRESSED_SWF)
+				{
+					LOG(LOG_INFO, "lzma compressed SWF extension: Version " << (int)Signature[3]);
+					extuncompressingFilter = new liblzma_filter(extbackend);
+				}
+				fext.rdbuf(extuncompressingFilter);
+			}
+			fext >> extFrameSize >> extFrameRate >> extFrameCount;
+
+			// parse the swf body
+			TagFactory extfactory(fext);
+			Tag* tag=extfactory.readTag(root);
+			bool done=false;
+			while(!done)
+			{
+				switch(tag->getType())
+				{
+					case SHOW_TAG:
+					case END_TAG:
+					{
+						done=true;
+						delete tag;
+						break;
+					}
+					case ABC_TAG:
+					{
+						const ControlTag* stag = static_cast<const ControlTag*>(tag);
+						stag->execute(root);
+						delete stag;
+						break;
+					}
+					case ENABLEDEBUGGER_TAG:
+					case BACKGROUNDCOLOR_TAG:
+					case METADATA_TAG:
+					case FILEATTRIBUTES_TAG:
+						delete tag;
+						break;
+					default:
+					{
+						LOG(LOG_NOT_IMPLEMENTED,"tag type in extension not handled:"<<(int)tag->getType());
+						delete tag;
+						break;
+					}
+				}
+				if(root->getSystemState()->shouldTerminate() || threadAborting)
+					break;
+				if (!done)
+					tag=extfactory.readTag(root);
+			}
+			if(extuncompressingFilter)
+			{
+				//Restore the istream
+				fext.rdbuf(extbackend);
+				delete extuncompressingFilter;
+			}
+			LOG(LOG_INFO,"loading extension done:"<<(*it));
+		}
+		else
+			LOG(LOG_ERROR,"extension is not a valid swf file:"<<(*it));
+	}
 }
 
 void ParseThread::parseBitmap()
 {
-	_NR<LoaderInfo> li;
-	li=loader->getContentLoaderInfo();
-
-	_NR<Bitmap> tmp=_MNR(Class<Bitmap>::getInstanceS(loader->getSystemState(),li, &f, fileType));
+	_R<LoaderInfo> li=loader->getContentLoaderInfo();
+	switch (fileType)
 	{
-		SpinlockLocker l(objectSpinlock);
-		parsedObject=tmp;
+		case FILE_TYPE::FT_PNG:
+			li->contentType = "image/png";
+			break;
+		case FILE_TYPE::FT_JPEG:
+			li->contentType = "image/jpeg";
+			break;
+		case FILE_TYPE::FT_GIF:
+			li->contentType = "image/gif";
+			break;
+		default:
+			break;
 	}
+	_NR<Bitmap> tmp;
+	if (loader->needsActionScript3())
+		tmp = _MNR(Class<Bitmap>::getInstanceS(loader->getInstanceWorker(),li, &f, fileType));
+	else
+		tmp = _MNR(Class<AVM1Bitmap>::getInstanceS(loader->getInstanceWorker(),li, &f, fileType));
+	{
+		Locker l(objectSpinlock);
+		parsedObject=tmp;
+		tmp->setNeedsTextureRecalculation();
+	}
+	if (li.getPtr())
+		li->setComplete();
 }
 
 _NR<DisplayObject> ParseThread::getParsedObject()
 {
-	SpinlockLocker l(objectSpinlock);
+	Locker l(objectSpinlock);
 	return parsedObject;
 }
 
 void ParseThread::setRootMovie(RootMovieClip *root)
 {
-	SpinlockLocker l(objectSpinlock);
+	Locker l(objectSpinlock);
 	assert(root);
 	root->incRef();
 	parsedObject=_MNR(root);
+}
+
+void ParseThread::getSWFByteArray(ByteArray* ba)
+{
+	istream f2(bytearraybuf);
+	f2.seekg(0,ios_base::end);
+	uint32_t len = f2.tellg();
+	f2.seekg(0);
+	f2.read((char*)ba->getBuffer(len,true),len);
 }
 
 RootMovieClip* ParseThread::getRootMovie() const
@@ -1575,29 +2054,30 @@ RootMovieClip* ParseThread::getRootMovie() const
 
 void ParseThread::threadAbort()
 {
-	SpinlockLocker l(objectSpinlock);
+	Locker l(objectSpinlock);
 	if(parsedObject.isNull())
 		return;
 	RootMovieClip* root=getRootMovie();
-	if(root==NULL)
+	if(root==nullptr)
 		return;
 	root->parsingFailed();
 }
 
-bool RootMovieClip::boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) const
+bool RootMovieClip::boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax)
 {
-	RECT f=getFrameSize();
-	xmin=0;
-	ymin=0;
-	xmax=f.Xmax/20;
-	ymax=f.Ymax/20;
-	return true;
+	// at least for hittest the bounds of the root are computed by the bounds of its contents
+	return MovieClip::boundsRect(xmin, xmax, ymin, ymax);
+//	RECT f=getFrameSize();
+//	xmin=f.Xmin/20;
+//	ymin=f.Ymin/20;
+//	xmax=f.Xmax/20;
+//	ymax=f.Ymax/20;
+//	return true;
 }
 
 void RootMovieClip::setFrameSize(const lightspark::RECT& f)
 {
 	frameSize=f;
-	assert_and_throw(f.Xmin==0 && f.Ymin==0);
 }
 
 lightspark::RECT RootMovieClip::getFrameSize() const
@@ -1607,7 +2087,12 @@ lightspark::RECT RootMovieClip::getFrameSize() const
 
 void RootMovieClip::setFrameRate(float f)
 {
-	frameRate=f;
+	if (frameRate != f)
+	{
+		frameRate=f;
+		if (this == getSystemState()->mainClip )
+			getSystemState()->setRenderRate(frameRate);
+	}
 }
 
 float RootMovieClip::getFrameRate() const
@@ -1621,23 +2106,60 @@ void RootMovieClip::commitFrame(bool another)
 
 	if(another)
 		frames.push_back(Frame());
+	checkSound(frames.size());
 
 	if(getFramesLoaded()==1 && frameRate!=0)
 	{
 		SystemState* sys = getSys();
-		if(this==sys->mainClip)
+		if(this==sys->mainClip || !hasMainClass)
 		{
 			/* now the frameRate is available and all SymbolClass tags have created their classes */
-			sys->addTick(1000/frameRate,sys);
-		}
-		else
-		{
-			this->incRef();
-			sys->currentVm->addEvent(NullRef, _MR(new (sys->unaccountedMemory) InitFrameEvent(_MNR(this))));
+			// in AS3 this is added to the stage after the construction of the main object is completed (if a main object exists)
+			if (!usesActionScript3 || !hasMainClass)
+			{
+				while (!getVm(sys)->hasEverStarted()) // ensure that all builtin classes are defined
+					compat_msleep(10);
+				constructionComplete();
+				afterConstruction();
+			}
 		}
 	}
 }
 
+void RootMovieClip::constructionComplete()
+{
+	if(isConstructed())
+		return;
+	if (!isVmThread() && !getInstanceWorker()->isPrimordial)
+	{
+		this->incRef();
+		getVm(getSystemState())->prependEvent(NullRef,_MR(new (getSystemState()->unaccountedMemory) RootConstructedEvent(_MR(this))));
+		return;
+	}
+	getSystemState()->stage->AVM1AddDisplayObject(this);
+	if (this!=getSystemState()->mainClip)
+	{
+		MovieClip::constructionComplete();
+		return;
+	}
+	MovieClip::constructionComplete();
+	
+	incRef();
+	getSystemState()->stage->_addChildAt(this,0);
+	this->setOnStage(true,true);
+	if (!needsActionScript3())
+	{
+		getSystemState()->stage->advanceFrame(true);
+		initFrame();
+	}
+	if (!loaderInfo.isNull())
+		loaderInfo->setComplete();
+	getSystemState()->addTick(1000/frameRate,getSystemState());
+}
+void RootMovieClip::afterConstruction()
+{
+	DisplayObject::afterConstruction();
+}
 void RootMovieClip::revertFrame()
 {
 	//TODO: The next should be a regular assert
@@ -1658,32 +2180,71 @@ void RootMovieClip::setBackground(const RGB& bg)
 /* called in parser's thread context */
 void RootMovieClip::addToDictionary(DictionaryTag* r)
 {
-	SpinlockLocker l(dictSpinlock);
-	dictionary.push_back(r);
+	Locker l(dictSpinlock);
+	dictionary[r->getId()] = r;
 }
 
 /* called in vm's thread context */
 DictionaryTag* RootMovieClip::dictionaryLookup(int id)
 {
-	SpinlockLocker l(dictSpinlock);
+	Locker l(dictSpinlock);
+	auto it = dictionary.find(id);
+	if(it==dictionary.end())
+	{
+		LOG(LOG_ERROR,"No such Id on dictionary " << id << " for " << origin);
+		//throw RunTimeException("Could not find an object on the dictionary");
+		return nullptr;
+	}
+	return it->second;
+}
+DictionaryTag* RootMovieClip::dictionaryLookupByName(uint32_t nameID)
+{
+	Locker l(dictSpinlock);
 	auto it = dictionary.begin();
 	for(;it!=dictionary.end();++it)
 	{
-		if((*it)->getId()==id)
+		if(it->second->nameID==nameID)
 			break;
 	}
 	if(it==dictionary.end())
 	{
-		LOG(LOG_ERROR,_("No such Id on dictionary ") << id << " for " << origin);
-		throw RunTimeException("Could not find an object on the dictionary");
+		LOG(LOG_ERROR,"No such name on dictionary " << getSystemState()->getStringFromUniqueId(nameID) << " for " << origin);
+		return nullptr;
 	}
-	return *it;
+	return it->second;
+}
+
+void RootMovieClip::addToScalingGrids(const DefineScalingGridTag* r)
+{
+	Locker l(scalinggridsmutex);
+	scalinggrids[r->CharacterId] = r->Splitter;
+}
+
+lightspark::RECT* RootMovieClip::ScalingGridsLookup(int id)
+{
+	Locker l(scalinggridsmutex);
+	auto it = scalinggrids.find(id);
+	if(it==scalinggrids.end())
+		return nullptr;
+	return &(*it).second;
+}
+
+void RootMovieClip::resizeCompleted()
+{
+	for(auto it=dictionary.begin();it!=dictionary.end();++it)
+		it->second->resizeCompleted();
 }
 
 _NR<RootMovieClip> RootMovieClip::getRoot()
 {
 	this->incRef();
 	return _MR(this);
+}
+
+_NR<Stage> RootMovieClip::getStage()
+{
+	getSystemState()->stage->incRef();
+	return _MR(getSystemState()->stage);
 }
 
 /*ASObject* RootMovieClip::getVariableByQName(const tiny_string& name, const tiny_string& ns, ASObject*& owner)
@@ -1748,32 +2309,34 @@ void SystemState::tick()
 {
 	if (showProfilingData)
 	{
-		SpinlockLocker l(profileDataSpinlock);
+		Locker l(profileDataSpinlock);
 		list<ThreadProfile*>::iterator it=profilingData.begin();
 		for(;it!=profilingData.end();++it)
 			(*it)->tick();
 	}
-	if(currentVm==NULL)
+	if(currentVm==nullptr)
 		return;
 	/* See http://www.senocular.com/flash/tutorials/orderofoperations/
 	 * for the description of steps.
 	 */
-	/* TODO: Step 1: declare new objects */
+
+	currentVm->setIdle(false);
+	if (firsttick)
+	{
+		// the first AdvanceFrame is done during the construction of the RootMovieClip,
+		// so we skip it here
+		firsttick = false;
+	}
+	else
+	{
+		/* Step 0: Set current frame number to the next frame 
+		 * Step 1: declare new objects */
+		_R<AdvanceFrameEvent> advFrame = _MR(new (unaccountedMemory) AdvanceFrameEvent());
+		currentVm->addEvent(NullRef, advFrame);
+	}
 
 	/* Step 2: Send enterFrame events, if needed */
-	{
-		Locker l(mutexFrameListeners);
-		if(!frameListeners.empty())
-		{
-			_R<Event> e(Class<Event>::getInstanceS(this,"enterFrame"));
-			auto it=frameListeners.begin();
-			for(;it!=frameListeners.end();it++)
-			{
-				(*it)->incRef();
-				getVm(this)->addEvent(*it,e);
-			}
-		}
-	}
+	addBroadcastEvent("enterFrame");
 
 	/* Step 3: create legacy objects, which are new in this frame (top-down),
 	 * run their constructors (bottom-up) */
@@ -1781,43 +2344,25 @@ void SystemState::tick()
 	currentVm->addEvent(NullRef, _MR(new (unaccountedMemory) InitFrameEvent(_MR(stage))));
 
 	/* Step 4: dispatch frameConstructed events */
-	{
-		Locker l(mutexFrameListeners);
-		if(!frameListeners.empty())
-		{
-			_R<Event> e(Class<Event>::getInstanceS(this,"frameConstructed"));
-			auto it=frameListeners.begin();
-			for(;it!=frameListeners.end();it++)
-			{
-				(*it)->incRef();
-				getVm(this)->addEvent(*it,e);
-			}
-		}
-	}
+	addBroadcastEvent("frameConstructed");
+
 	/* Step 5: run all frameScripts (bottom-up) */
 	stage->incRef();
 	currentVm->addEvent(NullRef, _MR(new (unaccountedMemory) ExecuteFrameScriptEvent(_MR(stage))));
 
 	/* Step 6: dispatch exitFrame event */
+	addBroadcastEvent("exitFrame");
+	/* Step 7: dispatch render event (Assuming stage.invalidate() has been called) */
+	if (stage->invalidated)
 	{
-		Locker l(mutexFrameListeners);
-		if(!frameListeners.empty())
-		{
-			_R<Event> e(Class<Event>::getInstanceS(this,"exitFrame"));
-			auto it=frameListeners.begin();
-			for(;it!=frameListeners.end();it++)
-			{
-				(*it)->incRef();
-				getVm(this)->addEvent(*it,e);
-			}
-		}
+		RELEASE_WRITE(stage->invalidated,false);
+		addBroadcastEvent("render");
 	}
-	/* TODO: Step 7: dispatch render event (Assuming stage.invalidate() has been called) */
 
-	/* Step 0: Set current frame number to the next frame */
-	_R<AdvanceFrameEvent> advFrame = _MR(new (unaccountedMemory) AdvanceFrameEvent());
-	if(currentVm->addEvent(NullRef, advFrame))
-		advFrame->wait();
+	/* Step 9: we are idle now, so we can handle all input events */
+	_R<IdleEvent> idle = _MR(new (unaccountedMemory) IdleEvent());
+	if (currentVm->addEvent(NullRef, idle))
+		idle->wait();
 }
 
 void SystemState::tickFence()
@@ -1826,31 +2371,37 @@ void SystemState::tickFence()
 
 void SystemState::resizeCompleted()
 {
+	mainClip->resizeCompleted();
+	stage->hasChanged=true;
+	stage->requestInvalidation(this,true);
+	
 	if(currentVm && scaleMode==NO_SCALE)
 	{
 		stage->incRef();
-		currentVm->addEvent(_MR(stage),_MR(Class<Event>::getInstanceS(this,"resize",false)));
+		currentVm->addEvent(_MR(stage),_MR(Class<Event>::getInstanceS(this->worker,"resize",false)));
 		
 		stage->incRef();
-		currentVm->addEvent(_MR(stage),_MR(Class<StageVideoAvailabilityEvent>::getInstanceS(this)));
+		currentVm->addEvent(_MR(stage),_MR(Class<StageVideoAvailabilityEvent>::getInstanceS(this->worker)));
 	}
 }
 
 const tiny_string& SystemState::getStringFromUniqueId(uint32_t id) const
 {
 	Locker l(poolMutex);
-	auto it=uniqueStringMap.right.find(id);
-	assert(it!=uniqueStringMap.right.end());
-	return it->second;
+	assert(uniqueStringIDMap.size() > id);
+	return uniqueStringIDMap[id];
 }
 
 uint32_t SystemState::getUniqueStringId(const tiny_string& s)
 {
 	Locker l(poolMutex);
-	auto it=uniqueStringMap.left.find(s);
-	if(it==uniqueStringMap.left.end())
+	auto it=uniqueStringMap.find(s);
+	if(it==uniqueStringMap.end())
 	{
-		auto ret=uniqueStringMap.left.insert(make_pair(s,lastUsedStringId));
+		tiny_string s2;
+		s2 += s; // ensure that a deep copy of the string is stored in the map, as s might be type READONLY/DYNAMIC and be deleted later
+		auto ret=uniqueStringMap.insert(make_pair(s2,lastUsedStringId));
+		uniqueStringIDMap.push_back(s2);
 		assert(ret.second);
 		it=ret.first;
 		lastUsedStringId++;
@@ -1861,8 +2412,8 @@ uint32_t SystemState::getUniqueStringId(const tiny_string& s)
 const nsNameAndKindImpl& SystemState::getNamespaceFromUniqueId(uint32_t id) const
 {
 	Locker l(poolMutex);
-	auto it=uniqueNamespaceMap.right.find(id);
-	assert(it!=uniqueNamespaceMap.right.end());
+	auto it=uniqueNamespaceIDMap.find(id);
+	assert(it!=uniqueNamespaceIDMap.end());
 	return it->second;
 }
 
@@ -1874,13 +2425,14 @@ void SystemState::getUniqueNamespaceId(const nsNameAndKindImpl& s, uint32_t& nsI
 void SystemState::getUniqueNamespaceId(const nsNameAndKindImpl& s, uint32_t hintedId, uint32_t& nsId, uint32_t& baseId)
 {
 	Locker l(poolMutex);
-	auto it=uniqueNamespaceMap.left.find(s);
-	if(it==uniqueNamespaceMap.left.end())
+	auto it=uniqueNamespaceImplMap.find(s);
+	if(it==uniqueNamespaceImplMap.end())
 	{
 		if (hintedId == 0xffffffff)
 			hintedId=ATOMIC_DECREMENT(lastUsedNamespaceId);
 
-		auto ret=uniqueNamespaceMap.left.insert(make_pair(s,hintedId));
+		auto ret=uniqueNamespaceImplMap.insert(make_pair(s,hintedId));
+		uniqueNamespaceIDMap.insert(make_pair(hintedId,s));
 		assert(ret.second);
 		it=ret.first;
 	}
@@ -1895,6 +2447,8 @@ void SystemState::stageCoordinateMapping(uint32_t windowWidth, uint32_t windowHe
 {
 	//Get the size of the content
 	RECT r=mainClip->getFrameSize();
+	r.Xmin/=20;
+	r.Ymin/=20;
 	r.Xmax/=20;
 	r.Ymax/=20;
 	//Now compute the scalings and offsets
@@ -1903,65 +2457,65 @@ void SystemState::stageCoordinateMapping(uint32_t windowWidth, uint32_t windowHe
 		case SystemState::SHOW_ALL:
 			//Compute both scaling
 			scaleX=windowWidth;
-			scaleX/=r.Xmax;
+			scaleX/=(r.Xmax-r.Xmin);
 			scaleY=windowHeight;
-			scaleY/=r.Ymax;
+			scaleY/=(r.Ymax-r.Ymin);
 			//Enlarge with no distortion
 			if(scaleX<scaleY)
 			{
 				//Uniform scaling for Y
 				scaleY=scaleX;
 				//Apply the offset
-				offsetY=(windowHeight-r.Ymax*scaleY)/2;
-				offsetX=0;
+				offsetY=-r.Ymin+(windowHeight-(r.Ymax-r.Ymin)*scaleY)/2;
+				offsetX=-r.Xmin;
 			}
 			else
 			{
 				//Uniform scaling for X
 				scaleX=scaleY;
 				//Apply the offset
-				offsetX=(windowWidth-r.Xmax*scaleX)/2;
-				offsetY=0;
+				offsetX=-r.Xmin+(windowWidth-(r.Xmax-r.Xmin)*scaleX)/2;
+				offsetY=-r.Ymin;
 			}
 			break;
 		case SystemState::NO_BORDER:
 			//Compute both scaling
 			scaleX=windowWidth;
-			scaleX/=r.Xmax;
+			scaleX/=(r.Xmax-r.Xmin);
 			scaleY=windowHeight;
-			scaleY/=r.Ymax;
+			scaleY/=(r.Ymax-r.Ymin);
 			//Enlarge with no distortion
 			if(scaleX>scaleY)
 			{
 				//Uniform scaling for Y
 				scaleY=scaleX;
 				//Apply the offset
-				offsetY=(windowHeight-r.Ymax*scaleY)/2;
-				offsetX=0;
+				offsetY=-r.Ymin+(windowHeight-(r.Ymax-r.Ymin)*scaleY)/2;
+				offsetX=-r.Xmin;
 			}
 			else
 			{
 				//Uniform scaling for X
 				scaleX=scaleY;
 				//Apply the offset
-				offsetX=(windowWidth-r.Xmax*scaleX)/2;
-				offsetY=0;
+				offsetX=-r.Xmin+(windowWidth-(r.Xmax-r.Xmin)*scaleX)/2;
+				offsetY=-r.Ymin;
 			}
 			break;
 		case SystemState::EXACT_FIT:
 			//Compute both scaling
 			scaleX=windowWidth;
-			scaleX/=r.Xmax;
+			scaleX/=(r.Xmax-r.Xmin);
 			scaleY=windowHeight;
-			scaleY/=r.Ymax;
-			offsetX=0;
-			offsetY=0;
+			scaleY/=(r.Ymax-r.Ymin);
+			offsetX=-r.Xmin;
+			offsetY=-r.Ymin;
 			break;
 		case SystemState::NO_SCALE:
 			scaleX=1;
 			scaleY=1;
-			offsetX=0;
-			offsetY=0;
+			offsetX=-r.Xmin;
+			offsetY=-r.Ymin;
 			break;
 	}
 }
@@ -1990,6 +2544,13 @@ void SystemState::showMouseCursor(bool visible)
 		engineData->runInMainThread(this,&EngineData::showMouseCursor);
 	else
 		engineData->runInMainThread(this,&EngineData::hideMouseCursor);
+}
+void SystemState::setMouseHandCursor(bool sethand)
+{
+	if (sethand)
+		engineData->runInMainThread(this,&EngineData::setMouseHandCursor);
+	else
+		engineData->runInMainThread(this,&EngineData::resetMouseHandCursor);
 }
 
 void SystemState::waitRendering()
@@ -2021,24 +2582,40 @@ void SystemState::sendMainSignal()
 	mainsignalCond.broadcast();
 }
 
-void SystemState::dumpStacktrace()
+void SystemState::waitInitialized()
 {
-	tiny_string stacktrace;
-	for (auto it = getVm(this)->stacktrace.rbegin(); it != getVm(this)->stacktrace.rend(); it++)
+	if (isinitialized)
+		return;
 	{
-		stacktrace += "    at ";
-		stacktrace += (*it).second.toObject(this)->getClassName();
-		stacktrace += "/";
-		stacktrace += this->getStringFromUniqueId((*it).first);
-		stacktrace += "()\n";
+		Locker l(initializedMutex);
+		initializedCond.wait(initializedMutex);
 	}
-	LOG(LOG_INFO,"current stacktrace:\n" << stacktrace);
 }
 
+void SystemState::getClassInstanceByName(ASWorker* wrk,asAtom& ret, const tiny_string &clsname)
+{
+	Class_base* c= nullptr;
+	auto it = classnamemap.find(clsname);
+	if (it == classnamemap.end())
+	{
+		asAtom cls = asAtomHandler::invalidAtom;
+		asAtom tmp = asAtomHandler::invalidAtom;
+		asAtom args = asAtomHandler::fromString(this,clsname);
+		getDefinitionByName(cls,wrk,tmp,&args,1);
+		assert_and_throw(asAtomHandler::isValid(cls));
+		c = asAtomHandler::getObjectNoCheck(cls)->as<Class_base>();
+		classnamemap[clsname]=c;
+	}
+	else
+		c = it->second;
+	c->getInstance(wrk,ret,true,nullptr,0);
+}
 /* This is run in vm's thread context */
 void RootMovieClip::initFrame()
 {
-	LOG(LOG_CALLS,"Root:initFrame " << getFramesLoaded() << " " << state.FP);
+	if (waitingforparser)
+		return;
+	LOG_CALL("Root:initFrame " << getFramesLoaded() << " " << state.FP<<" "<<state.stop_FP<<" "<<state.next_FP<<" "<<state.explicit_FP);
 	/* We have to wait for at least one frame
 	 * so our class get the right classdef. Else we will
 	 * call the wrong constructor. */
@@ -2046,26 +2623,54 @@ void RootMovieClip::initFrame()
 		return;
 
 	MovieClip::initFrame();
-	
-	if (finishedLoading && (loaderInfo->getBytesTotal() != loaderInfo->getBytesLoaded()))
-		loaderInfo->setBytesLoaded(loaderInfo->getBytesTotal());
 }
 
 /* This is run in vm's thread context */
-void RootMovieClip::advanceFrame()
+void RootMovieClip::advanceFrame(bool implicit)
 {
-	/* We have to wait for at least one frame */
-	if(getFramesLoaded() == 0)
+	/* We have to wait until enough frames are available */
+	if(getFramesLoaded() == 0 || (state.next_FP>=(uint32_t)getFramesLoaded() && !hasFinishedLoading()))
+	{
+		waitingforparser=true;
 		return;
+	}
+	waitingforparser=false;
 
-	MovieClip::advanceFrame();
+	MovieClip::advanceFrame(implicit);
+}
+
+void RootMovieClip::executeFrameScript()
+{
+	if (waitingforparser)
+		return;
+	MovieClip::executeFrameScript();
 }
 
 bool RootMovieClip::destruct()
 {
 	applicationDomain.reset();
 	securityDomain.reset();
+	waitingforparser=false;
+	parsethread=nullptr;
 	return MovieClip::destruct();
+}
+void RootMovieClip::finalize()
+{
+	applicationDomain.reset();
+	securityDomain.reset();
+	parsethread=nullptr;
+	MovieClip::finalize();
+}
+
+void RootMovieClip::prepareShutdown()
+{
+	if (preparedforshutdown)
+		return;
+	MovieClip::prepareShutdown();
+	if (applicationDomain)
+		applicationDomain->prepareShutdown();
+	if (securityDomain)
+		securityDomain->prepareShutdown();
 }
 
 void RootMovieClip::addBinding(const tiny_string& name, DictionaryTag *tag)
@@ -2073,30 +2678,23 @@ void RootMovieClip::addBinding(const tiny_string& name, DictionaryTag *tag)
 	// This function will be called only be the parsing thread,
 	// and will only access the last frame, so no locking needed.
 	tag->bindingclassname = name;
-	classesToBeBound.push_back(make_pair(name, tag));
+	uint32_t pos = name.rfind(".");
+	if (pos== tiny_string::npos)
+		classesToBeBound[QName(getSystemState()->getUniqueStringId(name),BUILTIN_STRINGS::EMPTY)] =  tag;
+	else
+		classesToBeBound[QName(getSystemState()->getUniqueStringId(name.substr(pos+1,name.numChars()-(pos+1))),getSystemState()->getUniqueStringId(name.substr(0,pos)))] = tag;
 }
 
 void RootMovieClip::bindClass(const QName& classname, Class_inherit* cls)
 {
-	if (cls->isBinded())
+	if (cls->isBinded() || classesToBeBound.empty())
 		return;
 
-	tiny_string clsname;
-	if (classname.nsStringId != BUILTIN_STRINGS::EMPTY)
-		clsname = getSystemState()->getStringFromUniqueId(classname.nsStringId) + ".";
-	clsname += getSystemState()->getStringFromUniqueId(classname.nameId);
-
-	auto it=classesToBeBound.begin();
-	for(;it!=classesToBeBound.end();++it)
+	auto it=classesToBeBound.find(classname);
+	if(it!=classesToBeBound.end())
 	{
-		if (it->first == clsname)
-		{
-			if(it->second->bindedTo==NULL)
-				it->second->bindedTo=cls;
-			
-			cls->bindToTag(it->second);
-			break;
-		}
+		cls->bindToTag(it->second);
+		classesToBeBound.erase(it);
 	}
 }
 
@@ -2104,7 +2702,7 @@ void RootMovieClip::checkBinding(DictionaryTag *tag)
 {
 	if (tag->bindingclassname.empty())
 		return;
-	multiname clsname(NULL);
+	multiname clsname(nullptr);
 	clsname.name_type=multiname::NAME_STRING;
 	clsname.isAttribute = false;
 
@@ -2115,6 +2713,7 @@ void RootMovieClip::checkBinding(DictionaryTag *tag)
 	{
 		nm = tag->bindingclassname.substr(pos+1,tag->bindingclassname.numBytes());
 		ns = tag->bindingclassname.substr(0,pos);
+		clsname.hasEmptyNS=false;
 	}
 	else
 	{
@@ -2124,7 +2723,7 @@ void RootMovieClip::checkBinding(DictionaryTag *tag)
 	clsname.name_s_id=getSystemState()->getUniqueStringId(nm);
 	clsname.ns.push_back(nsNameAndKind(getSystemState(),ns,NAMESPACE));
 	
-	ASObject* typeObject = NULL;
+	ASObject* typeObject = nullptr;
 	auto i = applicationDomain->classesBeingDefined.cbegin();
 	while (i != applicationDomain->classesBeingDefined.cend())
 	{
@@ -2135,22 +2734,21 @@ void RootMovieClip::checkBinding(DictionaryTag *tag)
 		}
 		i++;
 	}
-	if (typeObject == NULL)
+	if (typeObject == nullptr)
 	{
 		ASObject* target;
-		asAtom o;
-		applicationDomain->getVariableAndTargetByMultiname(o,clsname,target);
-		if (o.type != T_INVALID)
-			typeObject=o.getObject();
+		asAtom o=asAtomHandler::invalidAtom;
+		applicationDomain->getVariableAndTargetByMultiname(o,clsname,target,getInstanceWorker());
+		if (asAtomHandler::isValid(o))
+			typeObject=asAtomHandler::getObject(o);
 	}
-	if (typeObject != NULL)
+	if (typeObject != nullptr)
 	{
 		Class_inherit* cls = typeObject->as<Class_inherit>();
 		if (cls)
 		{
 			ABCVm *vm = getVm(getSystemState());
-			vm->buildClassAndBindTag(tag->bindingclassname.raw_buf(), tag);
-			
+			vm->buildClassAndBindTag(tag->bindingclassname.raw_buf(), tag,cls);
 			tag->bindedTo=cls;
 			tag->bindingclassname = "";
 			cls->bindToTag(tag);
@@ -2158,25 +2756,105 @@ void RootMovieClip::checkBinding(DictionaryTag *tag)
 	}
 }
 
-void RootMovieClip::registerEmbeddedFont(const tiny_string fontname, DefineFont3Tag *tag)
+void RootMovieClip::registerEmbeddedFont(const tiny_string fontname, FontTag *tag)
 {
-	auto it = embeddedfonts.find(fontname);
-	if (it == embeddedfonts.end())
-		embeddedfonts[fontname] = tag;
+	if (!fontname.empty())
+	{
+		auto it = embeddedfonts.find(fontname);
+		if (it == embeddedfonts.end())
+		{
+			embeddedfonts[fontname] = tag;
+			// it seems that adobe allows fontnames to be lowercased and stripped of spaces and numbers
+			tiny_string tmp = fontname.lowercase();
+			tiny_string fontnamenormalized;
+			for (auto it = tmp.begin();it != tmp.end(); it++)
+			{
+				if (*it == ' ' || (*it >= '0' &&  *it <= '9'))
+					continue;
+				fontnamenormalized += *it;
+			}
+			embeddedfonts[fontnamenormalized] = tag;
+		}
+	}
 	embeddedfontsByID[tag->getId()] = tag;
 }
 
-DefineFont3Tag *RootMovieClip::getEmbeddedFont(const tiny_string fontname) const
+FontTag *RootMovieClip::getEmbeddedFont(const tiny_string fontname) const
 {
 	auto it = embeddedfonts.find(fontname);
 	if (it != embeddedfonts.end())
 		return it->second;
-	return NULL;
+	it = embeddedfonts.find(fontname.lowercase());
+	if (it != embeddedfonts.end())
+		return it->second;
+	return nullptr;
 }
-DefineFont3Tag *RootMovieClip::getEmbeddedFontByID(uint32_t fontID) const
+FontTag *RootMovieClip::getEmbeddedFontByID(uint32_t fontID) const
 {
 	auto it = embeddedfontsByID.find(fontID);
 	if (it != embeddedfontsByID.end())
 		return it->second;
-	return NULL;
+	return nullptr;
+}
+
+void RootMovieClip::setupAVM1RootMovie()
+{
+	if (!usesActionScript3)
+	{
+		getSystemState()->stage->AVM1RootClipAdded();
+		this->classdef = Class<AVM1MovieClip>::getRef(getSystemState()).getPtr();
+		if (!getSystemState()->avm1global)
+			getVm(getSystemState())->registerClassesAVM1();
+		// it seems that the url parameters and flash vars are made available as properties of the root movie clip
+		// I haven't found anything in the documentation but gnash also does this
+		_NR<ASObject> params;
+		if (this == getSystemState()->mainClip)
+			params = getSystemState()->getParameters();
+		else
+			params = this->loaderInfo->parameters;
+		if (params)
+			params->copyValues(this,getInstanceWorker());
+	}
+}
+
+bool RootMovieClip::AVM1registerTagClass(const tiny_string &name, _NR<IFunction> theClassConstructor)
+{
+	uint32_t nameID = getSystemState()->getUniqueStringId(name);
+	DictionaryTag* t = dictionaryLookupByName(nameID);
+	if (!t)
+	{
+		LOG(LOG_ERROR,"registerClass:no tag found in dictionary for "<<name);
+		return false;
+	}
+	if (theClassConstructor.isNull())
+		avm1ClassConstructors.erase(t->getId());
+	else
+		avm1ClassConstructors.insert(make_pair(t->getId(),theClassConstructor));
+	return true;
+}
+
+AVM1Function* RootMovieClip::AVM1getClassConstructor(uint32_t spriteID)
+{
+	auto it = avm1ClassConstructors.find(spriteID);
+	if (it == avm1ClassConstructors.end())
+		return nullptr;
+	return it->second->is<AVM1Function>() ? it->second->as<AVM1Function>() : nullptr;
+}
+
+void RootMovieClip::AVM1registerInitActionTag(uint32_t spriteID, AVM1InitActionTag *tag)
+{
+	avm1InitActionTags[spriteID] = tag;
+}
+void RootMovieClip::AVM1checkInitActions(MovieClip* sprite)
+{
+	if (!sprite)
+		return;
+	auto it = avm1InitActionTags.find(sprite->getTagID());
+	if (it != avm1InitActionTags.end())
+	{
+		AVM1InitActionTag* t = it->second;
+		// a new instance of the sprite may be constructed during code execution, so we remove it from the initactionlist before executing the code to ensure it's only executed once
+		avm1InitActionTags.erase(it);
+		t->executeDirect(sprite);
+	}
 }

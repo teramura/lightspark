@@ -22,7 +22,6 @@
 
 #include "compat.h"
 #include <cstddef>
-#include "parsing/tags.h"
 #include "logger.h"
 #include <vector>
 #include <deque>
@@ -31,9 +30,8 @@
 #include "swf.h"
 #include "scripting/abcutils.h"
 #include "scripting/abctypes.h"
-#include "scripting/flash/system/flashsystem.h"
-#include "scripting/toplevel/toplevel.h"
 
+#ifdef LLVM_ENABLED
 namespace llvm {
 	class ExecutionEngine;
 #ifdef LLVM_36
@@ -50,17 +48,18 @@ namespace legacy {
 	class Value;
 	class LLVMContext;
 }
+#endif // LLVM_ENABLED
 
 namespace lightspark
 {
+
+#ifdef LLVM_ENABLED
 struct block_info;
 #ifdef LLVM_28
 typedef const llvm::Type* LLVMTYPE;
 #else
 typedef llvm::Type* LLVMTYPE;
 #endif
-
-bool isVmThread();
 
 std::ostream& operator<<(std::ostream& o, const block_info& b);
 
@@ -69,6 +68,9 @@ inline stack_entry make_stack_entry(llvm::Value* v, STACK_TYPE t)
 {
 	return std::make_pair(v, t);
 }
+#endif
+
+bool isVmThread();
 
 class method_info
 {
@@ -78,6 +80,7 @@ friend class SyntheticFunction;
 private:
 	struct method_info_simple info;
 
+#ifdef LLVM_ENABLED
 	typedef std::vector<std::pair<int, STACK_TYPE> > static_stack_types_vector;
 	//Helper function to sync only part of the static stack to the memory
 	void consumeStackForRTMultiname(static_stack_types_vector& stack, int multinameIndex) const;
@@ -92,7 +95,7 @@ private:
 	struct BuilderWrapper;
 	//Does analysis on function code to find optimization chances
 	void doAnalysis(std::map<unsigned int,block_info>& blocks, BuilderWrapper& builderWrapper);
-
+#endif
 public:
 #ifdef PROFILING_SUPPORT
 	std::map<method_info*,uint64_t> profCalls;
@@ -101,10 +104,12 @@ public:
 	bool validProfName;
 #endif
 
-	SyntheticFunction::synt_function f;
+	synt_function f;
 	ABCContext* context;
 	method_body_info* body;
+#ifdef LLVM_ENABLED
 	SyntheticFunction::synt_function synt_method(SystemState* sys);
+#endif
 	bool needsArgs() { return info.needsArgs(); }
 	bool needsActivation() { return info.needsActivation(); }
 	bool needsRest() { return info.needsRest(); }
@@ -114,20 +119,55 @@ public:
 	void getOptional(asAtom &ret, unsigned int i);
 	uint32_t numOptions() { return info.option_count; }
 	uint32_t numArgs() { return info.param_count; }
-	const multiname* paramTypeName(uint32_t i) const;
-	const multiname* returnTypeName() const;
+	multiname* paramTypeName(uint32_t i) const;
+	multiname* returnTypeName() const;
 
 	std::vector<const Type*> paramTypes;
 	const Type* returnType;
+	
 	bool hasExplicitTypes;
+	// indicates if the function code starts with getlocal_0/pushscope
+	bool needsscope;
+	bool needscoerceresult;
+	call_context cc;
 	method_info():
-		llvmf(NULL),
+#ifdef LLVM_ENABLED
+		llvmf(nullptr),
+#endif
 #ifdef PROFILING_SUPPORT
 		profTime(0),
 		validProfName(false),
 #endif
-		f(NULL),context(NULL),body(NULL),returnType(NULL),hasExplicitTypes(false)
+		f(nullptr),context(nullptr),body(nullptr),returnType(nullptr),hasExplicitTypes(false),needsscope(false),needscoerceresult(true),cc(this)
 	{
+	}
+	~method_info()
+	{
+		if (cc.locals)
+		{
+			delete[] cc.locals;
+			cc.locals=nullptr;
+		}
+		if (cc.stack)
+		{
+			delete[] cc.stack;
+			cc.stack=nullptr;
+		}
+		if (cc.scope_stack)
+		{
+			delete[] cc.scope_stack;
+			cc.scope_stack=nullptr;
+		}
+		if (cc.scope_stack_dynamic)
+		{
+			delete[] cc.scope_stack_dynamic;
+			cc.scope_stack_dynamic=nullptr;
+		}
+		if (cc.localslots)
+		{
+			delete[] cc.localslots;
+			cc.localslots=nullptr;
+		}
 	}
 };
 
@@ -144,11 +184,14 @@ enum ARGS_TYPE { ARGS_OBJ_OBJ=0, ARGS_OBJ_INT, ARGS_OBJ, ARGS_INT, ARGS_OBJ_OBJ_
 
 enum OPERANDTYPES { 
 	OP_UNDEFINED=0x00, OP_STRING=0x01, OP_INTEGER=0x03, OP_UINTEGER=0x04, OP_DOUBLE=0x06, OP_NAMESPACE=0x08, 
-	OP_FALSE=0x0a, OP_TRUE=0x0b, OP_NULL=0x0c, 
-	OP_LOCAL=0x10, OP_BYTE=0x20, OP_SHORT=0x30};
+	OP_FALSE=0x0a, OP_TRUE=0x0b, OP_NULL=0x0c, OP_NAN=0x0d,
+	OP_LOCAL=0x10, OP_BYTE=0x20, OP_SHORT=0x30, OP_CACHED_CONSTANT=0x40, OP_CACHED_SLOT=0x80};
 
-#define ABC_OP_CACHED 0x10000000 
-#define ABC_OP_NOTCACHEABLE 0x20000000 
+#define ABC_OP_FORCEINT 0x1000 // forces the result of the arithmetic operation to be coerced to int
+#define ABC_OP_CACHED 0x2000
+#define ABC_OP_NOTCACHEABLE 0x4000
+#define ABC_OP_COERCED 0x8000 //indicates that the method call doesn't have to coerce the arguments to the expected type
+#define ABC_OP_BITMASK_USED 0xf000 // indicates all bits that are occupied by the flags
 
 struct typed_opcode_handler
 {
@@ -161,8 +204,10 @@ class ABCContext
 {
 friend class ABCVm;
 friend class method_info;
+private:
+	bool scriptsdeclared;
 public:
-	_R<RootMovieClip> root;
+	RootMovieClip* root;
 
 	method_info* get_method(unsigned int m);
 	uint32_t getString(unsigned int s) const;
@@ -198,6 +243,9 @@ public:
 	std::vector<asAtom> constantAtoms_namespaces;
 	std::vector<asAtom> constantAtoms_byte;
 	std::vector<asAtom> constantAtoms_short;
+	std::unordered_map<uint32_t,asAtom> constantAtoms_cached;
+	ATOMIC_INT32(atomsCachedMaxID);
+	uint32_t addCachedConstantAtom(asAtom a);
 	/**
 		Construct and insert in the a object a given trait
 		@param obj the tarhget object
@@ -238,7 +286,7 @@ public:
 			case 0x12: //RTQNameLA
 				return 2;
 			default:
-				LOG(LOG_ERROR,_("getMultinameRTData not yet implemented for this kind ") << m->kind);
+				LOG(LOG_ERROR,"getMultinameRTData not yet implemented for this kind " << m->kind);
 				throw UnsupportedException("kind not implemented for getMultinameRTData");
 		}
 	}
@@ -246,7 +294,9 @@ public:
 	multiname* getMultiname(unsigned int m, call_context* th);
 	multiname* getMultinameImpl(asAtom& rt1, ASObject* rt2, unsigned int m, bool isrefcounted = true);
 	void buildInstanceTraits(ASObject* obj, int class_index);
-	ABCContext(_R<RootMovieClip> r, std::istream& in, ABCVm* vm) DLL_PUBLIC;
+	ABCContext(RootMovieClip* r, std::istream& in, ABCVm* vm) DLL_PUBLIC;
+	~ABCContext();
+	void declareScripts();
 	void exec(bool lazy);
 
 	bool isinstance(ASObject* obj, multiname* name);
@@ -262,15 +312,44 @@ class ABCVm
 {
 friend class ABCContext;
 friend class method_info;
-friend class asAtom;
+friend class SymbolClassTag;
+friend class ACTIONRECORD;
 private:
 	std::vector<ABCContext*> contexts;
+	std::vector<ASObject*> deletableObjects;
 	SystemState* m_sys;
-	Thread* t;
+	SDL_Thread* t;
 	enum STATUS { CREATED=0, STARTED, TERMINATED };
 	STATUS status;
+	bool isIdle;
+	bool canFlushInvalidationQueue;
 
+	void registerClassesFlashAccessibility(Global* builtin);
+	void registerClassesFlashConcurrent(Global* builtin);
+	void registerClassesFlashCrypto(Global* builtin);
+	void registerClassesFlashDesktop(Global* builtin);
+	void registerClassesFlashDisplay(Global* builtin);
+	void registerClassesFlashDisplay3D(Global* builtin);
+	void registerClassesFlashEvents(Global* builtin);
+	void registerClassesFlashErrors(Global* builtin);
+	void registerClassesFlashExternal(Global* builtin);
+	void registerClassesFlashFilters(Global* builtin);
+	void registerClassesFlashFilesystem(Global* builtin);
+	void registerClassesFlashText(Global* builtin);
+	void registerClassesFlashUtils(Global* builtin);
+	void registerClassesFlashGeom(Global* builtin);
+	void registerClassesFlashGlobalization(Global* builtin);
+	void registerClassesFlashNet(Global* builtin);
+	void registerClassesFlashPrinting(Global* builtin);
+	void registerClassesFlashSampler(Global* builtin);
+	void registerClassesFlashSecurity(Global* builtin);
+	void registerClassesFlashSensors(Global* builtin);
+	void registerClassesFlashSystem(Global* builtin);
+	void registerClassesFlashMedia(Global* builtin);
+	void registerClassesFlashUI(Global* builtin);
+	void registerClassesFlashXML(Global* builtin);
 	void registerClassesToplevel(Global* builtin);
+	void registerClassesAvmplus(Global* builtin);
 	void registerClasses();
 
 	void registerFunctions();
@@ -278,32 +357,6 @@ private:
 	//If you change a definition here, update the opcode_table_* entry in abc_codesynth
 	static ASObject *hasNext(ASObject* obj, ASObject* cur_index); 
 	static bool hasNext2(call_context* th, int n, int m); 
-	template<class T>
-	static void loadIntN(call_context* th)
-	{
-		RUNTIME_STACK_POP_CREATE(th,arg1);
-		uint32_t addr=arg1->toUInt();
-		_R<ApplicationDomain> appDomain = getCurrentApplicationDomain(th);
-		T ret=appDomain->readFromDomainMemory<T>(addr);
-		ASATOM_DECREF_POINTER(arg1);
-		RUNTIME_STACK_PUSH(th,asAtom(ret));
-	}
-	template<class T>
-	static void storeIntN(call_context* th)
-	{
-		RUNTIME_STACK_POP_CREATE(th,arg1);
-		RUNTIME_STACK_POP_CREATE(th,arg2);
-		uint32_t addr=arg1->toUInt();
-		ASATOM_DECREF_POINTER(arg1);
-		int32_t val=arg2->toInt();
-		ASATOM_DECREF_POINTER(arg2);
-		_R<ApplicationDomain> appDomain = getCurrentApplicationDomain(th);
-		appDomain->writeToDomainMemory<T>(addr, val);
-	}
-	static void loadFloat(call_context* th);
-	static void loadDouble(call_context* th);
-	static void storeFloat(call_context* th);
-	static void storeDouble(call_context* th);
 
 	static void callStatic(call_context* th, int n, int m, method_info** called_mi, bool keepReturn);
 	static void callSuper(call_context* th, int n, int m, method_info** called_mi, bool keepReturn);
@@ -340,11 +393,12 @@ private:
 	static bool ifStrictNE(ASObject*, ASObject*); 
 	static bool ifFalse(ASObject*); 
 	static bool ifTrue(ASObject*); 
-	static ASObject* getSlot(ASObject* th, int n); 
-	static void setSlot(ASObject*, ASObject*, int n); 
+	static ASObject* getSlot(call_context* th, ASObject* obj, int n);
+	static void setSlot(call_context *th, ASObject*, ASObject*, int n);
 	static void kill(int n); 
-	static ASObject* pushString(call_context* th, int n); 
-	static bool getLex(call_context* th, int n, int localresult=0); 
+	static ASObject* pushString(call_context* th, int n);
+	static bool getLex(call_context* th, int n);
+	static bool getLex_multiname(call_context* th, multiname* n, uint32_t localresult);
 	static ASObject* getScopeObject(call_context* th, int n); 
 	static bool deleteProperty(ASObject* obj, multiname* name);
 	static void initProperty(ASObject* obj, ASObject* val, multiname* name);
@@ -464,7 +518,11 @@ private:
 	static bool newClassRecursiveLink(Class_base* target, Class_base* c);
 	static void constructFunction(asAtom & ret, call_context* th, asAtom& f, asAtom* args, int argslen);
 	void parseRPCMessage(_R<ByteArray> message, _NR<ASObject> client, _NR<Responder> responder);
+	
+	static void constructpropnoargs_intern(call_context* context, asAtom& ret, asAtom& obj, multiname* name, ASObject *constructor);
+	static void construct_noargs_intern(call_context* context, asAtom& ret, asAtom& obj);
 
+#ifdef LLVM_ENABLED
 	//Opcode tables
 	void register_table(LLVMTYPE ret_type,typed_opcode_handler* table, int table_len);
 	static opcode_handler opcode_table_args_pointer_2int[];
@@ -475,16 +533,18 @@ private:
 	static typed_opcode_handler opcode_table_void[];
 	static typed_opcode_handler opcode_table_voidptr[];
 	static typed_opcode_handler opcode_table_bool_t[];
-
+#endif
 
 	//Synchronization
 	Mutex event_queue_mutex;
 	Cond sem_event_cond;
+	Mutex deletable_objects_mutex;
 
 	//Event handling
 	volatile bool shuttingdown;
 	typedef std::pair<_NR<EventDispatcher>,_R<Event>> eventType;
 	std::deque<eventType, reporter_allocator<eventType>> events_queue;
+	std::list<eventType, reporter_allocator<eventType>> idleevents_queue;
 	void handleEvent(std::pair<_NR<EventDispatcher>,_R<Event> > e);
 	void handleFrontEvent();
 	void signalEventWaiters();
@@ -493,11 +553,13 @@ private:
 
 	//Profiling support
 	static uint64_t profilingCheckpoint(uint64_t& startTime);
+
+	static bool checkPropertyException(ASObject *obj, multiname *name, asAtom &prop);
+	static bool checkPropertyExceptionInteger(ASObject *obj, int index, asAtom &prop);
+
 	// The base to assign to the next loaded context
 	ATOMIC_INT32(nextNamespaceBase);
 
-	typedef void (*abc_function)(call_context*);
-	
 	static void abc_bkpt(call_context* context);// 0x01
 	static void abc_nop(call_context* context);
 	static void abc_throw(call_context* context);
@@ -508,17 +570,37 @@ private:
 	static void abc_kill(call_context* context);
 	static void abc_label(call_context* context);
 	static void abc_ifnlt(call_context* context);
+	static void abc_ifnlt_constant_constant(call_context* context);
+	static void abc_ifnlt_local_constant(call_context* context);
+	static void abc_ifnlt_constant_local(call_context* context);
+	static void abc_ifnlt_local_local(call_context* context);
 	static void abc_ifnle(call_context* context);
+	static void abc_ifnle_constant_constant(call_context* context);
+	static void abc_ifnle_local_constant(call_context* context);
+	static void abc_ifnle_constant_local(call_context* context);
+	static void abc_ifnle_local_local(call_context* context);
 	static void abc_ifngt(call_context* context);
+	static void abc_ifngt_constant_constant(call_context* context);
+	static void abc_ifngt_local_constant(call_context* context);
+	static void abc_ifngt_constant_local(call_context* context);
+	static void abc_ifngt_local_local(call_context* context);
 	static void abc_ifnge(call_context* context);
-	
+	static void abc_ifnge_constant_constant(call_context* context);
+	static void abc_ifnge_local_constant(call_context* context);
+	static void abc_ifnge_constant_local(call_context* context);
+	static void abc_ifnge_local_local(call_context* context);
+
 	static void abc_jump(call_context* context);// 0x10
 	static void abc_iftrue(call_context* context);
 	static void abc_iftrue_constant(call_context* context);
 	static void abc_iftrue_local(call_context* context);
+	static void abc_iftrue_dup_constant(call_context* context);
+	static void abc_iftrue_dup_local(call_context* context);
 	static void abc_iffalse(call_context* context);
 	static void abc_iffalse_constant(call_context* context);
 	static void abc_iffalse_local(call_context* context);
+	static void abc_iffalse_dup_constant(call_context* context);
+	static void abc_iffalse_dup_local(call_context* context);
 	static void abc_ifeq(call_context* context);
 	static void abc_ifeq_constant_constant(call_context* context);
 	static void abc_ifeq_local_constant(call_context* context);
@@ -560,6 +642,8 @@ private:
 	static void abc_ifstrictne_constant_local(call_context* context);
 	static void abc_ifstrictne_local_local(call_context* context);
 	static void abc_lookupswitch(call_context* context);
+	static void abc_lookupswitch_constant(call_context* context);
+	static void abc_lookupswitch_local(call_context* context);
 	static void abc_pushwith(call_context* context);
 	static void abc_popscope(call_context* context);
 	static void abc_nextname(call_context* context);
@@ -575,6 +659,13 @@ private:
 	static void abc_pushnan(call_context* context);
 	static void abc_pop(call_context* context);
 	static void abc_dup(call_context* context);
+	static void abc_dup_local(call_context* context);
+	static void abc_dup_local_localresult(call_context* context);
+	static void abc_dup_local_setslotnocoerce(call_context* context);
+	static void abc_dup_increment_local_localresult(call_context* context);
+	static void abc_dup_decrement_local_localresult(call_context* context);
+	static void abc_dup_increment_i_local_localresult(call_context* context);
+	static void abc_dup_decrement_i_local_localresult(call_context* context);
 	static void abc_swap(call_context* context);
 	static void abc_pushstring(call_context* context);
 	static void abc_pushint(call_context* context);
@@ -587,24 +678,97 @@ private:
 	static void abc_pushnamespace(call_context* context);
 	static void abc_hasnext2(call_context* context);
 	static void abc_li8(call_context* context);
+	static void abc_li8_constant(call_context* context);
+	static void abc_li8_local(call_context* context);
+	static void abc_li8_constant_localresult(call_context* context);
+	static void abc_li8_local_localresult(call_context* context);
+	static void abc_li8_constant_setslotnocoerce(call_context* context);
+	static void abc_li8_local_setslotnocoerce(call_context* context);
 	static void abc_li16(call_context* context);
+	static void abc_li16_constant(call_context* context);
+	static void abc_li16_local(call_context* context);
+	static void abc_li16_constant_localresult(call_context* context);
+	static void abc_li16_local_localresult(call_context* context);
+	static void abc_li16_constant_setslotnocoerce(call_context* context);
+	static void abc_li16_local_setslotnocoerce(call_context* context);
 	static void abc_li32(call_context* context);
+	static void abc_li32_constant(call_context* context);
+	static void abc_li32_local(call_context* context);
+	static void abc_li32_constant_localresult(call_context* context);
+	static void abc_li32_local_localresult(call_context* context);
+	static void abc_li32_constant_setslotnocoerce(call_context* context);
+	static void abc_li32_local_setslotnocoerce(call_context* context);
 	static void abc_lf32(call_context* context);
+	static void abc_lf32_constant(call_context* context);
+	static void abc_lf32_local(call_context* context);
+	static void abc_lf32_constant_localresult(call_context* context);
+	static void abc_lf32_local_localresult(call_context* context);
+	static void abc_lf32_constant_setslotnocoerce(call_context* context);
+	static void abc_lf32_local_setslotnocoerce(call_context* context);
 	static void abc_lf64(call_context* context);
+	static void abc_lf64_constant(call_context* context);
+	static void abc_lf64_local(call_context* context);
+	static void abc_lf64_constant_localresult(call_context* context);
+	static void abc_lf64_local_localresult(call_context* context);
+	static void abc_lf64_constant_setslotnocoerce(call_context* context);
+	static void abc_lf64_local_setslotnocoerce(call_context* context);
 	static void abc_si8(call_context* context);
+	static void abc_si8_constant_constant(call_context* context);
+	static void abc_si8_local_constant(call_context* context);
+	static void abc_si8_constant_local(call_context* context);
+	static void abc_si8_local_local(call_context* context);
 	static void abc_si16(call_context* context);
+	static void abc_si16_constant_constant(call_context* context);
+	static void abc_si16_local_constant(call_context* context);
+	static void abc_si16_constant_local(call_context* context);
+	static void abc_si16_local_local(call_context* context);
 	static void abc_si32(call_context* context);
+	static void abc_si32_constant_constant(call_context* context);
+	static void abc_si32_local_constant(call_context* context);
+	static void abc_si32_constant_local(call_context* context);
+	static void abc_si32_local_local(call_context* context);
 	static void abc_sf32(call_context* context);
+	static void abc_sf32_constant_constant(call_context* context);
+	static void abc_sf32_local_constant(call_context* context);
+	static void abc_sf32_constant_local(call_context* context);
+	static void abc_sf32_local_local(call_context* context);
 	static void abc_sf64(call_context* context);
+	static void abc_sf64_constant_constant(call_context* context);
+	static void abc_sf64_local_constant(call_context* context);
+	static void abc_sf64_constant_local(call_context* context);
+	static void abc_sf64_local_local(call_context* context);
 
 	static void abc_newfunction(call_context* context);// 0x40
 	static void abc_call(call_context* context);
+	static void abc_callvoid_constant_constant(call_context* context);
+	static void abc_callvoid_local_constant(call_context* context);
+	static void abc_callvoid_constant_local(call_context* context);
+	static void abc_callvoid_local_local(call_context* context);
+	static void abc_call_constant_constant(call_context* context);
+	static void abc_call_local_constant(call_context* context);
+	static void abc_call_constant_local(call_context* context);
+	static void abc_call_local_local(call_context* context);
+	static void abc_call_constant_constant_localresult(call_context* context);
+	static void abc_call_local_constant_localresult(call_context* context);
+	static void abc_call_constant_local_localresult(call_context* context);
+	static void abc_call_local_local_localresult(call_context* context);
 	static void abc_construct(call_context* context);
+	static void abc_construct_constant(call_context* context);
+	static void abc_construct_local(call_context* context);
+	static void abc_construct_constant_localresult(call_context* context);
+	static void abc_construct_local_localresult(call_context* context);
 	static void abc_callMethod(call_context* context);
 	static void abc_callstatic(call_context* context);
 	static void abc_callsuper(call_context* context);
 	static void abc_callproperty(call_context* context);
+	static void abc_callpropertyStaticName(call_context* context);
 	static void abc_callpropertyStaticName_localresult(call_context* context);
+	static void abc_callpropertyStaticNameCached(call_context* context);
+	static void abc_callpropertyStaticNameCached_localResult(call_context* context);
+	static void abc_callpropertyStaticNameCached_constant(call_context* context);
+	static void abc_callpropertyStaticNameCached_local(call_context* context);
+	static void abc_callpropertyStaticNameCached_constant_localResult(call_context* context);
+	static void abc_callpropertyStaticNameCached_local_localResult(call_context* context);
 	static void abc_callpropertyStaticName_constant_constant(call_context* context);
 	static void abc_callpropertyStaticName_local_constant(call_context* context);
 	static void abc_callpropertyStaticName_constant_local(call_context* context);
@@ -613,19 +777,53 @@ private:
 	static void abc_callpropertyStaticName_local_constant_localresult(call_context* context);
 	static void abc_callpropertyStaticName_constant_local_localresult(call_context* context);
 	static void abc_callpropertyStaticName_local_local_localresult(call_context* context);
+	static void abc_callpropertyStaticName_constant(call_context* context);
+	static void abc_callpropertyStaticName_local(call_context* context);
+	static void abc_callpropertyStaticName_constant_localresult(call_context* context);
+	static void abc_callpropertyStaticName_local_localresult(call_context* context);
+	
 	static void abc_returnvoid(call_context* context);
 	static void abc_returnvalue(call_context* context);
 	static void abc_returnvalue_constant(call_context* context);
 	static void abc_returnvalue_local(call_context* context);
 	static void abc_constructsuper(call_context* context);
+	static void abc_constructsuper_constant(call_context* context);
+	static void abc_constructsuper_local(call_context* context);
 	static void abc_constructprop(call_context* context);
+	static void abc_constructpropStaticName_constant(call_context* context);
+	static void abc_constructpropStaticName_local(call_context* context);
+	static void abc_constructpropStaticName_constant_localresult(call_context* context);
+	static void abc_constructpropStaticName_local_localresult(call_context* context);
 	static void abc_callproplex(call_context* context);
 	static void abc_callsupervoid(call_context* context);
 	static void abc_callpropvoid(call_context* context);
+	static void abc_callpropvoidStaticName(call_context* context);
+	static void abc_callpropvoidStaticNameCached(call_context* context);
+	static void abc_callpropvoidStaticNameCached_constant(call_context* context);
+	static void abc_callpropvoidStaticNameCached_local(call_context* context);
+	static void abc_callpropvoidStaticName_constant_constant(call_context* context);
+	static void abc_callpropvoidStaticName_local_constant(call_context* context);
+	static void abc_callpropvoidStaticName_constant_local(call_context* context);
+	static void abc_callpropvoidStaticName_local_local(call_context* context);
+	static void abc_callpropvoidStaticName_constant(call_context* context);
+	static void abc_callpropvoidStaticName_local(call_context* context);
+	
 	
 	static void abc_sxi1(call_context* context); // 0x50
+	static void abc_sxi1_constant(call_context* context);
+	static void abc_sxi1_local(call_context* context);
+	static void abc_sxi1_constant_localresult(call_context* context);
+	static void abc_sxi1_local_localresult(call_context* context);
 	static void abc_sxi8(call_context* context);
+	static void abc_sxi8_constant(call_context* context);
+	static void abc_sxi8_local(call_context* context);
+	static void abc_sxi8_constant_localresult(call_context* context);
+	static void abc_sxi8_local_localresult(call_context* context);
 	static void abc_sxi16(call_context* context);
+	static void abc_sxi16_constant(call_context* context);
+	static void abc_sxi16_local(call_context* context);
+	static void abc_sxi16_constant_localresult(call_context* context);
+	static void abc_sxi16_local_localresult(call_context* context);
 	static void abc_constructgenerictype(call_context* context);
 	static void abc_newobject(call_context* context);
 	static void abc_newarray(call_context* context);
@@ -638,12 +836,37 @@ private:
 	static void abc_finddef(call_context* context);
 	
 	static void abc_getlex(call_context* context);// 0x60
-	static void abc_getlex_localresult(call_context* context);// 0x60
+	static void abc_getlex_localresult(call_context* context);
 	static void abc_setproperty(call_context* context);
+	static void abc_setPropertyStaticName(call_context* context);
+	static void abc_setPropertyStaticName_constant_constant(call_context* context);
+	static void abc_setPropertyStaticName_local_constant(call_context* context);
+	static void abc_setPropertyStaticName_constant_local(call_context* context);
+	static void abc_setPropertyStaticName_local_local(call_context* context);
+	static void abc_setPropertyInteger(call_context* context);
+	static void abc_setPropertyInteger_constant_constant_constant(call_context* context);
+	static void abc_setPropertyInteger_constant_local_constant(call_context* context);
+	static void abc_setPropertyInteger_constant_constant_local(call_context* context);
+	static void abc_setPropertyInteger_constant_local_local(call_context* context);
+	static void abc_setPropertyInteger_local_constant_constant(call_context* context);
+	static void abc_setPropertyInteger_local_local_constant(call_context* context);
+	static void abc_setPropertyInteger_local_constant_local(call_context* context);
+	static void abc_setPropertyInteger_local_local_local(call_context* context);
+	static void abc_setPropertyIntegerVector_constant_constant_constant(call_context* context);
+	static void abc_setPropertyIntegerVector_constant_local_constant(call_context* context);
+	static void abc_setPropertyIntegerVector_constant_constant_local(call_context* context);
+	static void abc_setPropertyIntegerVector_constant_local_local(call_context* context);
+	static void abc_setPropertyIntegerVector_local_constant_constant(call_context* context);
+	static void abc_setPropertyIntegerVector_local_local_constant(call_context* context);
+	static void abc_setPropertyIntegerVector_local_constant_local(call_context* context);
+	static void abc_setPropertyIntegerVector_local_local_local(call_context* context);
 	static void abc_getlocal(call_context* context);
 	static void abc_setlocal(call_context* context);
+	static void abc_setlocal_constant(call_context* context);
+	static void abc_setlocal_local(call_context* context);
 	static void abc_getglobalscope(call_context* context);
 	static void abc_getscopeobject(call_context* context);
+	static void abc_getscopeobject_localresult(call_context* context);
 	static void abc_getProperty(call_context* context);
 	static void abc_getProperty_constant_constant(call_context* context);
 	static void abc_getProperty_local_constant(call_context* context);
@@ -653,14 +876,42 @@ private:
 	static void abc_getProperty_local_constant_localresult(call_context* context);
 	static void abc_getProperty_constant_local_localresult(call_context* context);
 	static void abc_getProperty_local_local_localresult(call_context* context);
+	static void abc_getPropertyInteger(call_context* context);
+	static void abc_getPropertyInteger_constant_constant(call_context* context);
+	static void abc_getPropertyInteger_local_constant(call_context* context);
+	static void abc_getPropertyInteger_constant_local(call_context* context);
+	static void abc_getPropertyInteger_local_local(call_context* context);
+	static void abc_getPropertyInteger_constant_constant_localresult(call_context* context);
+	static void abc_getPropertyInteger_local_constant_localresult(call_context* context);
+	static void abc_getPropertyInteger_constant_local_localresult(call_context* context);
+	static void abc_getPropertyInteger_local_local_localresult(call_context* context);
 	static void abc_getPropertyStaticName_constant(call_context* context);
 	static void abc_getPropertyStaticName_local(call_context* context);
 	static void abc_getPropertyStaticName_constant_localresult(call_context* context);
 	static void abc_getPropertyStaticName_local_localresult(call_context* context);
+	static void abc_getPropertyStaticName_localresult(call_context* context);
+
 	static void abc_initproperty(call_context* context);
 	static void abc_deleteproperty(call_context* context);
 	static void abc_getslot(call_context* context);
+	static void abc_getslot_constant(call_context* context);
+	static void abc_getslot_local(call_context* context);
+	static void abc_getslot_constant_localresult(call_context* context);
+	static void abc_getslot_local_localresult(call_context* context);
+	static void abc_getslot_constant_setslotnocoerce(call_context* context);
+	static void abc_getslot_local_setslotnocoerce(call_context* context);
+
 	static void abc_setslot(call_context* context);
+	static void abc_setslot_constant_constant(call_context* context);
+	static void abc_setslot_local_constant(call_context* context);
+	static void abc_setslot_constant_local(call_context* context);
+	static void abc_setslot_local_local(call_context* context);
+	static void abc_setslotNoCoerce_constant_constant(call_context* context);
+	static void abc_setslotNoCoerce_local_constant(call_context* context);
+	static void abc_setslotNoCoerce_constant_local(call_context* context);
+	static void abc_setslotNoCoerce_local_local(call_context* context);
+	static void abc_setslotNoCoerce_local_local_li32(call_context* context);
+	
 	static void abc_getglobalSlot(call_context* context);
 	static void abc_setglobalSlot(call_context* context);
 
@@ -668,21 +919,57 @@ private:
 	static void abc_esc_xelem(call_context* context);
 	static void abc_esc_xattr(call_context* context);
 	static void abc_convert_i(call_context* context);
+	static void abc_convert_i_constant(call_context* context);
+	static void abc_convert_i_local(call_context* context);
+	static void abc_convert_i_constant_localresult(call_context* context);
+	static void abc_convert_i_local_localresult(call_context* context);
+	static void abc_convert_i_constant_setslotnocoerce(call_context* context);
+	static void abc_convert_i_local_setslotnocoerce(call_context* context);
 	static void abc_convert_u(call_context* context);
+	static void abc_convert_u_constant(call_context* context);
+	static void abc_convert_u_local(call_context* context);
+	static void abc_convert_u_constant_localresult(call_context* context);
+	static void abc_convert_u_local_localresult(call_context* context);
+	static void abc_convert_u_constant_setslotnocoerce(call_context* context);
+	static void abc_convert_u_local_setslotnocoerce(call_context* context);
 	static void abc_convert_d(call_context* context);
 	static void abc_convert_d_constant(call_context* context);
 	static void abc_convert_d_local(call_context* context);
 	static void abc_convert_d_constant_localresult(call_context* context);
 	static void abc_convert_d_local_localresult(call_context* context);
+	static void abc_convert_d_constant_setslotnocoerce(call_context* context);
+	static void abc_convert_d_local_setslotnocoerce(call_context* context);
 	static void abc_convert_b(call_context* context);
+	static void abc_convert_b_constant(call_context* context);
+	static void abc_convert_b_local(call_context* context);
+	static void abc_convert_b_constant_localresult(call_context* context);
+	static void abc_convert_b_local_localresult(call_context* context);
+	static void abc_convert_b_constant_setslotnocoerce(call_context* context);
+	static void abc_convert_b_local_setslotnocoerce(call_context* context);
 	static void abc_convert_o(call_context* context);
 	static void abc_checkfilter(call_context* context);
 
 	static void abc_coerce(call_context* context); // 0x80
+	static void abc_coerce_constant(call_context* context);
+	static void abc_coerce_local(call_context* context);
+	static void abc_coerce_constant_localresult(call_context* context);
+	static void abc_coerce_local_localresult(call_context* context);
 	static void abc_coerce_a(call_context* context);
 	static void abc_coerce_s(call_context* context);
 	static void abc_astype(call_context* context);
 	static void abc_astypelate(call_context* context);
+	static void abc_astypelate_constant_constant(call_context* context);
+	static void abc_astypelate_local_constant(call_context* context);
+	static void abc_astypelate_constant_local(call_context* context);
+	static void abc_astypelate_local_local(call_context* context);
+	static void abc_astypelate_constant_constant_localresult(call_context* context);
+	static void abc_astypelate_local_constant_localresult(call_context* context);
+	static void abc_astypelate_constant_local_localresult(call_context* context);
+	static void abc_astypelate_local_local_localresult(call_context* context);
+	static void abc_astypelate_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_astypelate_local_constant_setslotnocoerce(call_context* context);
+	static void abc_astypelate_constant_local_setslotnocoerce(call_context* context);
+	static void abc_astypelate_local_local_setslotnocoerce(call_context* context);
 
 	static void abc_negate(call_context* context); // 0x90
 	static void abc_increment(call_context* context);
@@ -694,7 +981,15 @@ private:
 	static void abc_decrement_local_localresult(call_context* context);
 	static void abc_declocal(call_context* context);
 	static void abc_typeof(call_context* context);
+	static void abc_typeof_constant(call_context* context);
+	static void abc_typeof_local(call_context* context);
+	static void abc_typeof_constant_localresult(call_context* context);
+	static void abc_typeof_local_localresult(call_context* context);
 	static void abc_not(call_context* context);
+	static void abc_not_constant(call_context* context);
+	static void abc_not_local(call_context* context);
+	static void abc_not_constant_localresult(call_context* context);
+	static void abc_not_local_localresult(call_context* context);
 	static void abc_bitnot(call_context* context);
 
 	static void abc_add(call_context* context); //0xa0
@@ -706,6 +1001,10 @@ private:
 	static void abc_add_local_constant_localresult(call_context* context);
 	static void abc_add_constant_local_localresult(call_context* context);
 	static void abc_add_local_local_localresult(call_context* context);
+	static void abc_add_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_add_local_constant_setslotnocoerce(call_context* context);
+	static void abc_add_constant_local_setslotnocoerce(call_context* context);
+	static void abc_add_local_local_setslotnocoerce(call_context* context);
 	static void abc_subtract(call_context* context);
 	static void abc_subtract_constant_constant(call_context* context);
 	static void abc_subtract_local_constant(call_context* context);
@@ -715,6 +1014,10 @@ private:
 	static void abc_subtract_local_constant_localresult(call_context* context);
 	static void abc_subtract_constant_local_localresult(call_context* context);
 	static void abc_subtract_local_local_localresult(call_context* context);
+	static void abc_subtract_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_subtract_local_constant_setslotnocoerce(call_context* context);
+	static void abc_subtract_constant_local_setslotnocoerce(call_context* context);
+	static void abc_subtract_local_local_setslotnocoerce(call_context* context);
 	static void abc_multiply(call_context* context);
 	static void abc_multiply_constant_constant(call_context* context);
 	static void abc_multiply_local_constant(call_context* context);
@@ -724,6 +1027,10 @@ private:
 	static void abc_multiply_local_constant_localresult(call_context* context);
 	static void abc_multiply_constant_local_localresult(call_context* context);
 	static void abc_multiply_local_local_localresult(call_context* context);
+	static void abc_multiply_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_multiply_local_constant_setslotnocoerce(call_context* context);
+	static void abc_multiply_constant_local_setslotnocoerce(call_context* context);
+	static void abc_multiply_local_local_setslotnocoerce(call_context* context);
 	static void abc_divide(call_context* context);
 	static void abc_divide_constant_constant(call_context* context);
 	static void abc_divide_local_constant(call_context* context);
@@ -733,6 +1040,10 @@ private:
 	static void abc_divide_local_constant_localresult(call_context* context);
 	static void abc_divide_constant_local_localresult(call_context* context);
 	static void abc_divide_local_local_localresult(call_context* context);
+	static void abc_divide_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_divide_local_constant_setslotnocoerce(call_context* context);
+	static void abc_divide_constant_local_setslotnocoerce(call_context* context);
+	static void abc_divide_local_local_setslotnocoerce(call_context* context);
 	static void abc_modulo(call_context* context);
 	static void abc_modulo_constant_constant(call_context* context);
 	static void abc_modulo_local_constant(call_context* context);
@@ -742,6 +1053,10 @@ private:
 	static void abc_modulo_local_constant_localresult(call_context* context);
 	static void abc_modulo_constant_local_localresult(call_context* context);
 	static void abc_modulo_local_local_localresult(call_context* context);
+	static void abc_modulo_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_modulo_local_constant_setslotnocoerce(call_context* context);
+	static void abc_modulo_constant_local_setslotnocoerce(call_context* context);
+	static void abc_modulo_local_local_setslotnocoerce(call_context* context);
 	static void abc_lshift(call_context* context);
 	static void abc_lshift_constant_constant(call_context* context);
 	static void abc_lshift_local_constant(call_context* context);
@@ -751,6 +1066,10 @@ private:
 	static void abc_lshift_local_constant_localresult(call_context* context);
 	static void abc_lshift_constant_local_localresult(call_context* context);
 	static void abc_lshift_local_local_localresult(call_context* context);
+	static void abc_lshift_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_lshift_local_constant_setslotnocoerce(call_context* context);
+	static void abc_lshift_constant_local_setslotnocoerce(call_context* context);
+	static void abc_lshift_local_local_setslotnocoerce(call_context* context);
 	static void abc_rshift(call_context* context);
 	static void abc_rshift_constant_constant(call_context* context);
 	static void abc_rshift_local_constant(call_context* context);
@@ -760,6 +1079,10 @@ private:
 	static void abc_rshift_local_constant_localresult(call_context* context);
 	static void abc_rshift_constant_local_localresult(call_context* context);
 	static void abc_rshift_local_local_localresult(call_context* context);
+	static void abc_rshift_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_rshift_local_constant_setslotnocoerce(call_context* context);
+	static void abc_rshift_constant_local_setslotnocoerce(call_context* context);
+	static void abc_rshift_local_local_setslotnocoerce(call_context* context);
 	static void abc_urshift(call_context* context);
 	static void abc_urshift_constant_constant(call_context* context);
 	static void abc_urshift_local_constant(call_context* context);
@@ -769,6 +1092,10 @@ private:
 	static void abc_urshift_local_constant_localresult(call_context* context);
 	static void abc_urshift_constant_local_localresult(call_context* context);
 	static void abc_urshift_local_local_localresult(call_context* context);
+	static void abc_urshift_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_urshift_local_constant_setslotnocoerce(call_context* context);
+	static void abc_urshift_constant_local_setslotnocoerce(call_context* context);
+	static void abc_urshift_local_local_setslotnocoerce(call_context* context);
 	static void abc_bitand(call_context* context);
 	static void abc_bitand_constant_constant(call_context* context);
 	static void abc_bitand_local_constant(call_context* context);
@@ -778,6 +1105,10 @@ private:
 	static void abc_bitand_local_constant_localresult(call_context* context);
 	static void abc_bitand_constant_local_localresult(call_context* context);
 	static void abc_bitand_local_local_localresult(call_context* context);
+	static void abc_bitand_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_bitand_local_constant_setslotnocoerce(call_context* context);
+	static void abc_bitand_constant_local_setslotnocoerce(call_context* context);
+	static void abc_bitand_local_local_setslotnocoerce(call_context* context);
 	static void abc_bitor(call_context* context);
 	static void abc_bitor_constant_constant(call_context* context);
 	static void abc_bitor_local_constant(call_context* context);
@@ -787,6 +1118,10 @@ private:
 	static void abc_bitor_local_constant_localresult(call_context* context);
 	static void abc_bitor_constant_local_localresult(call_context* context);
 	static void abc_bitor_local_local_localresult(call_context* context);
+	static void abc_bitor_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_bitor_local_constant_setslotnocoerce(call_context* context);
+	static void abc_bitor_constant_local_setslotnocoerce(call_context* context);
+	static void abc_bitor_local_local_setslotnocoerce(call_context* context);
 	static void abc_bitxor(call_context* context);
 	static void abc_bitxor_constant_constant(call_context* context);
 	static void abc_bitxor_local_constant(call_context* context);
@@ -796,10 +1131,38 @@ private:
 	static void abc_bitxor_local_constant_localresult(call_context* context);
 	static void abc_bitxor_constant_local_localresult(call_context* context);
 	static void abc_bitxor_local_local_localresult(call_context* context);
+	static void abc_bitxor_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_bitxor_local_constant_setslotnocoerce(call_context* context);
+	static void abc_bitxor_constant_local_setslotnocoerce(call_context* context);
+	static void abc_bitxor_local_local_setslotnocoerce(call_context* context);
 	static void abc_equals(call_context* context);
+	static void abc_equals_constant_constant(call_context* context);
+	static void abc_equals_local_constant(call_context* context);
+	static void abc_equals_constant_local(call_context* context);
+	static void abc_equals_local_local(call_context* context);
+	static void abc_equals_constant_constant_localresult(call_context* context);
+	static void abc_equals_local_constant_localresult(call_context* context);
+	static void abc_equals_constant_local_localresult(call_context* context);
+	static void abc_equals_local_local_localresult(call_context* context);
 	static void abc_strictequals(call_context* context);
 	static void abc_lessthan(call_context* context);
+	static void abc_lessthan_constant_constant(call_context* context);
+	static void abc_lessthan_local_constant(call_context* context);
+	static void abc_lessthan_constant_local(call_context* context);
+	static void abc_lessthan_local_local(call_context* context);
+	static void abc_lessthan_constant_constant_localresult(call_context* context);
+	static void abc_lessthan_local_constant_localresult(call_context* context);
+	static void abc_lessthan_constant_local_localresult(call_context* context);
+	static void abc_lessthan_local_local_localresult(call_context* context);
 	static void abc_lessequals(call_context* context);
+	static void abc_lessequals_constant_constant(call_context* context);
+	static void abc_lessequals_local_constant(call_context* context);
+	static void abc_lessequals_constant_local(call_context* context);
+	static void abc_lessequals_local_local(call_context* context);
+	static void abc_lessequals_constant_constant_localresult(call_context* context);
+	static void abc_lessequals_local_constant_localresult(call_context* context);
+	static void abc_lessequals_constant_local_localresult(call_context* context);
+	static void abc_lessequals_local_local_localresult(call_context* context);
 	static void abc_greaterthan(call_context* context);
 	static void abc_greaterthan_constant_constant(call_context* context);
 	static void abc_greaterthan_local_constant(call_context* context);
@@ -810,19 +1173,85 @@ private:
 	static void abc_greaterthan_constant_local_localresult(call_context* context);
 	static void abc_greaterthan_local_local_localresult(call_context* context);
 	static void abc_greaterequals(call_context* context);// 0xb0
+	static void abc_greaterequals_constant_constant(call_context* context);
+	static void abc_greaterequals_local_constant(call_context* context);
+	static void abc_greaterequals_constant_local(call_context* context);
+	static void abc_greaterequals_local_local(call_context* context);
+	static void abc_greaterequals_constant_constant_localresult(call_context* context);
+	static void abc_greaterequals_local_constant_localresult(call_context* context);
+	static void abc_greaterequals_constant_local_localresult(call_context* context);
+	static void abc_greaterequals_local_local_localresult(call_context* context);
 	static void abc_instanceof(call_context* context);
+	static void abc_instanceof_constant_constant(call_context* context);
+	static void abc_instanceof_local_constant(call_context* context);
+	static void abc_instanceof_constant_local(call_context* context);
+	static void abc_instanceof_local_local(call_context* context);
+	static void abc_instanceof_constant_constant_localresult(call_context* context);
+	static void abc_instanceof_local_constant_localresult(call_context* context);
+	static void abc_instanceof_constant_local_localresult(call_context* context);
+	static void abc_instanceof_local_local_localresult(call_context* context);
 	static void abc_istype(call_context* context);
 	static void abc_istypelate(call_context* context);
+	static void abc_istypelate_constant_constant(call_context* context);
+	static void abc_istypelate_local_constant(call_context* context);
+	static void abc_istypelate_constant_local(call_context* context);
+	static void abc_istypelate_local_local(call_context* context);
+	static void abc_istypelate_constant_constant_localresult(call_context* context);
+	static void abc_istypelate_local_constant_localresult(call_context* context);
+	static void abc_istypelate_constant_local_localresult(call_context* context);
+	static void abc_istypelate_local_local_localresult(call_context* context);
 	static void abc_in(call_context* context);
 	
 	static void abc_increment_i(call_context* context); // 0xc0
 	static void abc_decrement_i(call_context* context);
 	static void abc_inclocal_i(call_context* context);
+	static void abc_inclocal_i_optimized(call_context* context);
+	static void abc_inclocal_i_postfix(call_context* context);
 	static void abc_declocal_i(call_context* context);
+	static void abc_declocal_i_optimized(call_context* context);
+	static void abc_declocal_i_postfix(call_context* context);
 	static void abc_negate_i(call_context* context);
 	static void abc_add_i(call_context* context);
+	static void abc_add_i_constant_constant(call_context* context);
+	static void abc_add_i_local_constant(call_context* context);
+	static void abc_add_i_constant_local(call_context* context);
+	static void abc_add_i_local_local(call_context* context);
+	static void abc_add_i_constant_constant_localresult(call_context* context);
+	static void abc_add_i_local_constant_localresult(call_context* context);
+	static void abc_add_i_constant_local_localresult(call_context* context);
+	static void abc_add_i_local_local_localresult(call_context* context);
+	static void abc_add_i_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_add_i_local_constant_setslotnocoerce(call_context* context);
+	static void abc_add_i_constant_local_setslotnocoerce(call_context* context);
+	static void abc_add_i_local_local_setslotnocoerce(call_context* context);
+	
 	static void abc_subtract_i(call_context* context);
+	static void abc_subtract_i_constant_constant(call_context* context);
+	static void abc_subtract_i_local_constant(call_context* context);
+	static void abc_subtract_i_constant_local(call_context* context);
+	static void abc_subtract_i_local_local(call_context* context);
+	static void abc_subtract_i_constant_constant_localresult(call_context* context);
+	static void abc_subtract_i_local_constant_localresult(call_context* context);
+	static void abc_subtract_i_constant_local_localresult(call_context* context);
+	static void abc_subtract_i_local_local_localresult(call_context* context);
+	static void abc_subtract_i_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_subtract_i_local_constant_setslotnocoerce(call_context* context);
+	static void abc_subtract_i_constant_local_setslotnocoerce(call_context* context);
+	static void abc_subtract_i_local_local_setslotnocoerce(call_context* context);
+
 	static void abc_multiply_i(call_context* context);
+	static void abc_multiply_i_constant_constant(call_context* context);
+	static void abc_multiply_i_local_constant(call_context* context);
+	static void abc_multiply_i_constant_local(call_context* context);
+	static void abc_multiply_i_local_local(call_context* context);
+	static void abc_multiply_i_constant_constant_localresult(call_context* context);
+	static void abc_multiply_i_local_constant_localresult(call_context* context);
+	static void abc_multiply_i_constant_local_localresult(call_context* context);
+	static void abc_multiply_i_local_local_localresult(call_context* context);
+	static void abc_multiply_i_constant_constant_setslotnocoerce(call_context* context);
+	static void abc_multiply_i_local_constant_setslotnocoerce(call_context* context);
+	static void abc_multiply_i_constant_local_setslotnocoerce(call_context* context);
+	static void abc_multiply_i_local_local_setslotnocoerce(call_context* context);
 
 	static void abc_getlocal_0(call_context* context); // 0xd0
 	static void abc_getlocal_1(call_context* context);
@@ -839,15 +1268,80 @@ private:
 	static void abc_debugfile(call_context* context);
 	static void abc_bkptline(call_context* context);
 	static void abc_timestamp(call_context* context);
+	
+	static void abc_pushcachedconstant(call_context* context);
+	static void abc_pushcachedslot(call_context* context);
+
+	static void abc_getlexfromslot(call_context* context);
+	static void abc_getlexfromslot_localresult(call_context* context);
+	
+	static void abc_callFunctionNoArgs_constant(call_context* context);
+	static void abc_callFunctionNoArgs_local(call_context* context);
+	static void abc_callFunctionNoArgs_constant_localresult(call_context* context);
+	static void abc_callFunctionNoArgs_local_localresult(call_context* context);
+	static void abc_callFunctionNoArgs_constant_setslotnocoerce(call_context* context);
+	static void abc_callFunctionNoArgs_local_setslotnocoerce(call_context* context);
+
+	static void abc_callFunctionNoArgsVoid_constant(call_context* context);
+	static void abc_callFunctionNoArgsVoid_local(call_context* context);
+
+	static void abc_callFunctionSyntheticOneArgVoid_constant_constant(call_context* context);
+	static void abc_callFunctionSyntheticOneArgVoid_local_constant(call_context* context);
+	static void abc_callFunctionSyntheticOneArgVoid_constant_local(call_context* context);
+	static void abc_callFunctionSyntheticOneArgVoid_local_local(call_context* context);
+	static void abc_callFunctionSyntheticOneArg_constant_constant(call_context* context);
+	static void abc_callFunctionSyntheticOneArg_local_constant(call_context* context);
+	static void abc_callFunctionSyntheticOneArg_constant_local(call_context* context);
+	static void abc_callFunctionSyntheticOneArg_local_local(call_context* context);
+	static void abc_callFunctionSyntheticOneArg_constant_constant_localresult(call_context* context);
+	static void abc_callFunctionSyntheticOneArg_local_constant_localresult(call_context* context);
+	static void abc_callFunctionSyntheticOneArg_constant_local_localresult(call_context* context);
+	static void abc_callFunctionSyntheticOneArg_local_local_localresult(call_context* context);
+	static void abc_callFunctionBuiltinOneArgVoid_constant_constant(call_context* context);
+	static void abc_callFunctionBuiltinOneArgVoid_local_constant(call_context* context);
+	static void abc_callFunctionBuiltinOneArgVoid_constant_local(call_context* context);
+	static void abc_callFunctionBuiltinOneArgVoid_local_local(call_context* context);
+	static void abc_callFunctionBuiltinOneArg_constant_constant(call_context* context);
+	static void abc_callFunctionBuiltinOneArg_local_constant(call_context* context);
+	static void abc_callFunctionBuiltinOneArg_constant_local(call_context* context);
+	static void abc_callFunctionBuiltinOneArg_local_local(call_context* context);
+	static void abc_callFunctionBuiltinOneArg_constant_constant_localresult(call_context* context);
+	static void abc_callFunctionBuiltinOneArg_local_constant_localresult(call_context* context);
+	static void abc_callFunctionBuiltinOneArg_constant_local_localresult(call_context* context);
+	static void abc_callFunctionBuiltinOneArg_local_local_localresult(call_context* context);
+	static void abc_callFunctionSyntheticMultiArgsVoid_constant(call_context* context);
+	static void abc_callFunctionSyntheticMultiArgsVoid_local(call_context* context);
+	static void abc_callFunctionSyntheticMultiArgs_constant(call_context* context);
+	static void abc_callFunctionSyntheticMultiArgs_local(call_context* context);
+	static void abc_callFunctionSyntheticMultiArgs_constant_localResult(call_context* context);
+	static void abc_callFunctionSyntheticMultiArgs_local_localResult(call_context* context);
+	static void abc_callFunctionBuiltinMultiArgsVoid_constant(call_context* context);
+	static void abc_callFunctionBuiltinMultiArgsVoid_local(call_context* context);
+	static void abc_callFunctionBuiltinMultiArgs_constant(call_context* context);
+	static void abc_callFunctionBuiltinMultiArgs_local(call_context* context);
+	static void abc_callFunctionBuiltinMultiArgs_constant_localResult(call_context* context);
+	static void abc_callFunctionBuiltinMultiArgs_local_localResult(call_context* context);
+	static void abc_callFunctionSyntheticMultiArgs(call_context* context);
+	static void abc_callFunctionSyntheticMultiArgsVoid(call_context* context);
+
+	static void abc_increment_i_local(call_context* context);
+	static void abc_increment_i_local_localresult(call_context* context);
+	static void abc_increment_i_local_setslotnocoerce(call_context* context);
+	static void abc_decrement_i_local(call_context* context);
+	static void abc_decrement_i_local_localresult(call_context* context);
+	static void abc_decrement_i_local_setslotnocoerce(call_context* context);
+
+	static void abc_getfuncscopeobject(call_context* context);
+	static void abc_getfuncscopeobject_localresult(call_context* context);
 
 	static void abc_invalidinstruction(call_context* context);
 
-	static abc_function abcfunctions[];
 public:
-	call_context* currentCallContext;
+	static abc_function abcfunctions[];
 
 	MemoryAccount* vmDataMemory;
 
+#ifdef LLVM_ENABLED
 	llvm::ExecutionEngine* ex;
 	llvm::Module* module;
 
@@ -857,6 +1351,7 @@ public:
 	llvm::FunctionPassManager* FPM;
 #endif
 	llvm::LLVMContext& llvm_context();
+#endif
 
 	ABCVm(SystemState* s, MemoryAccount* m) DLL_PUBLIC;
 	/**
@@ -870,9 +1365,13 @@ public:
 	*/
 	void start() DLL_PUBLIC;
 	void finalize();
-	static void Run(ABCVm* th);
+	void registerClassesAVM1();
+	static int Run(void* d);
 	static void executeFunction(call_context* context);
-	static void preloadFunction(const SyntheticFunction* function);
+	static void dumpOpcodeCounters(uint32_t threshhold);
+	static void clearOpcodeCounters();
+	
+	static void preloadFunction(SyntheticFunction *function,ASWorker* wrk);
 	static ASObject* executeFunctionFast(const SyntheticFunction* function, call_context* context, ASObject *caller);
 	static void optimizeFunction(SyntheticFunction* function);
 	static void verifyBranch(std::set<uint32_t>& pendingBlock,std::map<uint32_t,BasicBlock>& basicBlocks,
@@ -890,72 +1389,27 @@ public:
 			const std::vector<InferenceData>& scopeStack, const multiname* name, InferenceData& inferredData);
 	static const Type* getLocalType(const SyntheticFunction* f, unsigned localIndex);
 
-	bool addEvent(_NR<EventDispatcher>,_R<Event> ) DLL_PUBLIC;
-	bool prependEvent(_NR<EventDispatcher>,_R<Event> ) DLL_PUBLIC;
+	bool addEvent(_NR<EventDispatcher>,_R<Event>, bool isGlobalMessage=false) DLL_PUBLIC;
+	bool prependEvent(_NR<EventDispatcher>, _R<Event> , bool force=false) DLL_PUBLIC;
+	bool addIdleEvent(_NR<EventDispatcher>, _R<Event> , bool removeprevious=false) DLL_PUBLIC;
 	int getEventQueueSize();
 	void shutdown();
 	bool hasEverStarted() const { return status!=CREATED; }
+	void addDeletableObject(ASObject *obj);
 
 	static Global* getGlobalScope(call_context* th);
 	static bool strictEqualImpl(ASObject*, ASObject*);
-	static void publicHandleEvent(_R<EventDispatcher> dispatcher, _R<Event> event);
+	static void publicHandleEvent(EventDispatcher* dispatcher, _R<Event> event);
 	static _R<ApplicationDomain> getCurrentApplicationDomain(call_context* th);
 	static _R<SecurityDomain> getCurrentSecurityDomain(call_context* th);
 
-	/* The current recursion level. Each call increases this by one,
-	 * each return from a call decreases this. */
-	uint32_t cur_recursion;
-	std::vector<std::pair<uint32_t,asAtom> > stacktrace;
-
-	struct abc_limits {
-		/* maxmium number of recursion allowed. See ScriptLimitsTag */
-		uint32_t max_recursion;
-		/* maxmium number of seconds for script execution. See ScriptLimitsTag */
-		uint32_t script_timeout;
-	} limits;
-
 	uint32_t getAndIncreaseNamespaceBase(uint32_t nsNum);
 
-	tiny_string getDefaultXMLNamespace();
-	uint32_t getDefaultXMLNamespaceID();
-
-	bool buildClassAndBindTag(const std::string& s, DictionaryTag* t);
+	bool buildClassAndBindTag(const std::string& s, DictionaryTag* t, Class_inherit *derived_cls=nullptr);
 	void checkExternalCallEvent() DLL_PUBLIC;
+	void setIdle(bool isidle) { isIdle = isidle; }
 };
 
-class DoABCTag: public ControlTag
-{
-private:
-	ABCContext* context;
-public:
-	DoABCTag(RECORDHEADER h, std::istream& in);
-	TAGTYPE getType() const{ return ABC_TAG; }
-	void execute(RootMovieClip* root) const;
-};
-
-class DoABCDefineTag: public ControlTag
-{
-private:
-	UI32_SWF Flags;
-	STRING Name;
-	ABCContext* context;
-public:
-	DoABCDefineTag(RECORDHEADER h, std::istream& in);
-	TAGTYPE getType() const{ return ABC_TAG; }
-	void execute(RootMovieClip* root) const;
-};
-
-class SymbolClassTag: public ControlTag
-{
-private:
-	UI16_SWF NumSymbols;
-	std::vector<UI16_SWF> Tags;
-	std::vector<STRING> Names;
-public:
-	SymbolClassTag(RECORDHEADER h, std::istream& in);
-	TAGTYPE getType() const{ return SYMBOL_CLASS_TAG; }
-	void execute(RootMovieClip* root) const;
-};
 
 inline ABCVm* getVm(SystemState* sys)
 {
@@ -964,6 +1418,6 @@ inline ABCVm* getVm(SystemState* sys)
 
 std::istream& operator>>(std::istream& in, method_info& v);
 
-};
+}
 
 #endif /* SCRIPTING_ABC_H */

@@ -90,29 +90,17 @@ public:
 	};
 	static bool isIntegerWithoutLeadingZeros(const tiny_string& value);
 	enum SORTTYPE { CASEINSENSITIVE=1, DESCENDING=2, UNIQUESORT=4, RETURNINDEXEDARRAY=8, NUMERIC=16 };
-	Array(Class_base* c);
-	bool destruct()
-	{
-		for (auto it=data_first.begin() ; it != data_first.end(); ++it)
-		{
-			ASATOM_DECREF_POINTER(it);
-		}
-		for (auto it=data_second.begin() ; it != data_second.end(); ++it)
-		{
-			ASATOM_DECREF(it->second);
-		}
-		data_first.clear();
-		data_second.clear();
-		currentsize=0;
-		return ASObject::destruct();
-	}
+	Array(ASWorker *w,Class_base* c);
+	void finalize() override;
+	bool destruct() override;
+	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
 	
 	//These utility methods are also used by ByteArray
 	static bool isValidMultiname(SystemState* sys,const multiname& name, uint32_t& index);
 	static bool isValidQName(const tiny_string& name, const tiny_string& ns, unsigned int& index);
 
 	static void sinit(Class_base*);
-	static void buildTraits(ASObject* o);
 
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(generator);
@@ -148,38 +136,40 @@ public:
 		if (index < ARRAY_SIZE_THRESHOLD)
 		{
 			if (index < data_first.size())
-				ret.set(data_first.at(index));
+				asAtomHandler::set(ret,data_first.at(index));
 		}
 		else
 		{
 			auto it = data_second.find(index);
 			if (it != data_second.end())
-				ret.set(it->second);
+				asAtomHandler::set(ret,it->second);
 		}
-		if (ret.type == T_INVALID)
-			ret.setUndefined();
-		ASATOM_INCREF(ret);
+		if (asAtomHandler::isInvalid(ret))
+			asAtomHandler::setUndefined(ret);
 	}
 	
-	void set(unsigned int index, asAtom &o, bool checkbounds = true, bool addref = true);
+	bool set(unsigned int index, asAtom &o, bool checkbounds = true, bool addref = true, bool addmember=true);
 	uint64_t size();
-	void push(asAtom o);
+	void push(asAtom o);// push doesn't increment the refcount, so the caller has to take care of that
 	void resize(uint64_t n);
-	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt);
-	int32_t getVariableByMultiname_i(const multiname& name);
-	void setVariableByMultiname(const multiname& name, asAtom& o, CONST_ALLOWED_FLAG allowConst);
-	bool deleteVariableByMultiname(const multiname& name);
-	void setVariableByMultiname_i(const multiname& name, int32_t value);
-	bool hasPropertyByMultiname(const multiname& name, bool considerDynamic, bool considerPrototype);
+	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	GET_VARIABLE_RESULT getVariableByInteger(asAtom& ret, int index, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	
+	int32_t getVariableByMultiname_i(const multiname& name, ASWorker* wrk) override;
+	multiname* setVariableByMultiname(multiname& name, asAtom& o, CONST_ALLOWED_FLAG allowConst, bool *alreadyset, ASWorker* wrk) override;
+	void setVariableByInteger(int index, asAtom& o, CONST_ALLOWED_FLAG allowConst, bool* alreadyset,ASWorker* wrk) override;
+	bool deleteVariableByMultiname(const multiname& name, ASWorker* wrk) override;
+	void setVariableByMultiname_i(multiname& name, int32_t value,ASWorker* wrk) override;
+	bool hasPropertyByMultiname(const multiname& name, bool considerDynamic, bool considerPrototype, ASWorker* wrk) override;
 	tiny_string toString();
-	uint32_t nextNameIndex(uint32_t cur_index);
-	void nextName(asAtom &ret, uint32_t index);
-	void nextValue(asAtom &ret, uint32_t index);
+	uint32_t nextNameIndex(uint32_t cur_index) override;
+	void nextName(asAtom &ret, uint32_t index) override;
+	void nextValue(asAtom &ret, uint32_t index) override;
 	//Serialization interface
 	void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap);
-	virtual tiny_string toJSON(std::vector<ASObject *> &path,asAtom replacer, const tiny_string &spaces,const tiny_string& filter);
+				std::map<const Class_base*, uint32_t>& traitsMap, ASWorker* wrk) override;
+	virtual tiny_string toJSON(std::vector<ASObject *> &path,asAtom replacer, const tiny_string &spaces,const tiny_string& filter) override;
 };
 
 

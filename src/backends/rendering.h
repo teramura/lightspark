@@ -22,8 +22,8 @@
 
 #include "backends/rendering_context.h"
 #include "timer.h"
-#include <glibmm/timeval.h>
 #include <SDL2/SDL.h>
+#include <sys/time.h>
 #ifdef _WIN32
 #	include <windef.h>
 #endif
@@ -38,11 +38,11 @@ friend class DisplayObject;
 friend class Context3D;
 private:
 	SystemState* m_sys;
-	Thread* t;
+	SDL_Thread* t;
 	enum STATUS { CREATED=0, STARTED, TERMINATED };
 	volatile STATUS status;
 
-	void worker();
+	static int worker(void* d);
 
 	void commonGLInit(int width, int height);
 	void commonGLResize();
@@ -70,8 +70,7 @@ private:
 	int offsetX;
 	int offsetY;
 
-	Glib::TimeVal time_s, time_d;
-	static const Glib::TimeVal FPS_time;
+	struct timeval time_s, time_d;
 
 	bool loadShaderPrograms();
 	bool tempBufferAcquired;
@@ -87,13 +86,24 @@ private:
 	ITextureUploadable* getUploadJob();
 	/*
 		Common code to handle the core of the rendering
+		returns true if at least one of the displayobjects on the stage couldn't be rendered becaus of an AsyncDrawJob not done yet
 	*/
-	void coreRendering();
+	bool coreRendering();
 	void plotProfilingData();
 	Semaphore initialized;
-	Mutex mutexRendering;
-
+	volatile bool refreshNeeded;
+	Mutex mutexRefreshSurfaces;
+	struct refreshableSurface
+	{
+		IDrawable* drawable;
+		_NR<DisplayObject> displayobject;
+	};
+	std::list<refreshableSurface> surfacesToRefresh;
 public:
+	Mutex mutexRendering;
+	volatile bool screenshotneeded;
+	volatile bool inSettings;
+	volatile bool canrender;
 	RenderThread(SystemState* s);
 	~RenderThread();
 	/**
@@ -109,8 +119,32 @@ public:
 
 	void init();
 	void deinit();
-	bool doRender(ThreadProfile *profile=NULL, Chronometer *chronometer=NULL);
-
+	bool doRender(ThreadProfile *profile=nullptr, Chronometer *chronometer=nullptr);
+	void generateScreenshot();
+	bool isStarted() const { return status == STARTED; }
+	/**
+	 * @brief updates the arguments of a cachedSurface without recreating the texture
+	 * @param d IDrawable containing the new values
+	 * this will be deleted in this method
+	 * @param o target containing the cachedSurface to be updated
+	 */
+	void addRefreshableSurface(IDrawable* d,_NR<DisplayObject> o)
+	{
+		Locker l(mutexRefreshSurfaces);
+		refreshableSurface s;
+		s.displayobject = o;
+		s.drawable = d;
+		surfacesToRefresh.push_back(s);
+	}
+	void signalSurfaceRefresh()
+	{
+		Locker l(mutexRefreshSurfaces);
+		if (!surfacesToRefresh.empty())
+		{
+			refreshNeeded=true;
+			event.signal();
+		}
+	}
 	/**
 		Allocates a chunk from the shared texture
 	*/
@@ -142,22 +176,26 @@ public:
 	int gpu_program;
 	volatile uint32_t windowWidth;
 	volatile uint32_t windowHeight;
-	int fragmentTexScaleUniform;
-	int directUniform;
 
 	void renderErrorPage(RenderThread *rt, bool standalone);
+	void renderSettingsPage();
+	cairo_t *cairoTextureContextSettings;
+	cairo_surface_t *cairoTextureSurfaceSettings;
+	uint8_t *cairoTextureDataSettings;
+	uint32_t cairoTextureIDSettings;
+	cairo_t* getCairoContextSettings(int w, int h);
 
 	cairo_t *cairoTextureContext;
 	cairo_surface_t *cairoTextureSurface;
 	uint8_t *cairoTextureData;
 	uint32_t cairoTextureID;
 	cairo_t* getCairoContext(int w, int h);
-	void mapCairoTexture(int w, int h);
+	void mapCairoTexture(int w, int h, bool forsettings=false);
 	void renderText(cairo_t *cr, const char *text, int x, int y);
 	void waitRendering();
 };
 
 RenderThread* getRenderThread();
 
-};
+}
 #endif /* BACKENDS_RENDERING_H */

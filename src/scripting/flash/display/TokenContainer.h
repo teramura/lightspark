@@ -37,8 +37,11 @@ class TokenContainer
 {
 	friend class Graphics;
 	friend class MorphShape;
+	friend class TextField;
 public:
 	DisplayObject* owner;
+	number_t redMultiplier,greenMultiplier,blueMultiplier,alphaMultiplier;
+	number_t redOffset,greenOffset,blueOffset,alphaOffset;
 	/* multiply shapes' coordinates by this
 	 * value to get pixel.
 	 * DefineShapeTags set a scaling of 1/20,
@@ -51,22 +54,27 @@ public:
 	tokensVector tokens;
 	static void FromShaperecordListToShapeVector(const std::vector<SHAPERECORD>& shapeRecords,
 					 tokensVector& tokens, const std::list<FILLSTYLE>& fillStyles,
-					 const MATRIX& matrix = MATRIX(), const std::list<LINESTYLE2>& lineStyles = std::list<LINESTYLE2>());
-	static void FromDefineMorphShapeTagToShapeVector(SystemState *sys, DefineMorphShapeTag *tag,
+					 const MATRIX& matrix = MATRIX(), const std::list<LINESTYLE2>& lineStyles = std::list<LINESTYLE2>(), const RECT &shapebounds= RECT());
+	static void FromDefineMorphShapeTagToShapeVector(DefineMorphShapeTag *tag,
 					 tokensVector& tokens, uint16_t ratio);
-	static void getTextureSize(tokensVector& tokens, int *width, int *height);
+	static void getTextureSize(std::vector<uint64_t>& tokens, int *width, int *height);
+	static bool boundsRectFromTokens(const tokensVector& tokens,float scaling, number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax);
 	uint16_t getCurrentLineWidth() const;
 	float scaling;
+	bool renderWithNanoVG;
 protected:
 	TokenContainer(DisplayObject* _o);
 	TokenContainer(DisplayObject* _o, const tokensVector& _tokens, float _scaling);
-	IDrawable* invalidate(DisplayObject* target, const MATRIX& initialMatrix, bool smoothing);
-	void requestInvalidation(InvalidateQueue* q);
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) const;
-	_NR<DisplayObject> hitTestImpl(_NR<DisplayObject> last, number_t x, number_t y, DisplayObject::HIT_TYPE type) const;
-	void renderImpl(RenderContext& ctxt) const;
+	IDrawable* invalidate(DisplayObject* target, const MATRIX& initialMatrix, SMOOTH_MODE smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap, bool fromgraphics);
+	void requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh=false);
+	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) const
+	{
+		return boundsRectFromTokens(tokens,scaling,xmin,xmax,ymin,ymax);
+	}
+	bool hitTestImpl(number_t x, number_t y) const;
+	bool renderImpl(RenderContext& ctxt);
 	bool tokensEmpty() const { return tokens.empty(); }
 };
 
-};
+}
 #endif /* SCRIPTING_FLASH_DISPLAY_TOKENCONTAINER_H */

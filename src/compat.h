@@ -20,13 +20,6 @@
 #ifndef COMPAT_H
 #define COMPAT_H 1
 
-#include <boost/version.hpp>
-#if BOOST_VERSION >= 104600
-#define BOOST_FILESYSTEM_VERSION 3
-#else
-#define BOOST_FILESYSTEM_VERSION 2
-#endif
-
 #include <cstddef>
 #include <cassert>
 #include <cstdint>
@@ -55,13 +48,6 @@
 	#include <sys/types.h> //for ssize_t
 	#include <io.h> //for close(), unlink()
 #endif
-
-// TODO: This should be reworked to use CMake feature detection where possible
-
-/* gettext support */
-#include <locale.h>
-#include <libintl.h>
-#define _(STRING) gettext(STRING)
 
 
 #include <glib.h>

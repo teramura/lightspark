@@ -30,12 +30,12 @@ namespace lightspark
 class GraphicsEndFill: public ASObject, public IGraphicsFill, public IGraphicsData
 {
 public:
-	GraphicsEndFill(Class_base* c);
+	GraphicsEndFill(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base* c);
-		FILLSTYLE toFillStyle();
-		void appendToTokens(tokensVector& tokens);
+	FILLSTYLE toFillStyle();
+	void appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics);
 };
 
-};
+}
 
 #endif /* SCRIPTING_FLASH_DISPLAY_GRAPHICSENDFILL_H */

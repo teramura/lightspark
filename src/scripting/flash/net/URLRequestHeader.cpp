@@ -4,7 +4,7 @@
 
 using namespace lightspark;
 
-URLRequestHeader::URLRequestHeader(Class_base* c) : ASObject(c)
+URLRequestHeader::URLRequestHeader(ASWorker* wrk,Class_base* c):ASObject(wrk,c)
 {
 }
 
@@ -21,9 +21,9 @@ void URLRequestHeader::buildTraits(ASObject* o)
 
 ASFUNCTIONBODY_ATOM(URLRequestHeader,_constructor)
 {
-	URLRequestHeader* th=obj.as<URLRequestHeader>();
-	ARG_UNPACK_ATOM (th->name, "") (th->value, "");
+	URLRequestHeader* th=asAtomHandler::as<URLRequestHeader>(obj);
+	ARG_CHECK(ARG_UNPACK (th->name, "") (th->value, ""));
 }
 
-ASFUNCTIONBODY_GETTER_SETTER(URLRequestHeader,name);
-ASFUNCTIONBODY_GETTER_SETTER(URLRequestHeader,value);
+ASFUNCTIONBODY_GETTER_SETTER(URLRequestHeader,name)
+ASFUNCTIONBODY_GETTER_SETTER(URLRequestHeader,value)

@@ -28,6 +28,9 @@
 #include "abc.h"
 #include "backends/security.h"
 #include "backends/rendering.h"
+#include "backends/audio.h"
+#include "scripting/flash/utils/ByteArray.h"
+#include "scripting/flash/display/NativeMenuItem.h"
 #include <string>
 #include <algorithm>
 #include <SDL2/SDL.h>
@@ -60,6 +63,8 @@
 #include "ppapi/c/ppb_graphics_3d.h"
 #include "ppapi/c/ppb_input_event.h"
 #include "ppapi/c/private/ppb_flash_clipboard.h"
+#include "ppapi/c/private/ppb_flash_fullscreen.h"
+#include "ppapi/c/private/ppb_flash.h"
 #include "ppapi/c/ppb_file_io.h"
 #include "ppapi/c/ppb_file_ref.h"
 #include "ppapi/c/ppb_file_system.h"
@@ -70,13 +75,19 @@
 #include "ppapi/c/ppb_message_loop.h"
 
 #include "GLES2/gl2.h"
+#include "GLES2/gl2ext.h"
 
 #ifdef _WIN32
 #define GL_UNSIGNED_INT_8_8_8_8_HOST GL_UNSIGNED_BYTE
 #else
 //The interpretation of texture data change with the endianness
 #if __BYTE_ORDER == __BIG_ENDIAN
-#define GL_UNSIGNED_INT_8_8_8_8_HOST GL_UNSIGNED_INT_8_8_8_8_REV
+// TODO
+// It's unclear if this needs special handling on big endian.
+// Needs to be tested on a big endian machine.
+// OpenGL-ES doesn't define GL_UNSIGNED_INT_8_8_8_8_REV
+//#define GL_UNSIGNED_INT_8_8_8_8_HOST GL_UNSIGNED_INT_8_8_8_8_REV
+#define GL_UNSIGNED_INT_8_8_8_8_HOST GL_UNSIGNED_BYTE
 #else
 #define GL_UNSIGNED_INT_8_8_8_8_HOST GL_UNSIGNED_BYTE
 #endif
@@ -111,6 +122,9 @@ static const PPB_AudioConfig* g_audioconfig_interface = NULL;
 static const PPB_ImageData* g_imagedata_interface = NULL;
 static const PPB_BrowserFont_Trusted* g_browserfont_interface = NULL;
 static const PPB_MessageLoop* g_messageloop_interface = NULL;
+static const PPB_FlashFullscreen* g_flashfullscreen_interface = NULL;
+static const PPB_Flash_Menu* g_flash_menu_interface = NULL;
+static const PPB_Flash* g_flash_interface = NULL;
 
 ppFileStreamCache::ppFileStreamCache(ppPluginInstance* instance,SystemState* sys):StreamCache(sys),cache(0),cacheref(0),writeoffset(0),m_instance(instance)
   ,reader(NULL),iodone(false)
@@ -464,7 +478,7 @@ ppObjectObject::ppObjectObject(std::map<int64_t, std::unique_ptr<ExtObject>>& ob
 {
 	//First of all add this object to the map, so that recursive cycles may be broken
 	if(objectsMap.count(obj.value.as_id)==0)
-		objectsMap[obj.value.as_id] = move(unique_ptr<ExtObject>(this));
+		objectsMap[obj.value.as_id] = unique_ptr<ExtObject>(this);
 
 	uint32_t property_count;
 	PP_Var* properties;
@@ -538,13 +552,13 @@ PP_Var ppObjectObject::getppObject(std::map<const ExtObject*, PP_Var>& objectsMa
 			PP_Var propname;
 			switch (ids[i]->getType())
 			{
-				case ExtVariant::EV_STRING:
+				case ExtIdentifier::EI_STRING:
 				{
 					std::string name = ids[i]->getString();
 					propname = g_var_interface->VarFromUtf8(name.c_str(),name.length());
 					break;
 				}
-				case ExtVariant::EV_INT32:
+				case ExtIdentifier::EI_INT32:
 					propname = PP_MakeInt32(ids[i]->getInt());
 					break;
 				default:
@@ -564,7 +578,7 @@ PP_Var ppObjectObject::getppObject(std::map<const ExtObject*, PP_Var>& objectsMa
 	return result;
 }
 
-ppDownloadManager::ppDownloadManager(ppPluginInstance *_instance, SystemState *sys):m_instance(_instance),m_sys(sys)
+ppDownloadManager::ppDownloadManager(ppPluginInstance *_instance):m_instance(_instance)
 {
 	type = NPAPI;
 }
@@ -583,8 +597,8 @@ lightspark::Downloader* ppDownloadManager::download(const lightspark::URLInfo& u
 	}
 
 	bool cached = false;
-	LOG(LOG_INFO, _("NET: PLUGIN: DownloadManager::download '") <<cache.getPtr()<<" "<< url.getParsedURL() << 
-			"'" << (cached ? _(" - cached") : ""));
+	LOG(LOG_INFO, "NET: PLUGIN: DownloadManager::download '" <<cache.getPtr()<<" "<< url.getParsedURL() << 
+			"'" << (cached ? " - cached" : ""));
 	//Register this download
 	ppDownloader* downloader=new ppDownloader(url.getParsedURL(), cache, m_instance, owner);
 	addDownloader(downloader);
@@ -600,7 +614,7 @@ lightspark::Downloader* ppDownloadManager::downloadWithData(const lightspark::UR
 		return StandaloneDownloadManager::downloadWithData(url, cache, data, headers, owner);
 	}
 
-	LOG(LOG_INFO, _("NET: PLUGIN: DownloadManager::downloadWithData '") << url.getParsedURL());
+	LOG(LOG_INFO, "NET: PLUGIN: DownloadManager::downloadWithData '" << url.getParsedURL());
 	//Register this download
 	ppDownloader* downloader=new ppDownloader(url.getParsedURL(), cache, data, headers, m_instance, owner);
 	addDownloader(downloader);
@@ -633,6 +647,7 @@ void ppDownloader::dlStartCallback(void* userdata,int result)
 {
 	ppDownloader* th = (ppDownloader*)userdata;
 	setTLSSys(th->m_sys);
+	setTLSWorker(th->m_sys->worker);
 	
 	if (result < 0)
 	{
@@ -671,6 +686,7 @@ void ppDownloader::dlReadResponseCallback(void* userdata,int result)
 {
 	ppDownloader* th = (ppDownloader*)userdata;
 	setTLSSys(th->m_sys);
+	setTLSWorker(th->m_sys->worker);
 	if (result < 0)
 	{
 		LOG(LOG_ERROR,"download failed:"<<result<<" "<<th->getURL()<<" "<<th->downloadedlength<<"/"<<th->getLength());
@@ -698,6 +714,7 @@ void ppDownloader::dlStartDownloadCallback(void* userdata,int result)
 {
 	ppDownloader* th = (ppDownloader*)userdata;
 	setTLSSys(th->m_sys);
+	setTLSWorker(th->m_sys->worker);
 	const tiny_string strurl = th->getURL();
 	LOG_CALL("dlStartDownloadCallback:"<<th->data.size()<<" "<<strurl);
 	th->ppurlloader = g_urlloader_interface->Create(th->m_pluginInstance->getppInstance());
@@ -796,40 +813,38 @@ ppPluginInstance::ppPluginInstance(PP_Instance instance, int16_t argc, const cha
 	m_graphics(0),
 	m_cachefilesystem(0),
 	m_cachedirectory_ref(0),
-	mainDownloaderStreambuf(NULL),mainDownloaderStream(NULL),
-	mainDownloader(NULL),
-	m_pt(NULL),
-	m_ppLoopThread(NULL),
+	mainDownloaderStreambuf(nullptr),mainDownloaderStream(nullptr),
+	mainDownloader(nullptr),
+	m_pt(nullptr),
+	m_ppLoopThread(nullptr),
 	m_extargc(0),
-	m_extargv(NULL),
-	m_extexception(NULL),
+	m_extargv(nullptr),
+	m_extexception(nullptr),
 	inReading(false),
 	inWriting(false)
 {
 	m_messageloop = g_messageloop_interface->Create(this->getppInstance());
-#ifdef HAVE_NEW_GLIBMM_THREAD_API
-	m_ppLoopThread = Thread::create(sigc::mem_fun(this,&ppPluginInstance::worker));
-#else
-	m_ppLoopThread = Thread::create(sigc::mem_fun(this,&ppPluginInstance::worker),true);
-#endif
 	m_cachefilesystem = g_filesystem_interface->Create(getppInstance(),PP_FileSystemType::PP_FILESYSTEMTYPE_LOCALTEMPORARY);
 	g_messageloop_interface->PostWork(m_messageloop,PP_MakeCompletionCallback(openfilesystem_callback,this),0);
-	
+
 	m_cachefilename = 0;
 	m_last_size.width = 0;
 	m_last_size.height = 0;
 	m_graphics = 0;
-	setTLSSys( NULL );
+	setTLSSys( nullptr );
+	setTLSWorker(nullptr);
 	m_sys=new lightspark::SystemState(0, lightspark::SystemState::FLASH);
 	//Files running in the plugin have REMOTE sandbox
 	m_sys->securityManager->setSandboxType(lightspark::SecurityManager::REMOTE);
+
+	m_ppLoopThread = SDL_CreateThread(ppPluginInstance::worker,"pploop",this);
 
 	m_sys->extScriptObject = new ppExtScriptObject(this,m_sys);
 	//Parse OBJECT/EMBED tag attributes
 	tiny_string swffile;
 	for(int i=0;i<argc;i++)
 	{
-		if(argn[i]==NULL || argv[i]==NULL)
+		if(argn[i]==nullptr || argv[i]==nullptr)
 			continue;
 		LOG(LOG_INFO,"param:"<<argn[i]<<" "<<argv[i]);
 		if(strcasecmp(argn[i],"flashvars")==0)
@@ -840,14 +855,22 @@ ppPluginInstance::ppPluginInstance(PP_Instance instance, int16_t argc, const cha
 		{
 			m_sys->extScriptObject->setProperty(argn[i],argv[i]);
 		}
-		else if(strcasecmp(argn[i],"src")==0)
+		else if(strcasecmp(argn[i],"src")==0 || strcasecmp(argn[i],"movie")==0)
 		{
 			swffile = argv[i];
+		}
+		else if(strcasecmp(argn[i],"allowfullscreen")==0)
+		{
+			m_sys->allowFullscreen= strcasecmp(argv[i],"true") == 0;
+		}
+		else if(strcasecmp(argn[i],"allowfullscreeninteractive")==0)
+		{
+			m_sys->allowFullscreen= strcasecmp(argv[i],"true") == 0;
 		}
 	}
 	if (!swffile.empty())
 	{
-		m_sys->downloadManager=new ppDownloadManager(this,m_sys);
+		m_sys->downloadManager=new ppDownloadManager(this);
 	
 		//EngineData::startSDLMain();
 		EngineData::mainthread_running = true;
@@ -857,16 +880,19 @@ ppPluginInstance::ppPluginInstance(PP_Instance instance, int16_t argc, const cha
 	}
 	
 	//The sys var should be NULL in this thread
-	setTLSSys( NULL );
+	setTLSSys( nullptr );
+	setTLSWorker(nullptr);
 }
-void ppPluginInstance::worker()
+int ppPluginInstance::worker(void* d)
 {
-	g_messageloop_interface->AttachToCurrentThread(m_messageloop);
+	ppPluginInstance* th = (ppPluginInstance*)d;
+	g_messageloop_interface->AttachToCurrentThread(th->m_messageloop);
 	
-	while (g_messageloop_interface->GetCurrent() != 0 && (!m_sys || !m_sys->isShuttingDown()))
+	while (g_messageloop_interface->GetCurrent() != 0 && (!th->m_sys || !th->m_sys->isShuttingDown()))
 	{
-		g_messageloop_interface->Run(m_messageloop);
+		g_messageloop_interface->Run(th->m_messageloop);
 	}
+	return 0;
 }
 void ppPluginInstance::startMainParser()
 {
@@ -889,6 +915,7 @@ ppPluginInstance::~ppPluginInstance()
 {
 	//Shutdown the system
 	setTLSSys(m_sys);
+	setTLSWorker(m_sys->worker);
 	if(mainDownloader)
 		mainDownloader->stop();
 	if (mainDownloaderStreambuf)
@@ -898,22 +925,24 @@ ppPluginInstance::~ppPluginInstance()
 	{
 		m_sys->extScriptObject->destroy();
 		delete m_sys->extScriptObject;
-		m_sys->extScriptObject = NULL;
+		m_sys->extScriptObject = nullptr;
 	}
 
 	m_sys->setShutdownFlag();
 
 	m_sys->destroy();
-	delete m_sys;
 	delete m_pt;
+	delete m_sys;
 	g_messageloop_interface->PostQuit(m_messageloop,PP_TRUE);
-	m_ppLoopThread->join();
-	setTLSSys(NULL);
+	SDL_WaitThread(m_ppLoopThread,nullptr);
+	setTLSSys(nullptr);
+	setTLSWorker(nullptr);
 }
 
 void ppPluginInstance::handleResize(PP_Resource view)
 {
 	setTLSSys(m_sys);
+	setTLSWorker(m_sys->worker);
 	struct PP_Rect position;
 	if (g_view_interface->GetRect(view, &position) == PP_FALSE)
 	{
@@ -941,7 +970,6 @@ void ppPluginInstance::handleResize(PP_Resource view)
 			m_sys->setParamsAndEngine(e, false);
 			g_graphics_3d_interface->ResizeBuffers(m_graphics,position.size.width, position.size.height);
 			m_sys->getRenderThread()->SetEngineData(m_sys->getEngineData());
-			m_sys->getRenderThread()->init();
 		}
 		else
 		{
@@ -974,6 +1002,7 @@ ppKeyMap ppkeymap[] = {
 	{ "CapsLock", SDLK_CAPSLOCK },
 	{ "Comma", SDLK_COMMA },
 	{ "ControlLeft", SDLK_LCTRL },
+	{ "ControlRight", SDLK_RCTRL },
 	{ "KeyD", SDLK_d },
 	{ "Delete", SDLK_DELETE },
 	{ "ArrowDown", SDLK_DOWN },
@@ -1068,6 +1097,7 @@ ppKeyMap ppkeymap[] = {
 	{ "KeyY", SDLK_y },
 //	{ "Yellow", SDLK_UNKNOWN }, // TODO
 	{ "KeyZ", SDLK_z },
+	{ "PrintScreen", SDLK_PRINTSCREEN },
 	{ "", SDLK_UNKNOWN } // indicator for last entry
 };
 SDL_Keycode getppSDLKeyCode(PP_Resource input_event)
@@ -1101,6 +1131,7 @@ static uint16_t getppKeyModifier(PP_Resource input_event)
 PP_Bool ppPluginInstance::handleInputEvent(PP_Resource input_event)
 {
 	setTLSSys(m_sys);
+	setTLSWorker(m_sys->worker);
 	SDL_Event ev;
 	switch (g_inputevent_interface->GetType(input_event))
 	{
@@ -1141,9 +1172,9 @@ PP_Bool ppPluginInstance::handleInputEvent(PP_Resource input_event)
 					break;
 			}
 			ev.button.clicks = g_mouseinputevent_interface->GetClickCount(input_event);
-			PP_Point p = g_mouseinputevent_interface->GetPosition(input_event);
-			ev.button.x = p.x;
-			ev.button.y = p.y;
+			mousepos = g_mouseinputevent_interface->GetPosition(input_event);
+			ev.button.x = mousepos.x;
+			ev.button.y = mousepos.y;
 			break;
 		}
 		case PP_INPUTEVENT_TYPE_MOUSEUP:
@@ -1158,6 +1189,11 @@ PP_Bool ppPluginInstance::handleInputEvent(PP_Resource input_event)
 				case PP_INPUTEVENT_MOUSEBUTTON_RIGHT:
 					ev.button.button = SDL_BUTTON_RIGHT;
 					ev.button.state = g_inputevent_interface->GetModifiers(input_event) & PP_INPUTEVENT_MODIFIER_RIGHTBUTTONDOWN ? SDL_PRESSED : SDL_RELEASED;
+					if (this->m_sys && this->m_sys->getEngineData())
+					{
+						this->m_sys->getEngineData()->incontextmenupreparing = true;
+						this->m_sys->getEngineData()->startSDLEventTicker(this->m_sys);
+					}
 					break;
 				default:
 					ev.button.button = 0;
@@ -1165,16 +1201,16 @@ PP_Bool ppPluginInstance::handleInputEvent(PP_Resource input_event)
 					break;
 			}
 			ev.button.clicks = 0;
-			PP_Point p = g_mouseinputevent_interface->GetPosition(input_event);
-			ev.button.x = p.x;
-			ev.button.y = p.y;
+			mousepos = g_mouseinputevent_interface->GetPosition(input_event);
+			ev.button.x = mousepos.x;
+			ev.button.y = mousepos.y;
 			break;
 		}
 		case PP_INPUTEVENT_TYPE_MOUSEMOVE:
 		{
 			ev.type = SDL_MOUSEMOTION;
 			ev.motion.state = g_inputevent_interface->GetModifiers(input_event) & PP_INPUTEVENT_MODIFIER_LEFTBUTTONDOWN ? SDL_PRESSED : SDL_RELEASED;
-			PP_Point p = g_mouseinputevent_interface->GetMovement(input_event);
+			PP_Point p = g_mouseinputevent_interface->GetPosition(input_event);
 			ev.motion.x = p.x;
 			ev.motion.y = p.y;
 			break;
@@ -1194,6 +1230,10 @@ PP_Bool ppPluginInstance::handleInputEvent(PP_Resource input_event)
 		{
 			ev.type = SDL_WINDOWEVENT_LEAVE;
 			break;
+		}
+		case PP_INPUTEVENT_TYPE_CONTEXTMENU:
+		{
+			return PP_TRUE;
 		}
 		default:
 			LOG(LOG_NOT_IMPLEMENTED,"ppp_inputevent:"<<(int)g_inputevent_interface->GetType(input_event));
@@ -1215,10 +1255,11 @@ void ppPluginInstance::executeScriptAsync(ExtScriptObject::HOST_CALL_DATA *data)
 bool ppPluginInstance::executeScript(const std::string script, const ExtVariant **args, uint32_t argc, ASObject **result)
 {
 	setTLSSys(m_sys);
+	setTLSWorker(m_sys->worker);
 	PP_Var scr = g_var_interface->VarFromUtf8(script.c_str(),script.length());
 	PP_Var exception = PP_MakeUndefined();
 	PP_Var func = g_instance_private_interface->ExecuteScript(m_ppinstance,scr,&exception);
-	*result = NULL;
+	*result = nullptr;
 	uint32_t len;
 	if (exception.type == PP_VARTYPE_STRING)
 	{
@@ -1242,7 +1283,7 @@ bool ppPluginInstance::executeScript(const std::string script, const ExtVariant 
 	std::map<int64_t, std::unique_ptr<ExtObject>> ppObjectsMap;
 	ppVariantObject tmp(ppObjectsMap, resultVariant);
 	std::map<const ExtObject*, ASObject*> asObjectsMap;
-	*(result) = tmp.getASObject(m_sys,asObjectsMap);
+	*(result) = tmp.getASObject(m_sys->worker,asObjectsMap);
 	return true;
 }
 
@@ -1299,6 +1340,7 @@ static void Messaging_HandleMessage(PP_Instance instance, struct PP_Var message)
 static bool PPP_Class_HasProperty(void* object,struct PP_Var name,struct PP_Var* exception)
 {
 	setTLSSys(((ppExtScriptObject*)object)->getSystemState());
+	setTLSWorker(((ppExtScriptObject*)object)->getSystemState()->worker);
 	LOG_CALL("PPP_Class_HasProperty");
 	uint32_t len;
 	switch (name.type)
@@ -1317,6 +1359,7 @@ static bool PPP_Class_HasProperty(void* object,struct PP_Var name,struct PP_Var*
 static bool PPP_Class_HasMethod(void* object,struct PP_Var name,struct PP_Var* exception)
 {
 	setTLSSys(((ppExtScriptObject*)object)->getSystemState());
+	setTLSWorker(((ppExtScriptObject*)object)->getSystemState()->worker);
 	LOG_CALL("PPP_Class_Method");
 	uint32_t len;
 	switch (name.type)
@@ -1334,6 +1377,7 @@ static bool PPP_Class_HasMethod(void* object,struct PP_Var name,struct PP_Var* e
 static struct PP_Var PPP_Class_GetProperty(void* object,struct PP_Var name,struct PP_Var* exception)
 {
 	setTLSSys(((ppExtScriptObject*)object)->getSystemState());
+	setTLSWorker(((ppExtScriptObject*)object)->getSystemState()->worker);
 	LOG_CALL("PPP_Class_GetProperty");
 	ExtVariant v;
 	uint32_t len;
@@ -1357,6 +1401,7 @@ static struct PP_Var PPP_Class_GetProperty(void* object,struct PP_Var name,struc
 static void PPP_Class_GetAllPropertyNames(void* object,uint32_t* property_count,struct PP_Var** properties,struct PP_Var* exception)
 {
 	setTLSSys(((ppExtScriptObject*)object)->getSystemState());
+	setTLSWorker(((ppExtScriptObject*)object)->getSystemState()->worker);
 	LOG_CALL("PPP_Class_GetAllPropertyNames");
 	ExtIdentifier** ids = NULL;
 	bool success = ((ppExtScriptObject*)object)->enumerate(&ids, property_count);
@@ -1379,17 +1424,18 @@ static void PPP_Class_GetAllPropertyNames(void* object,uint32_t* property_count,
 	}
 	else
 	{
-		properties = NULL;
+		properties = nullptr;
 		property_count = 0;
 	}
 
-	if(ids != NULL)
+	if(ids != nullptr)
 		delete ids;
 }
 
 static void PPP_Class_SetProperty(void* object,struct PP_Var name,struct PP_Var value,struct PP_Var* exception)
 {
 	setTLSSys(((ppExtScriptObject*)object)->getSystemState());
+	setTLSWorker(((ppExtScriptObject*)object)->getSystemState()->worker);
 	LOG_CALL("PPP_Class_SetProperty");
 	uint32_t len;
 	std::map<int64_t, std::unique_ptr<ExtObject>> objectsMap;
@@ -1410,6 +1456,7 @@ static void PPP_Class_SetProperty(void* object,struct PP_Var name,struct PP_Var 
 static void PPP_Class_RemoveProperty(void* object,struct PP_Var name,struct PP_Var* exception)
 {
 	setTLSSys(((ppExtScriptObject*)object)->getSystemState());
+	setTLSWorker(((ppExtScriptObject*)object)->getSystemState()->worker);
 	LOG_CALL("PPP_Class_RemoveProperty");
 	uint32_t len;
 	switch (name.type)
@@ -1433,6 +1480,7 @@ static struct PP_Var PPP_Class_Call(void* object,struct PP_Var name,uint32_t arg
 	ppPluginInstance* instance = ((ppExtScriptObject*)object)->getInstance();
 	
 	setTLSSys(((ppExtScriptObject*)object)->getSystemState());
+	setTLSWorker(((ppExtScriptObject*)object)->getSystemState()->worker);
 	uint32_t len;
 	ExtIdentifier method_name;
 	switch (name.type)
@@ -1560,7 +1608,10 @@ extern "C"
 		g_mouseinputevent_interface = (const PPB_MouseInputEvent*)get_browser_interface(PPB_MOUSE_INPUT_EVENT_INTERFACE);
 		g_keyboardinputevent_interface = (const PPB_KeyboardInputEvent*)get_browser_interface(PPB_KEYBOARD_INPUT_EVENT_INTERFACE);
 		g_wheelinputevent_interface = (const PPB_WheelInputEvent*)get_browser_interface(PPB_WHEEL_INPUT_EVENT_INTERFACE);
+		g_flash_interface = (const PPB_Flash*)get_browser_interface(PPB_FLASH_INTERFACE);
 		g_flashclipboard_interface = (const PPB_Flash_Clipboard*)get_browser_interface(PPB_FLASH_CLIPBOARD_INTERFACE);
+		g_flashfullscreen_interface = (const PPB_FlashFullscreen*)get_browser_interface(PPB_FLASHFULLSCREEN_INTERFACE);
+		g_flash_menu_interface = (const PPB_Flash_Menu*)get_browser_interface(PPB_FLASH_MENU_INTERFACE);
 		g_fileio_interface = (const PPB_FileIO*)get_browser_interface(PPB_FILEIO_INTERFACE);
 		g_fileref_interface = (const PPB_FileRef*)get_browser_interface(PPB_FILEREF_INTERFACE);
 		g_filesystem_interface = (const PPB_FileSystem*)get_browser_interface(PPB_FILESYSTEM_INTERFACE);
@@ -1594,7 +1645,10 @@ extern "C"
 				!g_audioconfig_interface ||
 				!g_imagedata_interface ||
 				!g_browserfont_interface ||
-				!g_messageloop_interface
+				!g_messageloop_interface ||
+				!g_flashfullscreen_interface ||
+				!g_flash_menu_interface ||
+				!g_flash_interface
 				)
 		{
 			LOG(LOG_ERROR,"get_browser_interface failed:"
@@ -1623,6 +1677,9 @@ extern "C"
 				<< g_imagedata_interface<<" "
 				<< g_browserfont_interface<<" "
 				<< g_messageloop_interface<<" "
+				<< g_flashfullscreen_interface<<" "
+				<< g_flash_menu_interface<<" "
+				<< g_flash_interface<<" "
 				);
 			return PP_ERROR_NOINTERFACE;
 		}
@@ -1652,9 +1709,44 @@ extern "C"
 		{
 			return &input_event_interface;
 		}
-		return NULL;
+		return nullptr;
 	}
 
+}
+
+void ppPluginEngineData::contextmenucallbackfunc(void *user_data, int32_t result)
+{
+	if (result != PP_ERROR_USERCANCEL)
+	{
+		((ppPluginEngineData*)user_data)->selectContextMenuItem();
+	}
+	for (uint32_t i = 0; i <((ppPluginEngineData*)user_data)->ppcontextmenu.count; i++)
+	{
+		delete[] ((ppPluginEngineData*)user_data)->ppcontextmenu.items[i].name;
+	}
+	delete[] ((ppPluginEngineData*)user_data)->ppcontextmenu.items;
+}
+void ppPluginEngineData::openContextMenu()
+{
+	incontextmenupreparing = false;
+	ppcontextmenu.count = currentcontextmenuitems.size();
+	ppcontextmenu.items = new PP_Flash_MenuItem[ppcontextmenu.count];
+	for (uint32_t i = 0; i <currentcontextmenuitems.size(); i++)
+	{
+		NativeMenuItem* item = currentcontextmenuitems.at(i).getPtr();
+		ppcontextmenu.items[i].id=i;
+		ppcontextmenu.items[i].type = item->isSeparator ? PP_FLASH_MENUITEM_TYPE_SEPARATOR : PP_FLASH_MENUITEM_TYPE_NORMAL;
+		ppcontextmenu.items[i].enabled = item->enabled ? PP_TRUE : PP_FALSE;
+		if (item->isSeparator)
+			ppcontextmenu.items[i].name = nullptr;
+		else
+		{
+			ppcontextmenu.items[i].name = new char[item->label.numBytes()+1];
+			strcpy(ppcontextmenu.items[i].name,item->label.raw_buf());
+		}
+	}
+	ppcontextmenuid = g_flash_menu_interface->Create(this->instance->getppInstance(),&ppcontextmenu);
+	g_flash_menu_interface->Show(ppcontextmenuid,&this->instance->mousepos,&contextmenucurrentitem,contextmenucallback);
 }
 
 void ppPluginEngineData::stopMainDownload()
@@ -1689,10 +1781,105 @@ void ppPluginEngineData::runInMainThread(SystemState* sys, void (*func) (SystemS
 	g_messageloop_interface->PostWork(this->instance->getMessageLoop(),PP_MakeCompletionCallback(exec_ppPluginEngineData_callback,ue),0);
 }
 
+void ppPluginEngineData::setLocalStorageAllowedMarker(bool allowed)
+{
+	PP_Resource fileref = g_fileref_interface->Create(instance->getFileSystem(),"/localstorageallowed");
+	
+	if (allowed)
+	{
+		PP_Resource file = g_fileio_interface->Create(instance->getppInstance());
+		g_fileio_interface->Open(file,fileref,PP_FILEOPENFLAG_CREATE,PP_BlockUntilComplete());
+		g_fileio_interface->Close(file);
+	}
+	else
+		g_fileref_interface->Delete(fileref,PP_BlockUntilComplete());
+}
+
+bool ppPluginEngineData::getLocalStorageAllowedMarker()
+{
+	PP_Resource fileref = g_fileref_interface->Create(instance->getFileSystem(),"/localstorageallowed");
+	PP_Resource file = g_fileio_interface->Create(instance->getppInstance());
+	bool allowed = g_fileio_interface->Open(file,fileref,PP_FILEOPENFLAG_READ,PP_BlockUntilComplete()) == PP_OK;
+	g_fileio_interface->Close(file);
+	return allowed;
+}
+
+bool ppPluginEngineData::fillSharedObject(const tiny_string &name, ByteArray *data)
+{
+	tiny_string path = "/shared_";
+	path +=name;
+	PP_Resource fileref = g_fileref_interface->Create(instance->getFileSystem(),path.raw_buf());
+	PP_Resource file = g_fileio_interface->Create(instance->getppInstance());
+	int res = g_fileio_interface->Open(file,fileref,PP_FILEOPENFLAG_READ,PP_BlockUntilComplete());
+	LOG(LOG_TRACE,"localstorage opened:"<<res<<" "<<name);
+	if (res==PP_OK)
+	{
+		PP_FileInfo fi;
+		g_fileio_interface->Query(file,&fi,PP_BlockUntilComplete());
+		int offset=0;
+		int toread=fi.size;
+		while (toread>0)
+		{
+			char* d = (char*)data->getBuffer(fi.size,true);
+			int read = g_fileio_interface->Read(file,offset,d,toread,PP_BlockUntilComplete());
+			if (read >= 0)
+			{
+				offset += read;
+				toread -= read;
+			}
+			else
+				LOG(LOG_ERROR,"reading localstorage failed:"<<read<<" "<<offset<<" "<<fi.size);
+		}
+		LOG(LOG_TRACE,"localstorage read:"<<res);
+		return true;
+	}
+	else
+		return false;
+}
+
+bool ppPluginEngineData::flushSharedObject(const tiny_string &name, ByteArray *data)
+{
+	tiny_string path = "/shared_";
+	path +=name;
+	PP_Resource fileref = g_fileref_interface->Create(instance->getFileSystem(),path.raw_buf());
+	PP_Resource file = g_fileio_interface->Create(instance->getppInstance());
+	int res = g_fileio_interface->Open(file,fileref,PP_FILEOPENFLAG_WRITE|PP_FILEOPENFLAG_CREATE|PP_FILEOPENFLAG_TRUNCATE,PP_BlockUntilComplete());
+	LOG(LOG_TRACE,"localstorage opened for writing:"<<res<<" "<<name);
+	if (res==PP_OK)
+	{
+		int offset=0;
+		int towrite=data->getLength();
+		while (towrite>0)
+		{
+			char* d = (char*)data->getBufferNoCheck();
+			int written=g_fileio_interface->Write(file,offset,d,towrite,PP_BlockUntilComplete());
+			if (written >= 0)
+			{
+				offset += written;
+				towrite-=written;
+			}
+			else
+				LOG(LOG_ERROR,"reading localstorage failed:"<<written<<" "<<offset<<" "<<towrite);
+		}
+		LOG(LOG_TRACE,"localstorage flush:"<<res);
+		return true;
+	}
+	else
+		return false;
+}
+
+void ppPluginEngineData::removeSharedObject(const tiny_string &name)
+{
+	LOG(LOG_NOT_IMPLEMENTED,"local storage access for PPAPI");
+}
+
 void ppPluginEngineData::openPageInBrowser(const tiny_string& url, const tiny_string& window)
 {
-	LOG(LOG_NOT_IMPLEMENTED,"openPageInBrowser:"<<url<<" "<<window);
-	//instance->openLink(url, window);
+	PP_Resource pprequest_info = g_urlrequestinfo_interface->Create(this->instance->getppInstance());
+	PP_Var u = g_var_interface->VarFromUtf8(url.raw_buf(),url.numBytes());
+	g_urlrequestinfo_interface->SetProperty(pprequest_info,PP_URLREQUESTPROPERTY_URL,u);
+	g_urlrequestinfo_interface->SetProperty(pprequest_info,PP_URLREQUESTPROPERTY_ALLOWCROSSORIGINREQUESTS,PP_MakeBool(PP_TRUE));
+	g_flash_interface->Navigate(pprequest_info,window.raw_buf(),PP_TRUE);
 }
 
 SDL_Window* ppPluginEngineData::createWidget(uint32_t w,uint32_t h)
@@ -1702,6 +1889,15 @@ SDL_Window* ppPluginEngineData::createWidget(uint32_t w,uint32_t h)
 
 void ppPluginEngineData::grabFocus()
 {
+}
+
+void ppPluginEngineData::setDisplayState(const tiny_string &displaystate, SystemState *sys)
+{
+	g_flashfullscreen_interface->SetFullscreen(this->instance->getppInstance(),displaystate.startsWith("fullScreen") ? PP_TRUE : PP_FALSE);
+}
+bool ppPluginEngineData::inFullScreenMode()
+{
+	return g_flashfullscreen_interface->IsFullscreen(this->instance->getppInstance()) == PP_TRUE;
 }
 
 void ppPluginEngineData::setClipboardText(const std::string txt)
@@ -1764,7 +1960,8 @@ void ppPluginEngineData::DoSwapBuffers()
 
 void ppPluginEngineData::InitOpenGL()
 {
-	
+	//TODO implement nanoVG renderer using EngineData openGL methods
+	//initNanoVG();
 }
 
 void ppPluginEngineData::DeinitOpenGL()
@@ -1776,31 +1973,6 @@ bool ppPluginEngineData::getGLError(uint32_t &errorCode) const
 {
 	errorCode = g_gles2_interface->GetError(instance->m_graphics);
 	return errorCode!=GL_NO_ERROR;
-}
-
-uint8_t *ppPluginEngineData::getCurrentPixBuf() const
-{
-	return currentPixelBufPtr;
-}
-
-uint8_t *ppPluginEngineData::switchCurrentPixBuf(uint32_t w, uint32_t h)
-{
-	//TODO See if a more elegant way of handling the non-PBO case can be found.
-	//for now, each frame is uploaded one at a time synchronously to the server
-	if(!currentPixelBufPtr)
-#ifdef _WIN32
-		currentPixelBufPtr = (uint8_t*)_aligned_malloc(w*h*4, 16);
-		if (!currentPixelBufPtr) {
-			LOG(LOG_ERROR, "posix_memalign could not allocate memory");
-			return NULL;
-		}
-#else
-		if(posix_memalign((void **)&currentPixelBufPtr, 16, w*h*4)) {
-			LOG(LOG_ERROR, "posix_memalign could not allocate memory");
-			return NULL;
-		}
-#endif
-	return currentPixelBufPtr;
 }
 
 tiny_string ppPluginEngineData::getGLDriverInfo()
@@ -1816,9 +1988,34 @@ tiny_string ppPluginEngineData::getGLDriverInfo()
 	return res;
 }
 
+void ppPluginEngineData::getGlCompressedTextureFormats()
+{
+	int32_t numformats;
+	g_gles2_interface->GetIntegerv(instance->m_graphics,GL_NUM_COMPRESSED_TEXTURE_FORMATS,&numformats);
+	if (numformats == 0)
+		return;
+	int32_t* formats = new int32_t[numformats];
+	g_gles2_interface->GetIntegerv(instance->m_graphics,GL_COMPRESSED_TEXTURE_FORMATS,formats);
+	for (int32_t i = 0; i < numformats; i++)
+	{
+		LOG(LOG_INFO,"OpenGL supported compressed texture format:"<<hex<<formats[i]);
+		if (formats[i] == GL_COMPRESSED_RGBA_S3TC_DXT5_EXT)
+			compressed_texture_formats.push_back(TEXTUREFORMAT_COMPRESSED::DXT5);
+	}
+	delete [] formats;
+}
+
 void ppPluginEngineData::exec_glUniform1f(int location, float v0)
 {
 	g_gles2_interface->Uniform1f(instance->m_graphics,location,v0);
+}
+void ppPluginEngineData::exec_glUniform2f(int location, float v0, float v1)
+{
+	g_gles2_interface->Uniform2f(instance->m_graphics,location,v0,v1);
+}
+void ppPluginEngineData::exec_glUniform4f(int location, float v0, float v1, float v2, float v3)
+{
+	g_gles2_interface->Uniform4f(instance->m_graphics,location,v0,v1,v2,v3);
 }
 
 void ppPluginEngineData::exec_glBindTexture_GL_TEXTURE_2D(uint32_t id)
@@ -1879,11 +2076,6 @@ void ppPluginEngineData::exec_glUniformMatrix4fv(int32_t location, int32_t count
 	g_gles2_interface->UniformMatrix4fv(instance->m_graphics,location, count, transpose, value);
 }
 
-void ppPluginEngineData::exec_glBindBuffer_GL_PIXEL_UNPACK_BUFFER(uint32_t buffer)
-{
-	// ppapi doesn't know GL_PIXEL_UNPACK_BUFFER
-	//g_gles2_interface->BindBuffer(instance->m_graphics,GL_PIXEL_UNPACK_BUFFER, buffer);
-}
 void ppPluginEngineData::exec_glBindBuffer_GL_ELEMENT_ARRAY_BUFFER(uint32_t buffer)
 {
 	g_gles2_interface->BindBuffer(instance->m_graphics,GL_ELEMENT_ARRAY_BUFFER, buffer);
@@ -1891,15 +2083,6 @@ void ppPluginEngineData::exec_glBindBuffer_GL_ELEMENT_ARRAY_BUFFER(uint32_t buff
 void ppPluginEngineData::exec_glBindBuffer_GL_ARRAY_BUFFER(uint32_t buffer)
 {
 	g_gles2_interface->BindBuffer(instance->m_graphics,GL_ARRAY_BUFFER, buffer);
-}
-uint8_t* ppPluginEngineData::exec_glMapBuffer_GL_PIXEL_UNPACK_BUFFER_GL_WRITE_ONLY()
-{
-	// PPAPI has no GLEW
-	return NULL;
-}
-void ppPluginEngineData::exec_glUnmapBuffer_GL_PIXEL_UNPACK_BUFFER()
-{
-	// PPAPI has no GLEW
 }
 
 void ppPluginEngineData::exec_glEnable_GL_TEXTURE_2D()
@@ -2041,7 +2224,10 @@ void ppPluginEngineData::exec_glGetProgramiv_GL_LINK_STATUS(uint32_t program,int
 void ppPluginEngineData::exec_glBindFramebuffer_GL_FRAMEBUFFER(uint32_t framebuffer)
 {
 	g_gles2_interface->BindFramebuffer(instance->m_graphics,GL_FRAMEBUFFER,framebuffer);
-	g_gles2_interface->FrontFace(instance->m_graphics,framebuffer == 0 ? GL_CCW : GL_CW);
+}
+void ppPluginEngineData::exec_glFrontFace(bool ccw)
+{
+	g_gles2_interface->FrontFace(instance->m_graphics,ccw ? GL_CCW : GL_CW);
 }
 
 void ppPluginEngineData::exec_glBindRenderbuffer_GL_RENDERBUFFER(uint32_t renderbuffer)
@@ -2221,11 +2407,6 @@ void ppPluginEngineData::exec_glViewport(int32_t x,int32_t y,int32_t width,int32
 	g_gles2_interface->Viewport(instance->m_graphics,x,y,width,height);
 }
 
-void ppPluginEngineData::exec_glBufferData_GL_PIXEL_UNPACK_BUFFER_GL_STREAM_DRAW(int32_t size,const void* data)
-{
-	// ppapi doesn't know GL_PIXEL_UNPACK_BUFFER
-	//g_gles2_interface->BufferData(instance->m_graphics,GL_PIXEL_UNPACK_BUFFER,size, data,GL_STREAM_DRAW);
-}
 void ppPluginEngineData::exec_glBufferData_GL_ELEMENT_ARRAY_BUFFER_GL_STATIC_DRAW(int32_t size,const void* data)
 {
 	g_gles2_interface->BufferData(instance->m_graphics,GL_ELEMENT_ARRAY_BUFFER,size, data,GL_STATIC_DRAW);
@@ -2247,10 +2428,17 @@ void ppPluginEngineData::exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MIN_FILTE
 {
 	g_gles2_interface->TexParameteri(instance->m_graphics,GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 }
-
 void ppPluginEngineData::exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MAG_FILTER_GL_LINEAR()
 {
 	g_gles2_interface->TexParameteri(instance->m_graphics,GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+}
+void ppPluginEngineData::exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MIN_FILTER_GL_NEAREST()
+{
+	g_gles2_interface->TexParameteri(instance->m_graphics,GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+}
+void ppPluginEngineData::exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MAG_FILTER_GL_NEAREST()
+{
+	g_gles2_interface->TexParameteri(instance->m_graphics,GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 }
 void ppPluginEngineData::exec_glSetTexParameters(int32_t lodbias, uint32_t dimension, uint32_t filter, uint32_t mipmap, uint32_t wrap)
 {
@@ -2269,20 +2457,64 @@ void ppPluginEngineData::exec_glSetTexParameters(int32_t lodbias, uint32_t dimen
 			g_gles2_interface->TexParameteri(instance->m_graphics,dimension ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST);
 			break;
 	}
-	g_gles2_interface->TexParameteri(instance->m_graphics,dimension ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-	g_gles2_interface->TexParameteri(instance->m_graphics,dimension ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+	g_gles2_interface->TexParameteri(instance->m_graphics,dimension ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap&1 ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+	g_gles2_interface->TexParameteri(instance->m_graphics,dimension ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap&2 ? GL_REPEAT : GL_CLAMP_TO_EDGE);
 	if (lodbias != 0)
 		LOG(LOG_NOT_IMPLEMENTED,"Context3D: GL_TEXTURE_LOD_BIAS not available for PPAPI");
 	//g_gles2_interface->TexParameterf(instance->m_graphics,dimension ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS,(float)(lodbias)/8.0);
 }
 
-void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_BYTE(int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels)
+void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_BYTE(int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels, bool hasalpha)
 {
-	g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_RGBA, width, height, border, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+	g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, hasalpha ? GL_RGBA : GL_RGB, width, height, border, hasalpha ? GL_RGBA : GL_RGB, GL_UNSIGNED_BYTE, pixels);
 }
 void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_INT_8_8_8_8_HOST(int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels)
 {
 	g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_RGBA, width, height, border, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_HOST, pixels);
+}
+void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_2D(int32_t level, int32_t width, int32_t height, int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat, uint32_t compressedImageSize)
+{
+	switch (format)
+	{
+		case TEXTUREFORMAT::BGRA:
+			g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_RGBA, width, height, border, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+			break;
+		case TEXTUREFORMAT::BGR:
+			for (int i = 0; i < width*height*3; i += 3) {
+				uint8_t t = ((uint8_t*)pixels)[i];
+				((uint8_t*)pixels)[i] = ((uint8_t*)pixels)[i+2];
+				((uint8_t*)pixels)[i+2] = t;
+			}
+			g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_RGB, width, height, border, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+			break;
+		case TEXTUREFORMAT::BGRA_PACKED:
+			g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_RGBA, width, height, border, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, pixels);
+			break;
+		case TEXTUREFORMAT::BGR_PACKED:
+			LOG(LOG_NOT_IMPLEMENTED,"textureformat BGR_PACKED for opengl es");
+			g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_RGB, width, height, border, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, pixels);
+			break;
+		case TEXTUREFORMAT::COMPRESSED:
+		case TEXTUREFORMAT::COMPRESSED_ALPHA:
+		{
+			switch (compressedformat)
+			{
+				case TEXTUREFORMAT_COMPRESSED::DXT5:
+					g_gles2_interface->CompressedTexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, width, height, border, compressedImageSize, pixels);
+					break;
+				default:
+					LOG(LOG_NOT_IMPLEMENTED,"upload texture in compressed format "<<compressedformat);
+					break;
+			}
+			break;
+		}
+		case TEXTUREFORMAT::RGBA_HALF_FLOAT:
+			LOG(LOG_NOT_IMPLEMENTED,"upload texture in format "<<format);
+			break;
+		default:
+			LOG(LOG_ERROR,"invalid format for upload texture:"<<format);
+			break;
+	}
 }
 
 void ppPluginEngineData::exec_glDrawBuffer_GL_BACK()
@@ -2326,42 +2558,60 @@ void ppPluginEngineData::exec_glDepthMask(bool flag)
 	g_gles2_interface->DepthMask(instance->m_graphics,flag);
 }
 
-void ppPluginEngineData::exec_glPixelStorei_GL_UNPACK_ROW_LENGTH(int32_t param)
+void ppPluginEngineData::exec_glTexSubImage2D_GL_TEXTURE_2D(int32_t level, int32_t xoffset, int32_t yoffset, int32_t width, int32_t height, const void* pixels)
 {
-	// PPAPI has no PixelStorei
-	//g_gles2_interface->PixelStorei(instance->m_graphics,GL_UNPACK_ROW_LENGTH,param);
-}
-
-void ppPluginEngineData::exec_glPixelStorei_GL_UNPACK_SKIP_PIXELS(int32_t param)
-{
-	// PPAPI has no PixelStorei
-	//g_gles2_interface->PixelStorei(instance->m_graphics,GL_UNPACK_SKIP_PIXELS,param);
-}
-
-void ppPluginEngineData::exec_glPixelStorei_GL_UNPACK_SKIP_ROWS(int32_t param)
-{
-	// PPAPI has no PixelStorei
-	//g_gles2_interface->PixelStorei(instance->m_graphics,GL_UNPACK_SKIP_ROWS,param);
-}
-
-void ppPluginEngineData::exec_glTexSubImage2D_GL_TEXTURE_2D(int32_t level,int32_t xoffset,int32_t yoffset,int32_t width,int32_t height,const void* pixels, uint32_t w, uint32_t curX, uint32_t curY)
-{
-	//We need to copy the texture area to a contiguous memory region first,
-	//as GLES2 does not support UNPACK state (skip pixels, skip rows, row_lenght).
-	uint8_t *gdata = new uint8_t[4*width*height];
-	for(int j=0;j<height;j++) {
-		memcpy(gdata+4*j*width, ((uint8_t *)pixels)+4*w*(j+curY)+4*curX, width*4);
-	}
-	g_gles2_interface->TexSubImage2D(instance->m_graphics,GL_TEXTURE_2D, level, xoffset, yoffset, width, height, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_HOST, gdata);
-	delete[] gdata;
+	g_gles2_interface->TexSubImage2D(instance->m_graphics,GL_TEXTURE_2D, level, xoffset, yoffset, width, height, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_HOST, pixels);
 }
 void ppPluginEngineData::exec_glGetIntegerv_GL_MAX_TEXTURE_SIZE(int32_t* data)
 {
 	g_gles2_interface->GetIntegerv(instance->m_graphics,GL_MAX_TEXTURE_SIZE,data);
 }
+
 void ppPluginEngineData::exec_glGenerateMipmap_GL_TEXTURE_2D()
 {
 	g_gles2_interface->GenerateMipmap(instance->m_graphics,GL_TEXTURE_2D);
+}
+
+void ppPluginEngineData::exec_glReadPixels(int32_t width, int32_t height, void *buf)
+{
+	g_gles2_interface->PixelStorei(instance->m_graphics,GL_PACK_ALIGNMENT, 1);
+	g_gles2_interface->ReadPixels(instance->m_graphics,0,0,width, height, GL_RGB, GL_UNSIGNED_BYTE, buf);
+}
+void ppPluginEngineData::exec_glBindTexture_GL_TEXTURE_CUBE_MAP(uint32_t id)
+{
+	g_gles2_interface->BindTexture(instance->m_graphics,GL_TEXTURE_CUBE_MAP, id);
+}
+void ppPluginEngineData::exec_glTexParameteri_GL_TEXTURE_CUBE_MAP_GL_TEXTURE_MIN_FILTER_GL_LINEAR()
+{
+	g_gles2_interface->TexParameteri(instance->m_graphics,GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+}
+void ppPluginEngineData::exec_glTexParameteri_GL_TEXTURE_CUBE_MAP_GL_TEXTURE_MAG_FILTER_GL_LINEAR()
+{
+	g_gles2_interface->TexParameteri(instance->m_graphics,GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+}
+void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(uint32_t side, int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels)
+{
+	g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_CUBE_MAP_POSITIVE_X+side, level, GL_RGBA, width, height, border, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+}
+
+void ppPluginEngineData::exec_glScissor(int32_t x, int32_t y, int32_t width, int32_t height)
+{
+	g_gles2_interface->Enable(instance->m_graphics,GL_SCISSOR_TEST);
+	g_gles2_interface->Scissor(instance->m_graphics,x,y,width,height);
+}
+void ppPluginEngineData::exec_glDisable_GL_SCISSOR_TEST()
+{
+	g_gles2_interface->Disable(instance->m_graphics,GL_SCISSOR_TEST);
+}
+
+void ppPluginEngineData::exec_glColorMask(bool red, bool green, bool blue, bool alpha)
+{
+	g_gles2_interface->ColorMask(instance->m_graphics,red,green,blue,alpha);
+}
+
+void ppPluginEngineData::exec_glStencilFunc_GL_ALWAYS()
+{
+	g_gles2_interface->StencilFunc(instance->m_graphics,GL_ALWAYS, 0, 0xff);
 }
 
 void audio_callback(void* sample_buffer,uint32_t buffer_size_in_bytes,PP_TimeDelta latency,void* user_data)
@@ -2369,11 +2619,11 @@ void audio_callback(void* sample_buffer,uint32_t buffer_size_in_bytes,PP_TimeDel
 	AudioStream *s = (AudioStream*)user_data;
 	if (!s)
 		return;
-
+	s->startMixing();
 	uint32_t readcount = 0;
 	while (readcount < buffer_size_in_bytes)
 	{
-		uint32_t ret = s->getDecoder()->copyFrame((int16_t *)(((unsigned char*)sample_buffer)+readcount), buffer_size_in_bytes-readcount);
+		uint32_t ret = s->getDecoder()->copyFrameS16((int16_t *)(((unsigned char*)sample_buffer)+readcount), buffer_size_in_bytes-readcount);
 		if (!ret)
 			break;
 		readcount += ret;
@@ -2381,9 +2631,11 @@ void audio_callback(void* sample_buffer,uint32_t buffer_size_in_bytes,PP_TimeDel
 	if (s->getVolume() != 1.0)
 	{
 		int16_t *p = (int16_t *)sample_buffer;
+		int curpanning=0;
 		for (uint32_t i = 0; i < readcount/2; i++)
 		{
-			*p = (*p)*s->getVolume();
+			*p = (*p)*s->getVolume()*s->getPanning()[curpanning];
+			curpanning =1-curpanning;
 			p++;
 		}
 	}
@@ -2407,10 +2659,6 @@ void ppPluginEngineData::audio_StreamPause(int channel, bool dopause)
 		g_audio_interface->StartPlayback(channel);
 }
 
-void ppPluginEngineData::audio_StreamSetVolume(int channel, double volume)
-{
-}
-
 void ppPluginEngineData::audio_StreamDeinit(int channel)
 {
 	g_audio_interface->StopPlayback(channel);
@@ -2423,11 +2671,11 @@ bool ppPluginEngineData::audio_ManagerInit()
 	return audioconfig != 0;
 }
 
-void ppPluginEngineData::audio_ManagerCloseMixer()
+void ppPluginEngineData::audio_ManagerCloseMixer(AudioManager* manager)
 {
 }
 
-bool ppPluginEngineData::audio_ManagerOpenMixer()
+bool ppPluginEngineData::audio_ManagerOpenMixer(AudioManager* manager)
 {
 	return true;
 }
@@ -2442,7 +2690,20 @@ int ppPluginEngineData::audio_getSampleRate()
 	return PP_AUDIOSAMPLERATE_44100;
 }
 
-IDrawable *ppPluginEngineData::getTextRenderDrawable(const TextData &_textData, const MATRIX &_m, int32_t _x, int32_t _y, int32_t _w, int32_t _h, float _s, float _a, const std::vector<IDrawable::MaskData> &_ms,bool smoothing)
+bool ppPluginEngineData::audio_useFloatSampleFormat()
+{
+	return false;
+}
+
+uint8_t* ppPluginEngineData::getFontPixelBuffer(int32_t externalressource,int width,int height)
+{
+	uint8_t* data = new uint8_t[width*height*sizeof(uint32_t)];
+	memcpy(data,g_imagedata_interface->Map(externalressource),width*height*sizeof(uint32_t));
+	g_imagedata_interface->Unmap(externalressource);
+	return data;
+}
+
+int32_t ppPluginEngineData::setupFontRenderer(const TextData &_textData,float a, SMOOTH_MODE smoothing)
 {
 	PP_BrowserFont_Trusted_Description desc;
 	desc.face = g_var_interface->VarFromUtf8(_textData.font.raw_buf(),_textData.font.numBytes());
@@ -2459,40 +2720,16 @@ IDrawable *ppPluginEngineData::getTextRenderDrawable(const TextData &_textData, 
 	PP_Size size = PP_MakeSize(_textData.width, _textData.height);
 	
 	PP_BrowserFont_Trusted_TextRun text;
-	text.text = g_var_interface->VarFromUtf8(_textData.text.raw_buf(),_textData.text.numBytes());
+	text.text = g_var_interface->VarFromUtf8(_textData.getText().raw_buf(),_textData.getText().numBytes());
 	text.override_direction = PP_FALSE;
 	text.rtl = PP_FALSE;
 	
-	uint32_t color = (_textData.textColor.Blue) + (_textData.textColor.Green<<8) + (_textData.textColor.Red<<16) + ((int)(255/_a)<<24);
+	uint32_t color = (_textData.textColor.Blue) + (_textData.textColor.Green<<8) + (_textData.textColor.Red<<16) + ((int)(255/a)<<24);
 
 	PP_Resource image_data = g_imagedata_interface->Create(instance->m_ppinstance,PP_IMAGEDATAFORMAT_BGRA_PREMUL,&size,PP_TRUE);
 	PP_Resource font = g_browserfont_interface->Create(instance->m_ppinstance,&desc);
 	if (font == 0)
 		LOG(LOG_ERROR,"couldn't create font:"<<_textData.font);
-	g_browserfont_interface->DrawTextAt(font,image_data,&text,&pos,color,NULL,smoothing ? PP_TRUE : PP_FALSE);
-	
-	return new ppFontRenderer(_w,_h,_x,_y,_a,_ms,image_data);
+	g_browserfont_interface->DrawTextAt(font,image_data,&text,&pos,color,nullptr,smoothing != SMOOTH_MODE::SMOOTH_NONE ? PP_TRUE : PP_FALSE);
+	return image_data;
 }
-ppFontRenderer::ppFontRenderer(int32_t w, int32_t h, int32_t x, int32_t y, float a, const std::vector<MaskData>& m, PP_Resource _image_data)
-	: IDrawable(w, h, x, y, a, m),ppimage(_image_data)
-{
-	
-}
-
-ppFontRenderer::~ppFontRenderer()
-{
-}
-
-uint8_t *ppFontRenderer::getPixelBuffer()
-{
-	uint8_t* data = new uint8_t[this->width*this->height*sizeof(uint32_t)];
-	memcpy(data,g_imagedata_interface->Map(ppimage),this->width*this->height*sizeof(uint32_t));
-	g_imagedata_interface->Unmap(ppimage);
-	return data;
-}
-
-void ppFontRenderer::applyCairoMask(cairo_t *cr, int32_t offsetX, int32_t offsetY) const
-{
-	
-}
-

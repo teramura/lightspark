@@ -40,7 +40,7 @@ private:
 	void MakeDate(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond, bool bIsLocalTime);
 	static number_t parse(tiny_string str);
 public:
-	Date(Class_base* c);
+	Date(ASWorker* wrk,Class_base* c);
 	bool destruct()
 	{
 		if (datetimeUTC)
@@ -51,7 +51,7 @@ public:
 		datetimeUTC = NULL;
 		extrayears = 0;
 		nan = false;
-		return ASObject::destruct();
+		return destructIntern();
 	}
 
 	static void sinit(Class_base*);
@@ -117,14 +117,21 @@ public:
 	ASFUNCTION_ATOM(toLocaleDateString);
 	ASFUNCTION_ATOM(toLocaleTimeString);
 
+	int getYear();
+
+	
 	void MakeDateFromMilliseconds(int64_t ms);
 	bool isEqual(ASObject* r);
 	TRISTATE isLess(ASObject* r);
+	TRISTATE isLessAtom(asAtom& r);
+	
+	tiny_string toFormat(bool utc, tiny_string format);
+	tiny_string format(const char* fmt, bool utc);
 	tiny_string toString();
 	//Serialization interface
 	void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap);
+				std::map<const Class_base*, uint32_t>& traitsMap, ASWorker* wrk);
 };
 }
 #endif /* SCRIPTING_TOPLEVEL_DATE_H */

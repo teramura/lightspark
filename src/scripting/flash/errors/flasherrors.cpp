@@ -25,8 +25,8 @@ using namespace lightspark;
 
 ASFUNCTIONBODY_ATOM(IOError,_constructor)
 {
-	IOError* th=obj.as<IOError>();
-	ARG_UNPACK_ATOM(th->message, "");
+	IOError* th=asAtomHandler::as<IOError>(obj);
+	ARG_CHECK(ARG_UNPACK(th->message, ""));
 }
 
 void IOError::sinit(Class_base* c)
@@ -40,8 +40,8 @@ void IOError::buildTraits(ASObject* o)
 
 ASFUNCTIONBODY_ATOM(EOFError,_constructor)
 {
-	EOFError* th=obj.as<EOFError>();
-	ARG_UNPACK_ATOM(th->message, "");
+	EOFError* th=asAtomHandler::as<EOFError>(obj);
+	ARG_CHECK(ARG_UNPACK(th->message, ""));
 }
 
 void EOFError::sinit(Class_base* c)
@@ -55,8 +55,8 @@ void EOFError::buildTraits(ASObject* o)
 
 ASFUNCTIONBODY_ATOM(IllegalOperationError,_constructor)
 {
-	IllegalOperationError* th=obj.as<IllegalOperationError>();
-	ARG_UNPACK_ATOM(th->message, "");
+	IllegalOperationError* th=asAtomHandler::as<IllegalOperationError>(obj);
+	ARG_CHECK(ARG_UNPACK(th->message, ""));
 }
 
 void IllegalOperationError::sinit(Class_base* c)
@@ -70,9 +70,9 @@ void IllegalOperationError::buildTraits(ASObject* o)
 
 ASFUNCTIONBODY_ATOM(InvalidSWFError,_constructor)
 {
-	InvalidSWFError* th=obj.as<InvalidSWFError>();
+	InvalidSWFError* th=asAtomHandler::as<InvalidSWFError>(obj);
 	int32_t errorID;
-	ARG_UNPACK_ATOM(th->message, "") (errorID, 0);
+	ARG_CHECK(ARG_UNPACK(th->message, "") (errorID, 0));
 	th->setErrorID(errorID);
 }
 
@@ -87,8 +87,8 @@ void InvalidSWFError::buildTraits(ASObject* o)
 
 ASFUNCTIONBODY_ATOM(MemoryError,_constructor)
 {
-	MemoryError* th=obj.as<MemoryError>();
-	ARG_UNPACK_ATOM(th->message, "");
+	MemoryError* th=asAtomHandler::as<MemoryError>(obj);
+	ARG_CHECK(ARG_UNPACK(th->message, ""));
 }
 
 void MemoryError::sinit(Class_base* c)
@@ -102,8 +102,8 @@ void MemoryError::buildTraits(ASObject* o)
 
 ASFUNCTIONBODY_ATOM(ScriptTimeoutError,_constructor)
 {
-	ScriptTimeoutError* th=obj.as<ScriptTimeoutError>();
-	ARG_UNPACK_ATOM(th->message, "");
+	ScriptTimeoutError* th=asAtomHandler::as<ScriptTimeoutError>(obj);
+	ARG_CHECK(ARG_UNPACK(th->message, ""));
 }
 
 void ScriptTimeoutError::sinit(Class_base* c)
@@ -117,8 +117,8 @@ void ScriptTimeoutError::buildTraits(ASObject* o)
 
 ASFUNCTIONBODY_ATOM(StackOverflowError,_constructor)
 {
-	StackOverflowError* th=obj.as<StackOverflowError>();
-	ARG_UNPACK_ATOM(th->message, "");
+	StackOverflowError* th=asAtomHandler::as<StackOverflowError>(obj);
+	ARG_CHECK(ARG_UNPACK(th->message, ""));
 }
 
 void StackOverflowError::sinit(Class_base* c)

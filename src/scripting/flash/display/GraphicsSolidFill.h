@@ -30,15 +30,15 @@ namespace lightspark
 class GraphicsSolidFill: public ASObject, public IGraphicsFill, public IGraphicsData
 {
 public:
-	GraphicsSolidFill(Class_base* c);
+	GraphicsSolidFill(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base* c);
 	ASFUNCTION_ATOM(_constructor);
 	ASPROPERTY_GETTER_SETTER(number_t, alpha);
 	ASPROPERTY_GETTER_SETTER(uint32_t, color);
 	FILLSTYLE toFillStyle();
-	void appendToTokens(tokensVector& tokens);
+	void appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics);
 };
 
-};
+}
 
 #endif /* SCRIPTING_FLASH_DISPLAY_GRAPHICSSOLIDFILL_H */

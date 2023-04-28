@@ -21,7 +21,7 @@
 #define FLASH_NET_SOCKET_H_
 
 #include "scripting/flash/events/flashevents.h"
-#include "scripting/flash/utils/ByteArray.h"
+#include "scripting/flash/utils/flashutils.h"
 #include "tiny_string.h"
 #include "asobject.h"
 #include "threading.h"
@@ -29,7 +29,7 @@
 
 namespace lightspark
 {
-
+class ByteArray;
 class SocketIO
 {
 private:
@@ -38,7 +38,7 @@ public:
 	SocketIO();
 	~SocketIO();
 
-	bool connect(const tiny_string& hostname, int port);
+	bool connect(const tiny_string& hostname, int port, int timeoutseconds=0);
 	bool connected() const;
 	void close();
 	ssize_t receive(void *buf, size_t count) const;
@@ -52,7 +52,8 @@ class ASSocket : public EventDispatcher, IDataInput, IDataOutput
 {
 protected:
 	ASSocketThread *job;
-	Spinlock joblock; // protect access to job
+	Mutex joblock; // protect access to job
+	uint8_t objectEncoding;
 
 	ASPROPERTY_GETTER_SETTER(int,timeout);
 	ASFUNCTION_ATOM(_constructor);
@@ -63,6 +64,8 @@ protected:
 	ASFUNCTION_ATOM(bytesAvailable);
 	ASFUNCTION_ATOM(_getEndian);
 	ASFUNCTION_ATOM(_setEndian);
+	ASFUNCTION_ATOM(_getObjectEncoding);
+	ASFUNCTION_ATOM(_setObjectEncoding);
 	ASFUNCTION_ATOM(readBoolean);
 	ASFUNCTION_ATOM(readByte);
 	ASFUNCTION_ATOM(readBytes);
@@ -93,10 +96,10 @@ protected:
 	void connect(tiny_string host, int port);
 	bool isConnected();
 public:
-	ASSocket(Class_base* c) : EventDispatcher(c), job(NULL), timeout(20000) {}
+	ASSocket(ASWorker* wrk,Class_base* c);
 	~ASSocket();
 	static void sinit(Class_base*);
-	void finalize();
+	void finalize() override;
 	void threadFinished();
 };
 
@@ -122,8 +125,8 @@ protected:
 public:
 	ASSocketThread(_R<ASSocket> owner, const tiny_string& hostname, int port, int timeout);
 	~ASSocketThread();
-	virtual void execute();
-	virtual void jobFence();
+	void execute() override;
+	void jobFence() override;
 	void flushData();
 	void requestClose();
 	bool isConnected();

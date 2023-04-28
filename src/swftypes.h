@@ -23,6 +23,8 @@
 #include "compat.h"
 #include <iostream>
 #include <vector>
+#include <map>
+#include <stack>
 #include <list>
 #include <cairo.h>
 
@@ -40,7 +42,13 @@
 #define BUILTIN_STRINGS_CHAR_MAX 0x10000 // strings 0-0xffff are one-char strings of the corresponding unicode char
 namespace lightspark
 {
-enum BUILTIN_STRINGS { EMPTY=0, STRING_WILDCARD='*', ANY=BUILTIN_STRINGS_CHAR_MAX, VOID, PROTOTYPE, STRING_FUNCTION,STRING_AS3VECTOR,STRING_CLASS,STRING_AS3NS,STRING_NAMESPACENS,STRING_XML,STRING_TOSTRING,STRING_VALUEOF,STRING_LENGTH,STRING_CONSTRUCTOR,LAST_BUILTIN_STRING };
+enum BUILTIN_STRINGS { EMPTY=0, STRING_WILDCARD='*', ANY=BUILTIN_STRINGS_CHAR_MAX, VOID, PROTOTYPE, STRING_FUNCTION,STRING_AS3VECTOR,STRING_CLASS,STRING_AS3NS,STRING_NAMESPACENS,STRING_XML,STRING_TOSTRING,STRING_VALUEOF,STRING_LENGTH,STRING_CONSTRUCTOR
+					   ,STRING_AVM1_TARGET,STRING_THIS,STRING_AVM1_ROOT,STRING_AVM1_PARENT,STRING_AVM1_GLOBAL,STRING_SUPER
+					   ,STRING_ONENTERFRAME,STRING_ONMOUSEMOVE,STRING_ONMOUSEDOWN,STRING_ONMOUSEUP,STRING_ONPRESS,STRING_ONRELEASE,STRING_ONRELEASEOUTSIDE,STRING_ONMOUSEWHEEL, STRING_ONLOAD
+					   ,STRING_OBJECT,STRING_UNDEFINED,STRING_BOOLEAN,STRING_NUMBER,STRING_STRING,STRING_FUNCTION_LOWERCASE,STRING_ONROLLOVER,STRING_ONROLLOUT
+					   ,STRING_PROTO,STRING_TARGET,STRING_FLASH_EVENTS_IEVENTDISPATCHER,STRING_ADDEVENTLISTENER,STRING_REMOVEEVENTLISTENER,STRING_DISPATCHEVENT,STRING_HASEVENTLISTENER
+					   ,STRING_ONCONNECT,STRING_ONDATA,STRING_ONCLOSE,STRING_ONSELECT
+					   ,LAST_BUILTIN_STRING };
 enum BUILTIN_NAMESPACES { EMPTY_NS=0, AS3_NS };
 
 
@@ -54,7 +62,12 @@ enum CLASS_SUBTYPE { SUBTYPE_NOT_SET, SUBTYPE_PROXY, SUBTYPE_REGEXP, SUBTYPE_XML
 					 ,SUBTYPE_KEYBOARD_EVENT,SUBTYPE_MOUSE_EVENT,SUBTYPE_ROOTMOVIECLIP,SUBTYPE_MATRIX,SUBTYPE_POINT,SUBTYPE_RECTANGLE,SUBTYPE_COLORTRANSFORM,SUBTYPE_BYTEARRAY
 					 ,SUBTYPE_APPLICATIONDOMAIN,SUBTYPE_LOADERCONTEXT,SUBTYPE_SPRITE,SUBTYPE_MOVIECLIP,SUBTYPE_TEXTBLOCK,SUBTYPE_FONTDESCRIPTION,SUBTYPE_CONTENTELEMENT,SUBTYPE_ELEMENTFORMAT
 					 ,SUBTYPE_TEXTELEMENT, SUBTYPE_ACTIVATIONOBJECT,SUBTYPE_TEXTLINE,SUBTYPE_STAGE3D,SUBTYPE_MATRIX3D,SUBTYPE_INDEXBUFFER3D,SUBTYPE_PROGRAM3D,SUBTYPE_VERTEXBUFFER3D
-					 ,SUBTYPE_CONTEXT3D,SUBTYPE_TEXTUREBASE,SUBTYPE_TEXTURE,SUBTYPE_CUBETEXTURE,SUBTYPE_RECTANGLETEXTURE,SUBTYPE_VIDEOTEXTURE,SUBTYPE_VECTOR3D
+					 ,SUBTYPE_CONTEXT3D,SUBTYPE_TEXTUREBASE,SUBTYPE_TEXTURE,SUBTYPE_CUBETEXTURE,SUBTYPE_RECTANGLETEXTURE,SUBTYPE_VIDEOTEXTURE,SUBTYPE_VECTOR3D,SUBTYPE_NETSTREAM
+					 ,SUBTYPE_WORKER,SUBTYPE_WORKERDOMAIN,SUBTYPE_MUTEX,SUBTYPE_AVM1FUNCTION,SUBTYPE_SAMPLEDATA_EVENT
+					 ,SUBTYPE_BITMAPFILTER,SUBTYPE_GLOWFILTER,SUBTYPE_DROPSHADOWFILTER,SUBTYPE_GRADIENTGLOWFILTER,SUBTYPE_BEVELFILTER,SUBTYPE_COLORMATRIXFILTER,SUBTYPE_BLURFILTER,SUBTYPE_CONVOLUTIONFILTER,SUBTYPE_DISPLACEMENTFILTER,SUBTYPE_GRADIENTBEVELFILTER,SUBTYPE_SHADERFILTER
+					 ,SUBTYPE_THROTTLE_EVENT,SUBTYPE_CONTEXTMENUEVENT,SUBTYPE_GAMEINPUTEVENT, SUBTYPE_GAMEINPUTDEVICE, SUBTYPE_VIDEO, SUBTYPE_MESSAGECHANNEL, SUBTYPE_CONDITION
+					 ,SUBTYPE_FILE, SUBTYPE_FILEMODE, SUBTYPE_FILESTREAM, SUBTYPE_FILEREFERENCE, SUBTYPE_DATAGRAMSOCKET, SUBTYPE_NATIVEWINDOW,SUBTYPE_EXTENSIONCONTEXT,SUBTYPE_SIMPLEBUTTON,SUBTYPE_SHAPE,SUBTYPE_MORPHSHAPE
+					 ,SUBTYPE_URLLOADER,SUBTYPE_URLREQUEST,SUBTYPE_DICTIONARY,SUBTYPE_TEXTLINEMETRICS,SUBTYPE_XMLNODE,SUBTYPE_XMLDOCUMENT
 				   };
  
 enum STACK_TYPE{STACK_NONE=0,STACK_OBJECT,STACK_INT,STACK_UINT,STACK_NUMBER,STACK_BOOLEAN};
@@ -62,6 +75,15 @@ enum STACK_TYPE{STACK_NONE=0,STACK_OBJECT,STACK_INT,STACK_UINT,STACK_NUMBER,STAC
 enum AS_BLENDMODE { BLENDMODE_NORMAL=0, BLENDMODE_LAYER=2, BLENDMODE_MULTIPLY=3,BLENDMODE_SCREEN=4,BLENDMODE_LIGHTEN=5,BLENDMODE_DARKEN=6, BLENDMODE_DIFFERENCE=7,
 					BLENDMODE_ADD=8, BLENDMODE_SUBTRACT=9,BLENDMODE_INVERT=10,BLENDMODE_ALPHA=11,BLENDMODE_ERASE=12,BLENDMODE_OVERLAY=13,BLENDMODE_HARDLIGHT=14
 				  };
+
+enum LS_VIDEO_CODEC { H264=0, H263, VP6, VP6A, GIF };
+// "Audio coding formats" from Chapter 11 in SWF documentation (except for LINEAR_PCM_FLOAT_PLATFORM_ENDIAN)
+enum LS_AUDIO_CODEC { CODEC_NONE=-1, LINEAR_PCM_PLATFORM_ENDIAN=0, ADPCM=1, MP3=2, LINEAR_PCM_LE=3, AAC=10, LINEAR_PCM_FLOAT_PLATFORM_ENDIAN = 100 };
+
+enum OBJECT_ENCODING { AMF0=0, AMF3=3, DEFAULT=3 };
+
+// Enum used during early binding in abc_optimizer.cpp
+enum EARLY_BIND_STATUS { NOT_BINDED=0, CANNOT_BIND=1, BINDED };
 
 inline std::ostream& operator<<(std::ostream& s, const STACK_TYPE& st)
 {
@@ -104,6 +126,11 @@ class ASString;
 class ABCContext;
 class URLInfo;
 class DisplayObject;
+class MovieClip;
+class Frame;
+class AVM1Function;
+class AVM1context;
+class ASWorker;
 struct namespace_info;
 
 struct multiname;
@@ -119,6 +146,10 @@ public:
 			return nameId<r.nameId;
 		else
 			return nsStringId<r.nsStringId;
+	}
+	bool operator==(const QName& r) const
+	{
+		return nameId==r.nameId && nsStringId==r.nsStringId;
 	}
 	tiny_string getQualifiedName(SystemState* sys, bool forDescribeType = false) const;
 	operator multiname() const;
@@ -258,8 +289,11 @@ friend class ASString;
 private:
 	std::string String;
 public:
-	STRING():String(){};
+	STRING():String(){}
 	STRING(const char* s):String(s)
+	{
+	}
+	STRING(const char* s, int len):String(s,len)
 	{
 	}
 	bool operator==(const STRING& s)
@@ -305,15 +339,19 @@ public:
 //Numbers taken from AVM2 specs
 enum NS_KIND { NAMESPACE=0x08, PACKAGE_NAMESPACE=0x16, PACKAGE_INTERNAL_NAMESPACE=0x17, PROTECTED_NAMESPACE=0x18, 
 			EXPLICIT_NAMESPACE=0x19, STATIC_PROTECTED_NAMESPACE=0x1A, PRIVATE_NAMESPACE=0x05 };
-
+class RootMovieClip;
 struct nsNameAndKindImpl
 {
 	uint32_t nameId;
 	NS_KIND kind;
 	uint32_t baseId;
-	nsNameAndKindImpl(uint32_t _nameId, NS_KIND _kind, uint32_t b=-1);
+	// this is null for all namespaces except kind PROTECTED_NAMESPACE, to ensure they are treated as different namespaces when declared in different swf files
+	RootMovieClip* root;
+	nsNameAndKindImpl(uint32_t _nameId, NS_KIND _kind, RootMovieClip* r=nullptr,uint32_t b=-1);
 	bool operator<(const nsNameAndKindImpl& r) const
 	{
+		if(root != r.root)
+			return root<r.root;
 		if(kind==r.kind)
 			return nameId < r.nameId;
 		else
@@ -321,6 +359,8 @@ struct nsNameAndKindImpl
 	}
 	bool operator>(const nsNameAndKindImpl& r) const
 	{
+		if(root != r.root)
+			return root>r.root;
 		if(kind==r.kind)
 			return nameId > r.nameId;
 		else
@@ -337,13 +377,14 @@ struct nsNameAndKind
 	nsNameAndKind():nsId(0),nsRealId(0),nsNameId(BUILTIN_STRINGS::EMPTY),kind(NAMESPACE) {}
 	nsNameAndKind(SystemState *sys, const tiny_string& _name, NS_KIND _kind);
 	nsNameAndKind(SystemState* sys,const char* _name, NS_KIND _kind);
-	nsNameAndKind(SystemState* sys,uint32_t _nameId, NS_KIND _kind);
+	nsNameAndKind(SystemState* sys, uint32_t _nameId, NS_KIND _kind);
+	nsNameAndKind(SystemState* sys, uint32_t _nameId, NS_KIND _kind, RootMovieClip *root);
 	nsNameAndKind(ABCContext * c, uint32_t nsContextIndex);
 	/*
 	 * Special constructor for protected namespace, which have
 	 * different representationId
 	 */
-	nsNameAndKind(SystemState* sys,uint32_t _nameId, uint32_t _baseId, NS_KIND _kind);
+	nsNameAndKind(SystemState* sys, uint32_t _nameId, uint32_t _baseId, NS_KIND _kind, RootMovieClip *root);
 	/*
 	 * Special version to create the empty bultin namespace
 	 */
@@ -363,7 +404,6 @@ struct nsNameAndKind
 	{
 		return nsId==r.nsId;
 	}
-	const nsNameAndKindImpl& getImpl(SystemState *sys) const;
 	inline bool hasEmptyName() const
 	{
 		return nsId==0;
@@ -386,6 +426,7 @@ struct multiname: public memory_reporter
 	};
 	std::vector<nsNameAndKind, reporter_allocator<nsNameAndKind>> ns;
 	const Type* cachedType;
+	std::vector<multiname*> templateinstancenames;
 	enum NAME_TYPE {NAME_STRING,NAME_INT,NAME_UINT,NAME_NUMBER,NAME_OBJECT};
 	NAME_TYPE name_type:3;
 	bool isAttribute:1;
@@ -393,7 +434,8 @@ struct multiname: public memory_reporter
 	bool hasEmptyNS:1;
 	bool hasBuiltinNS:1;
 	bool hasGlobalNS:1;
-	multiname(MemoryAccount* m):name_s_id(UINT32_MAX),name_o(NULL),ns(reporter_allocator<nsNameAndKind>(m)),cachedType(NULL),name_type(NAME_OBJECT),isAttribute(false),isStatic(true),hasEmptyNS(true),hasBuiltinNS(false),hasGlobalNS(true)
+	bool isInteger:1;
+	multiname(MemoryAccount* m):name_s_id(UINT32_MAX),name_o(nullptr),ns(reporter_allocator<nsNameAndKind>(m)),cachedType(nullptr),name_type(NAME_OBJECT),isAttribute(false),isStatic(true),hasEmptyNS(true),hasBuiltinNS(false),hasGlobalNS(true),isInteger(false)
 	{
 	}
 	
@@ -414,11 +456,11 @@ struct multiname: public memory_reporter
 
 	const tiny_string qualifiedString(SystemState *sys, bool forDescribeType=false) const;
 	/* sets name_type, name_s/name_d based on the object n */
-	void setName(class asAtom &n, SystemState *sys);
+	void setName(union asAtom &n, ASWorker* w);
 	void resetNameIfObject();
 	inline bool isQName() const { return ns.size() == 1; }
-	bool toUInt(SystemState *sys, uint32_t& out, bool acceptStringFractions=false, bool* isNumber=NULL) const;
-	inline bool isEmpty() const { return name_type == NAME_OBJECT && name_o == NULL;}
+	bool toUInt(SystemState *sys, uint32_t& out, bool acceptStringFractions=false, bool* isNumber=nullptr) const;
+	inline bool isEmpty() const { return name_type == NAME_OBJECT && name_o == nullptr;}
 };
 
 class FLOAT 
@@ -430,6 +472,18 @@ public:
 	FLOAT():val(0){}
 	FLOAT(float v):val(v){}
 	operator float(){ return val; }
+	inline void read(const uint8_t* data)
+	{
+		union float_reader
+		{
+			uint32_t dump;
+			float value;
+		};
+		float_reader dummy;
+		dummy.dump = *(uint32_t*)data;
+		dummy.dump=GINT32_FROM_LE(dummy.dump);
+		val=dummy.value;
+	}
 };
 
 class DOUBLE 
@@ -441,13 +495,50 @@ public:
 	DOUBLE():val(0){}
 	DOUBLE(double v):val(v){}
 	operator double(){ return val; }
+	void read(const uint8_t* data)
+	{
+		union double_reader
+		{
+			uint64_t dump;
+			double value;
+		};
+		double_reader dummy;
+		// "Wacky format" is 45670123. Thanks to Gnash for reversing :-)
+		uint8_t* p = (uint8_t*)&dummy.dump;
+		*p++ = data[4];
+		*p++ = data[5];
+		*p++ = data[6];
+		*p++ = data[7];
+		*p++ = data[0];
+		*p++ = data[1];
+		*p++ = data[2];
+		*p++ = data[3];
+		dummy.dump=GINT64_FROM_LE(dummy.dump);
+		val=dummy.value;
+	}
 };
 
-//TODO: Really implement or suppress
-typedef UI32_SWF FIXED;
+class FIXED
+{
+friend std::istream& operator>>(std::istream& s, FIXED& v);
+protected:
+	int32_t val;
+public:
+	FIXED():val(0){}
+	FIXED(int32_t v):val(v){}
+	operator number_t() const{ return number_t(val)/65536.0; }
+};
 
-//TODO: Really implement or suppress
-typedef UI16_SWF FIXED8;
+class FIXED8
+{
+friend std::istream& operator>>(std::istream& s, FIXED8& v);
+protected:
+	int16_t val;
+public:
+	FIXED8():val(0){}
+	FIXED8(int16_t v):val(v){}
+	operator number_t() const{ return number_t(val)/256.0; }
+};
 
 class RECORDHEADER
 {
@@ -463,6 +554,13 @@ public:
 		else
 			return CodeAndLen&0x3f;
 	}
+	unsigned int getHeaderSize() const
+	{
+		if((CodeAndLen&0x3f)==0x3f)
+			return sizeof(uint16_t) + sizeof(uint32_t);
+		else
+			return sizeof(uint16_t);
+	}
 	unsigned int getTagType() const
 	{
 		return CodeAndLen>>6;
@@ -472,8 +570,8 @@ public:
 class RGB
 {
 public:
-	RGB(){};
-	RGB(int r,int g, int b):Red(r),Green(g),Blue(b){};
+	RGB(){}
+	RGB(int r,int g, int b):Red(r),Green(g),Blue(b){}
 	RGB(uint32_t color):Red((color>>16)&0xFF),Green((color>>8)&0xFF),Blue(color&0xFF){}
 	//Parses a color from hex triplet string #RRGGBB
 	RGB(const tiny_string& colorstr);
@@ -672,6 +770,19 @@ inline std::istream& operator>>(std::istream& s, DOUBLE& v)
 	return s;
 }
 
+inline std::istream& operator>>(std::istream& s, FIXED& v)
+{
+	s.read((char*)&v.val,4);
+	v.val=GINT32_FROM_LE(v.val);
+	return s;
+}
+inline std::istream& operator>>(std::istream& s, FIXED8& v)
+{
+	s.read((char*)&v.val,2);
+	v.val=GINT16_FROM_LE(v.val);
+	return s;
+}
+
 inline std::istream& operator>>(std::istream& s, RECORDHEADER& v)
 {
 	s >> v.CodeAndLen;
@@ -687,7 +798,7 @@ public:
 	unsigned char buffer;
 	unsigned char pos;
 public:
-	BitStream(std::istream& in):f(in),buffer(0),pos(0){};
+	BitStream(std::istream& in):f(in),buffer(0),pos(0){}
 	unsigned int readBits(unsigned int num)
 	{
 		unsigned int ret=0;
@@ -720,7 +831,7 @@ public:
 	FB(int s,BitStream& stream)
 	{
 		if(s>32)
-			LOG(LOG_ERROR,_("Fixed point bit field wider than 32 bit not supported"));
+			LOG(LOG_ERROR,"Fixed point bit field wider than 32 bit not supported");
 		buf=stream.readBits(s);
 		if(buf>>(s-1)&1)
 		{
@@ -763,7 +874,7 @@ public:
 			i++;
 		}*/
 		if(s>32)
-			LOG(LOG_ERROR,_("Unsigned bit field wider than 32 bit not supported"));
+			LOG(LOG_ERROR,"Unsigned bit field wider than 32 bit not supported");
 		buf=stream.readBits(s);
 	}
 	operator int() const
@@ -780,7 +891,7 @@ public:
 	SB(int s,BitStream& stream)
 	{
 		if(s>32)
-			LOG(LOG_ERROR,_("Signed bit field wider than 32 bit not supported"));
+			LOG(LOG_ERROR,"Signed bit field wider than 32 bit not supported");
 		buf=stream.readBits(s);
 		if(buf>>(s-1)&1)
 		{
@@ -809,7 +920,7 @@ public:
 };
 
 template<class T> class Vector2Tmpl;
-typedef Vector2Tmpl<int> Vector2;
+typedef Vector2Tmpl<int32_t> Vector2;
 typedef Vector2Tmpl<double> Vector2f;
 
 class MATRIX: public cairo_matrix_t
@@ -837,7 +948,7 @@ public:
 	number_t getScaleX() const
 	{
 		number_t ret=sqrt(xx*xx + yx*yx);
-		if(xx>0)
+		if(xx>=0)
 			return ret;
 		else
 			return -ret;
@@ -845,7 +956,7 @@ public:
 	number_t getScaleY() const
 	{
 		number_t ret=sqrt(yy*yy + xy*xy);
-		if(yy>0)
+		if(yy>=0)
 			return ret;
 		else
 			return -ret;
@@ -933,6 +1044,7 @@ public:
 	GRADIENT Gradient;
 	FOCALGRADIENT FocalGradient;
 	_NR<BitmapContainer> bitmap;
+	RECT ShapeBounds;
 	RGBA Color;
 	FILL_STYLE_TYPE FillStyleType;
 	uint8_t version;
@@ -952,6 +1064,14 @@ public:
 	std::vector<RGBA> EndColors;
 	RGBA StartColor;
 	RGBA EndColor;
+	
+	// FOCAL_RADIAL_GRADIENT
+	int SpreadMode;
+	int InterpolationMode;
+	FIXED8 StartFocalPoint;
+	FIXED8 EndFocalPoint;
+	std::map<uint16_t,FILLSTYLE> fillstylecache;
+
 	~MORPHFILLSTYLE(){}
 };
 
@@ -967,7 +1087,10 @@ public:
 class LINESTYLE2
 {
 public:
-	LINESTYLE2(uint8_t v):HasFillFlag(false),FillType(v),version(v){}
+	LINESTYLE2(uint8_t v):StartCapStyle(0),JointStyle(0),HasFillFlag(false),NoHScaleFlag(false),NoVScaleFlag(false),PixelHintingFlag(0),FillType(v),version(v){}
+	LINESTYLE2(const LINESTYLE2& r);
+	LINESTYLE2& operator=(LINESTYLE2 r);
+	virtual ~LINESTYLE2();
 	int StartCapStyle;
 	int JointStyle;
 	bool HasFillFlag;
@@ -1005,6 +1128,7 @@ public:
 	UB NoClose;
 	UB EndCapStyle;
 	UI16_SWF MiterLimitFactor;
+	std::map<uint16_t,LINESTYLE2> linestylecache;
 };
 
 class LINESTYLEARRAY
@@ -1110,14 +1234,14 @@ public:
 	UI16_SWF FontID;
 	TEXTRECORD(DefineTextTag* p):parent(p){}
 };
-
+class CharacterRenderer;
 class SHAPE
 {
 	friend std::istream& operator>>(std::istream& stream, SHAPE& v);
 	friend std::istream& operator>>(std::istream& stream, SHAPEWITHSTYLE& v);
 public:
-	SHAPE(uint8_t v=0):fillOffset(0),lineOffset(0),version(v){}
-	virtual ~SHAPE(){};
+	SHAPE(uint8_t v=0,bool _forfont=false):fillOffset(0),lineOffset(0),version(v),forfont(_forfont){}
+	virtual ~SHAPE();
 	UB NumFillBits;
 	UB NumLineBits;
 	unsigned int fillOffset;
@@ -1125,6 +1249,9 @@ public:
 	uint8_t version; /* version of the DefineShape tag, 0 if
 			  * DefineFont or other tag */
 	std::vector<SHAPERECORD> ShapeRecords;
+	std::map<int,CharacterRenderer*> scaledtexturecache;
+	
+	bool forfont;
 };
 
 class SHAPEWITHSTYLE : public SHAPE
@@ -1176,7 +1303,7 @@ public:
     FIXED BlurY;
     FIXED Angle;
     FIXED Distance;
-    UB Passes;
+    int Passes;
     FIXED8 Strength;
     bool InnerShadow;
     bool Knockout;
@@ -1188,7 +1315,7 @@ class BLURFILTER
 public:
 	FIXED BlurX;
 	FIXED BlurY;
-	UB Passes;
+	int Passes;
 };
 
 class GLOWFILTER
@@ -1197,7 +1324,7 @@ public:
     RGBA GlowColor;
     FIXED BlurX;
     FIXED BlurY;
-    UB Passes;
+    int Passes;
     FIXED8 Strength;
     bool InnerGlow;
     bool Knockout;
@@ -1213,7 +1340,7 @@ public:
     FIXED BlurY;
     FIXED Angle;
     FIXED Distance;
-    UB Passes;
+    int Passes;
     FIXED8 Strength;
     bool InnerShadow;
     bool Knockout;
@@ -1230,11 +1357,12 @@ public:
     FIXED BlurY;
     FIXED Angle;
     FIXED Distance;
-    UB Passes;
+    int Passes;
     FIXED8 Strength;
     bool InnerGlow;
     bool Knockout;
     bool CompositeSource;
+	bool OnTop;
 };
 
 class CONVOLUTIONFILTER
@@ -1265,7 +1393,7 @@ public:
     FIXED BlurY;
     FIXED Angle;
     FIXED Distance;
-    UB Passes;
+    int Passes;
     FIXED8 Strength;
     bool InnerShadow;
     bool Knockout;
@@ -1276,6 +1404,7 @@ public:
 class FILTER
 {
 public:
+	UI8 FilterID;
 	DROPSHADOWFILTER DropShadowFilter;
 	BLURFILTER BlurFilter;
 	GLOWFILTER GlowFilter;
@@ -1319,24 +1448,56 @@ public:
 
 class CLIPEVENTFLAGS
 {
+private:
+	uint32_t swfversion;
 public:
-	uint32_t toParse;
+	CLIPEVENTFLAGS(uint32_t v):swfversion(v) {}
+	bool ClipEventKeyUp;
+	bool ClipEventKeyDown;
+	bool ClipEventMouseUp;
+	bool ClipEventMouseDown;
+	bool ClipEventMouseMove;
+	bool ClipEventUnload;
+	bool ClipEventEnterFrame;
+	bool ClipEventLoad;
+	bool ClipEventDragOver;
+	bool ClipEventRollOut;
+	bool ClipEventRollOver;
+	bool ClipEventReleaseOutside;
+	bool ClipEventRelease;
+	bool ClipEventPress;
+	bool ClipEventInitialize;
+	bool ClipEventData;
+	bool ClipEventConstruct;
+	bool ClipEventKeyPress;
+	bool ClipEventDragOut;
 	bool isNull();
+	uint32_t getSWFVersion() const { return swfversion; }
 };
 
+class AdditionalDataTag;
+class ACTIONRECORD;
 class CLIPACTIONRECORD
 {
 public:
+	CLIPACTIONRECORD(uint32_t v, uint32_t _dataskipbytes,AdditionalDataTag* _datatag):EventFlags(v),startactionpos(0),dataskipbytes(_dataskipbytes),datatag( _datatag) {}
 	CLIPEVENTFLAGS EventFlags;
 	UI32_SWF ActionRecordSize;
+	UI8 KeyCode;
+	std::vector<uint8_t> actions;
 	bool isLast();
+	uint32_t startactionpos;
+	uint32_t dataskipbytes;
+	AdditionalDataTag* datatag;
 };
-
 class CLIPACTIONS
 {
 public:
+	CLIPACTIONS(uint32_t v, AdditionalDataTag* _datatag=nullptr):AllEventFlags(v),dataskipbytes(0),datatag(_datatag) {}
 	std::vector<CLIPACTIONRECORD> ClipActionRecords;
 	CLIPEVENTFLAGS AllEventFlags;
+	uint32_t dataskipbytes;
+	AdditionalDataTag* datatag;
 };
 
 class SOUNDENVELOPE
@@ -1371,18 +1532,64 @@ public:
 	unsigned int next_FP;
 	bool stop_FP;
 	bool explicit_FP;
+	bool creatingframe;
+	bool frameadvanced;
 	RunState();
+	inline void reset()
+	{
+		last_FP = -1;
+		FP = 0;
+		next_FP = 0;
+		stop_FP = false;
+		explicit_FP = false;
+		creatingframe = false;
+		frameadvanced = false;
+	}
 };
-
-ASObject* abstract_i(SystemState *sys, int32_t i);
-ASObject* abstract_ui(SystemState *sys, uint32_t i);
-ASObject* abstract_d(SystemState *sys, number_t i);
-ASObject* abstract_di(SystemState *sys, int64_t i);
-ASObject* abstract_s(SystemState *sys);
-ASObject* abstract_s(SystemState *sys, const char* s, uint32_t len);
-ASObject* abstract_s(SystemState *sys, const char* s);
-ASObject* abstract_s(SystemState *sys, const tiny_string& s);
-ASObject* abstract_s(SystemState *sys, uint32_t stringId);
+class Activation_object;
+class ACTIONRECORD
+{
+public:
+	static void PushStack(std::stack<asAtom>& stack,const asAtom& a);
+	static asAtom PopStack(std::stack<asAtom>& stack);
+	static asAtom PeekStack(std::stack<asAtom>& stack);
+	static void executeActions(DisplayObject* clip, AVM1context* context, const std::vector<uint8_t> &actionlist, uint32_t startactionpos, std::map<uint32_t, asAtom> &scopevariables, bool fromInitAction = false, asAtom *result = nullptr, asAtom* obj = nullptr, asAtom *args = nullptr, uint32_t num_args=0, const std::vector<uint32_t>& paramnames=std::vector<uint32_t>(), const std::vector<uint8_t>& paramregisternumbers=std::vector<uint8_t>(),
+			bool preloadParent=false, bool preloadRoot=false, bool suppressSuper=true, bool preloadSuper=false, bool suppressArguments=false, bool preloadArguments=false, bool suppressThis=true, bool preloadThis=false, bool preloadGlobal=false, AVM1Function *caller = nullptr, AVM1Function *callee = nullptr, Activation_object *actobj=nullptr, asAtom* superobj=nullptr);
+};
+class BUTTONCONDACTION
+{
+friend std::istream& operator>>(std::istream& s, BUTTONCONDACTION& v);
+public:
+	BUTTONCONDACTION():CondActionSize(0)
+	  ,CondIdleToOverDown(false),CondOutDownToIdle(false),CondOutDownToOverDown(false),CondOverDownToOutDown(false)
+	  ,CondOverDownToOverUp(false),CondOverUpToOverDown(false),CondOverUpToIdle(false),CondIdleToOverUp(false),CondOverDownToIdle(false),startactionpos(0)
+	{}
+	UI16_SWF CondActionSize;
+	bool CondIdleToOverDown;
+	bool CondOutDownToIdle;
+	bool CondOutDownToOverDown;
+	bool CondOverDownToOutDown;
+	bool CondOverDownToOverUp;
+	bool CondOverUpToOverDown;
+	bool CondOverUpToIdle;
+	bool CondIdleToOverUp;
+	bool CondOverDownToIdle;
+	uint32_t CondKeyPress;
+	uint32_t startactionpos;
+	std::vector<uint8_t> actions;
+};
+class ASWorker;
+ASObject* abstract_i(ASWorker* wrk, int32_t i);
+ASObject* abstract_ui(ASWorker* wrk, uint32_t i);
+ASObject* abstract_d(ASWorker* wrk, number_t i);
+ASObject* abstract_d_constant(ASWorker* wrk, number_t i);
+ASObject* abstract_di(ASWorker* wrk, int64_t i);
+ASObject* abstract_s(ASWorker* wrk);
+ASObject* abstract_s(ASWorker* wrk, const char* s, uint32_t len);
+ASObject* abstract_s(ASWorker* wrk, const char* s, int numbytes, int numchars, bool issinglebyte, bool hasNull);
+ASObject* abstract_s(ASWorker* wrk, const char* s);
+ASObject* abstract_s(ASWorker* wrk, const tiny_string& s);
+ASObject* abstract_s(ASWorker* wrk, uint32_t stringId);
 ASObject* abstract_null(SystemState *sys);
 ASObject* abstract_undefined(SystemState *sys);
 ASObject* abstract_b(SystemState *sys, bool b);
@@ -1443,6 +1650,7 @@ std::istream& operator>>(std::istream& stream, CONVOLUTIONFILTER& v);
 std::istream& operator>>(std::istream& stream, COLORMATRIXFILTER& v);
 std::istream& operator>>(std::istream& stream, GRADIENTBEVELFILTER& v);
 std::istream& operator>>(std::istream& stream, SOUNDINFO& v);
-
-};
+std::istream& operator>>(std::istream& stream, ACTIONRECORD& v);
+std::istream& operator>>(std::istream& stream, BUTTONCONDACTION& v);
+}
 #endif /* SWFTYPES_H */

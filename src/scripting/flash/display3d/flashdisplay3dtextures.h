@@ -24,6 +24,7 @@
 #include "swftypes.h"
 #include "scripting/flash/events/flashevents.h"
 #include "scripting/flash/display/BitmapContainer.h"
+#include "platforms/engineutils.h"
 
 namespace lightspark
 {
@@ -35,15 +36,18 @@ protected:
 	uint32_t textureID;
 	uint32_t width;
 	uint32_t height;
+	TEXTUREFORMAT format;
+	TEXTUREFORMAT_COMPRESSED compressedformat;
 	vector<vector<uint8_t>> bitmaparray;
-	bool needrefresh;
 	Context3D* context;
+	void parseAdobeTextureFormat(ByteArray* data, int32_t byteArrayOffset, bool forCubeTexture);
+	void setFormat(const tiny_string& f);
 public:
-	TextureBase(Class_base* c):EventDispatcher(c)
-	  ,textureID(UINT32_MAX),width(0),height(0),needrefresh(false),context(NULL)
+	TextureBase(ASWorker* wrk,Class_base* c):EventDispatcher(wrk,c)
+	  ,textureID(UINT32_MAX),width(0),height(0),format(BGRA),compressedformat(UNCOMPRESSED),context(nullptr)
 	{ subtype = SUBTYPE_TEXTUREBASE;}
-	TextureBase(Class_base* c,Context3D* _context):EventDispatcher(c)
-	  ,textureID(UINT32_MAX),width(0),height(0),needrefresh(false),context(_context)
+	TextureBase(ASWorker* wrk,Class_base* c,Context3D* _context):EventDispatcher(wrk,c)
+	  ,textureID(UINT32_MAX),width(0),height(0),format(BGRA),compressedformat(UNCOMPRESSED),context(_context)
 	{ subtype = SUBTYPE_TEXTUREBASE;}
 	static void sinit(Class_base* c);
 	ASFUNCTION_ATOM(dispose);
@@ -52,8 +56,8 @@ public:
 class Texture: public TextureBase
 {
 public:
-	Texture(Class_base* c):TextureBase(c){ subtype = SUBTYPE_TEXTURE; }
-	Texture(Class_base* c,Context3D* _context):TextureBase(c,_context){ subtype = SUBTYPE_TEXTURE; }
+	Texture(ASWorker* wrk,Class_base* c):TextureBase(wrk,c){ subtype = SUBTYPE_TEXTURE; }
+	Texture(ASWorker* wrk,Class_base* c,Context3D* _context):TextureBase(wrk,c,_context){ subtype = SUBTYPE_TEXTURE; }
 	static void sinit(Class_base* c);
 	ASFUNCTION_ATOM(uploadCompressedTextureFromByteArray);
 	ASFUNCTION_ATOM(uploadFromBitmapData);
@@ -62,9 +66,12 @@ public:
 
 class CubeTexture: public TextureBase
 {
+	friend class Context3D;
+protected:
+	uint32_t max_miplevel;
 public:
-	CubeTexture(Class_base* c):TextureBase(c){ subtype = SUBTYPE_CUBETEXTURE;}
-	CubeTexture(Class_base* c,Context3D* _context):TextureBase(c,_context){ subtype = SUBTYPE_CUBETEXTURE;}
+	CubeTexture(ASWorker* wrk,Class_base* c):TextureBase(wrk,c),max_miplevel(0) { subtype = SUBTYPE_CUBETEXTURE;}
+	CubeTexture(ASWorker* wrk,Class_base* c,Context3D* _context):TextureBase(wrk,c,_context),max_miplevel(0) { subtype = SUBTYPE_CUBETEXTURE;}
 	static void sinit(Class_base* c);
 	ASFUNCTION_ATOM(uploadCompressedTextureFromByteArray);
 	ASFUNCTION_ATOM(uploadFromBitmapData);
@@ -73,8 +80,8 @@ public:
 class RectangleTexture: public TextureBase
 {
 public:
-	RectangleTexture(Class_base* c):TextureBase(c){ subtype = SUBTYPE_RECTANGLETEXTURE;}
-	RectangleTexture(Class_base* c,Context3D* _context):TextureBase(c,_context){ subtype = SUBTYPE_RECTANGLETEXTURE;}
+	RectangleTexture(ASWorker* wrk,Class_base* c):TextureBase(wrk,c){ subtype = SUBTYPE_RECTANGLETEXTURE;}
+	RectangleTexture(ASWorker* wrk,Class_base* c,Context3D* _context):TextureBase(wrk,c,_context){ subtype = SUBTYPE_RECTANGLETEXTURE;}
 	static void sinit(Class_base* c);
 	ASFUNCTION_ATOM(uploadFromBitmapData);
 	ASFUNCTION_ATOM(uploadFromByteArray);
@@ -82,8 +89,8 @@ public:
 class VideoTexture: public TextureBase
 {
 public:
-	VideoTexture(Class_base* c):TextureBase(c){ subtype = SUBTYPE_VIDEOTEXTURE;}
-	VideoTexture(Class_base* c,Context3D* _context):TextureBase(c,_context){ subtype = SUBTYPE_VIDEOTEXTURE;}
+	VideoTexture(ASWorker* wrk,Class_base* c):TextureBase(wrk,c){ subtype = SUBTYPE_VIDEOTEXTURE;}
+	VideoTexture(ASWorker* wrk,Class_base* c,Context3D* _context):TextureBase(wrk,c,_context){ subtype = SUBTYPE_VIDEOTEXTURE;}
 	static void sinit(Class_base* c);
 	ASPROPERTY_GETTER(int,videoHeight);
 	ASPROPERTY_GETTER(int,videoWidth);

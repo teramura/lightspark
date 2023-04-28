@@ -27,8 +27,8 @@
 
 using namespace lightspark;
 
-GraphicsGradientFill::GraphicsGradientFill(Class_base* c):
-	ASObject(c), focalPointRatio(0), interpolationMethod("rgb"),
+GraphicsGradientFill::GraphicsGradientFill(ASWorker* wrk, Class_base* c):
+	ASObject(wrk,c), focalPointRatio(0), interpolationMethod("rgb"),
 	spreadMethod("pad"), type("linear")
 {
 }
@@ -62,25 +62,25 @@ void GraphicsGradientFill::finalize()
 
 ASFUNCTIONBODY_ATOM(GraphicsGradientFill,_constructor)
 {
-	GraphicsGradientFill* th = obj.as<GraphicsGradientFill>();
-	ARG_UNPACK_ATOM (th->type, "linear")
+	GraphicsGradientFill* th = asAtomHandler::as<GraphicsGradientFill>(obj);
+	ARG_CHECK(ARG_UNPACK (th->type, "linear")
 		(th->colors, NullRef)
 		(th->alphas, NullRef)
 		(th->ratios, NullRef)
 		(th->matrix, NullRef)
 		(th->spreadMethod, "pad")
 		(th->interpolationMethod, "rgb")
-		(th->focalPointRatio, 0);
+		(th->focalPointRatio, 0));
 }
 
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, alphas);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, colors);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, focalPointRatio);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, interpolationMethod);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, matrix);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, ratios);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, spreadMethod);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, type);
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, alphas)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, colors)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, focalPointRatio)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, interpolationMethod)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, matrix)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, ratios)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, spreadMethod)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsGradientFill, type)
 
 FILLSTYLE GraphicsGradientFill::toFillStyle()
 {
@@ -88,7 +88,10 @@ FILLSTYLE GraphicsGradientFill::toFillStyle()
 		matrix, spreadMethod, interpolationMethod, focalPointRatio);
 }
 
-void GraphicsGradientFill::appendToTokens(tokensVector& tokens)
+void GraphicsGradientFill::appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics)
 {
-	tokens.emplace_back(GeomToken(SET_FILL, toFillStyle()));
+	FILLSTYLE style = toFillStyle();
+	FILLSTYLE& styleref = graphics->addFillStyle(style);
+	tokens.emplace_back(GeomToken(SET_FILL).uval);
+	tokens.emplace_back(GeomToken(styleref).uval);
 }

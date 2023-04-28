@@ -20,22 +20,21 @@
 #ifndef ASOBJECT_H
 #define ASOBJECT_H 1
 
-#include "compat.h"
 #include "swftypes.h"
-#include "smartrefs.h"
-#include "threading.h"
-#include "memory_support.h"
-#include <map>
 #include <unordered_map>
-#include <boost/intrusive/list.hpp>
+#include <unordered_set>
 #include <limits>
 
 #define ASFUNCTION_ATOM(name) \
-	static void name(asAtom& ret,SystemState* sys, asAtom& , asAtom* args, const unsigned int argslen)
+	static void name(asAtom& ret,ASWorker* wrk, asAtom& , asAtom* args, const unsigned int argslen)
 
 /* declare setter/getter and associated member variable */
 #define ASPROPERTY_GETTER(type,name) \
 	type name; \
+	ASFUNCTION_ATOM( _getter_##name)
+
+#define ASPROPERTY_GETTER_ATOM(name) \
+	asAtom name=asAtomHandler::invalidAtom; \
 	ASFUNCTION_ATOM( _getter_##name)
 
 #define ASPROPERTY_SETTER(type,name) \
@@ -44,6 +43,11 @@
 
 #define ASPROPERTY_GETTER_SETTER(type, name) \
 	type name; \
+	ASFUNCTION_ATOM( _getter_##name); \
+	ASFUNCTION_ATOM( _setter_##name)
+
+#define ASPROPERTY_GETTER_SETTER_ATOM(name) \
+	asAtom name=asAtomHandler::invalidAtom; \
 	ASFUNCTION_ATOM( _getter_##name); \
 	ASFUNCTION_ATOM( _setter_##name)
 
@@ -60,69 +64,123 @@
 
 /* general purpose body for an AS function */
 #define ASFUNCTIONBODY_ATOM(c,name) \
-	void c::name(asAtom& ret, SystemState* sys, asAtom& obj, asAtom* args, const unsigned int argslen)
+	void c::name(asAtom& ret, ASWorker* wrk, asAtom& obj, asAtom* args, const unsigned int argslen)
 
 /* full body for a getter declared by ASPROPERTY_GETTER or ASFUNCTION_GETTER */
 #define ASFUNCTIONBODY_GETTER(c,name) \
-	void c::_getter_##name(asAtom& ret, SystemState* sys, asAtom& obj, asAtom* args, const unsigned int argslen) \
+	void c::_getter_##name(asAtom& ret, ASWorker* wrk, asAtom& obj, asAtom* args, const unsigned int argslen) \
 	{ \
-		if(!obj.is<c>()) \
-			throw Class<ArgumentError>::getInstanceS(sys,"Function applied to wrong object"); \
-		c* th = obj.as<c>(); \
-		if(argslen != 0) \
-			throw Class<ArgumentError>::getInstanceS(sys,"Arguments provided in getter"); \
-		ArgumentConversionAtom<decltype(th->name)>::toAbstract(ret,sys,th->name); \
+		if(!asAtomHandler::is<c>(obj)) { \
+			createError<ArgumentError>(wrk,0,"Function applied to wrong object"); return; }\
+		c* th = asAtomHandler::as<c>(obj); \
+		if(argslen != 0) {\
+			createError<ArgumentError>(wrk,0,"Arguments provided in getter"); return; } \
+		ArgumentConversionAtom<decltype(th->name)>::toAbstract(ret,wrk,th->name); \
+	}
+
+#define ASFUNCTIONBODY_GETTER_STATIC(c,name) \
+	void c::_getter_##name(asAtom& ret, ASWorker* wrk, asAtom& obj, asAtom* args, const unsigned int argslen) \
+	{ \
+		if(asAtomHandler::getObject(obj) != Class<c>::getRef(wrk->getSystemState()).getPtr()) { \
+			createError<ArgumentError>(wrk,0,"Function applied to wrong object"); return; } \
+		if(argslen != 0) {\
+			createError<ArgumentError>(wrk,0,"Arguments provided in getter"); return; } \
+		ArgumentConversionAtom<decltype(wrk->getSystemState()->static_##c##_##name)>::toAbstract(ret,wrk,wrk->getSystemState()->static_##c##_##name); \
+	}
+
+#define ASFUNCTIONBODY_GETTER_STRINGID(c,name) \
+	void c::_getter_##name(asAtom& ret, ASWorker* wrk, asAtom& obj, asAtom* args, const unsigned int argslen) \
+	{ \
+		if(!asAtomHandler::is<c>(obj)) { \
+			createError<ArgumentError>(wrk,0,"Function applied to wrong object"); return; } \
+		c* th = asAtomHandler::as<c>(obj); \
+		if(argslen != 0) {\
+			createError<ArgumentError>(wrk,0,"Arguments provided in getter"); return; }\
+		ret = asAtomHandler::fromStringID(th->name); \
 	}
 
 #define ASFUNCTIONBODY_GETTER_NOT_IMPLEMENTED(c,name) \
-	void c::_getter_##name(asAtom& ret, SystemState* sys, asAtom& obj, asAtom* args, const unsigned int argslen) \
+	void c::_getter_##name(asAtom& ret, ASWorker* wrk, asAtom& obj, asAtom* args, const unsigned int argslen) \
 	{ \
-		if(!obj.is<c>()) \
-			throw Class<ArgumentError>::getInstanceS(sys,"Function applied to wrong object"); \
-		c* th = obj.as<c>(); \
-		if(argslen != 0) \
-			throw Class<ArgumentError>::getInstanceS(sys,"Arguments provided in getter"); \
-		LOG(LOG_NOT_IMPLEMENTED,obj.getObject()->getClassName() <<"."<< #name << " getter is not implemented"); \
-		ArgumentConversionAtom<decltype(th->name)>::toAbstract(ret,sys,th->name); \
+		if(!asAtomHandler::is<c>(obj)) {\
+			createError<ArgumentError>(wrk,0,"Function applied to wrong object"); return; }\
+		c* th = asAtomHandler::as<c>(obj); \
+		if(argslen != 0) {\
+			createError<ArgumentError>(wrk,0,"Arguments provided in getter"); return; }\
+		LOG(LOG_NOT_IMPLEMENTED,asAtomHandler::getObject(obj)->getClassName() <<"."<< #name << " getter is not implemented"); \
+		ArgumentConversionAtom<decltype(th->name)>::toAbstract(ret,wrk,th->name); \
 	}
 
 /* full body for a getter declared by ASPROPERTY_SETTER or ASFUNCTION_SETTER */
 #define ASFUNCTIONBODY_SETTER(c,name) \
-	void c::_setter_##name(asAtom& ret,SystemState* sys, asAtom& obj, asAtom* args, const unsigned int argslen) \
+	void c::_setter_##name(asAtom& ret,ASWorker* wrk, asAtom& obj, asAtom* args, const unsigned int argslen) \
 	{ \
-		if(!obj.is<c>()) \
-			throw Class<ArgumentError>::getInstanceS(sys,"Function applied to wrong object"); \
-		c* th = obj.as<c>(); \
-		if(argslen != 1) \
-			throw Class<ArgumentError>::getInstanceS(sys,"Arguments provided in getter"); \
-		th->name = ArgumentConversionAtom<decltype(th->name)>::toConcrete(sys,args[0],th->name); \
+		if(!asAtomHandler::is<c>(obj)) {\
+			createError<ArgumentError>(wrk,0,"Function applied to wrong object"); return; }\
+		c* th = asAtomHandler::as<c>(obj); \
+		if(argslen != 1) {\
+			createError<ArgumentError>(wrk,0,"Arguments provided in getter"); return; }\
+		th->name = ArgumentConversionAtom<decltype(th->name)>::toConcrete(wrk,args[0],th->name); \
+	}
+#define ASFUNCTIONBODY_SETTER_STATIC(c,name) \
+	void c::_setter_##name(asAtom& ret, ASWorker* wrk, asAtom& obj, asAtom* args, const unsigned int argslen) \
+	{ \
+		if(asAtomHandler::getObject(obj) != Class<c>::getRef(wrk->getSystemState()).getPtr()) { \
+			createError<ArgumentError>(wrk,0,"Function applied to wrong object"); return; }\
+		if(argslen != 1) {\
+			createError<ArgumentError>(wrk,0,"Arguments provided in getter"); return; }\
+		wrk->getSystemState()->static_##c##_##name = ArgumentConversionAtom<decltype(wrk->getSystemState()->static_##c##_##name)>::toConcrete(wrk,args[0],wrk->getSystemState()->static_##c##_##name); \
+	}
+
+#define ASFUNCTIONBODY_SETTER_STRINGID(c,name) \
+	void c::_setter_##name(asAtom& ret, ASWorker* wrk, asAtom& obj, asAtom* args, const unsigned int argslen) \
+	{ \
+		if(!asAtomHandler::is<c>(obj)) {\
+			createError<ArgumentError>(wrk,0,"Function applied to wrong object"); return; }\
+		c* th = asAtomHandler::as<c>(obj); \
+		if(argslen != 1) {\
+			createError<ArgumentError>(wrk,0,"Arguments provided in getter"); return; }\
+		th->name = asAtomHandler::toStringId(args[0],wrk); \
 	}
 
 #define ASFUNCTIONBODY_SETTER_NOT_IMPLEMENTED(c,name) \
-	void c::_setter_##name(asAtom& ret, SystemState* sys, asAtom& obj, asAtom* args, const unsigned int argslen) \
+	void c::_setter_##name(asAtom& ret, ASWorker* wrk, asAtom& obj, asAtom* args, const unsigned int argslen) \
 	{ \
-		if(!obj.is<c>()) \
-			throw Class<ArgumentError>::getInstanceS(sys,"Function applied to wrong object"); \
-		c* th = obj.as<c>(); \
-		if(argslen != 1) \
-			throw Class<ArgumentError>::getInstanceS(sys,"Arguments provided in getter"); \
-		LOG(LOG_NOT_IMPLEMENTED,obj.getObject()->getClassName() <<"."<< #name << " setter is not implemented"); \
-		th->name = ArgumentConversionAtom<decltype(th->name)>::toConcrete(sys,args[0],th->name); \
+		if(!asAtomHandler::is<c>(obj)) {\
+			createError<ArgumentError>(wrk,0,"Function applied to wrong object"); return; }\
+		c* th = asAtomHandler::as<c>(obj); \
+		if(argslen != 1) {\
+			createError<ArgumentError>(wrk,0,"Arguments provided in getter"); return; }\
+		LOG(LOG_NOT_IMPLEMENTED,asAtomHandler::getObject(obj)->getClassName() <<"."<< #name << " setter is not implemented"); \
+		th->name = ArgumentConversionAtom<decltype(th->name)>::toConcrete(wrk,args[0],th->name); \
 	}
 
 /* full body for a getter declared by ASPROPERTY_SETTER or ASFUNCTION_SETTER.
  * After the property has been updated, the callback member function is called with the old value
  * as parameter */
 #define ASFUNCTIONBODY_SETTER_CB(c,name,callback) \
-	void c::_setter_##name(asAtom& ret, SystemState* sys, asAtom& obj, asAtom* args, const unsigned int argslen) \
+	void c::_setter_##name(asAtom& ret, ASWorker* wrk, asAtom& obj, asAtom* args, const unsigned int argslen) \
 	{ \
-		if(!obj.is<c>()) \
-			throw Class<ArgumentError>::getInstanceS(sys,"Function applied to wrong object"); \
-		c* th = obj.as<c>(); \
-		if(argslen != 1) \
-			throw Class<ArgumentError>::getInstanceS(sys,"Arguments provided in getter"); \
+		if(!asAtomHandler::is<c>(obj)) {\
+			createError<ArgumentError>(wrk,0,"Function applied to wrong object"); return; }\
+		c* th = asAtomHandler::as<c>(obj); \
+		if(argslen != 1) {\
+			createError<ArgumentError>(wrk,0,"Arguments provided in getter"); return; }\
 		decltype(th->name) oldValue = th->name; \
-		th->name = ArgumentConversionAtom<decltype(th->name)>::toConcrete(sys,args[0],th->name); \
+		th->name = ArgumentConversionAtom<decltype(th->name)>::toConcrete(wrk,args[0],th->name); \
+		th->callback(oldValue); \
+	}
+
+#define ASFUNCTIONBODY_SETTER_STRINGID_CB(c,name,callback) \
+	void c::_setter_##name(asAtom& ret, ASWorker* wrk, asAtom& obj, asAtom* args, const unsigned int argslen) \
+	{ \
+		if(!asAtomHandler::is<c>(obj)) {\
+			createError<ArgumentError>(wrk,0,"Function applied to wrong object"); return; }\
+		c* th = asAtomHandler::as<c>(obj); \
+		if(argslen != 1) {\
+			createError<ArgumentError>(wrk,0,"Arguments provided in getter"); return; }\
+		decltype(th->name) oldValue = th->name; \
+		th->name = asAtomHandler::toStringId(args[0],wrk); \
 		th->callback(oldValue); \
 	}
 
@@ -139,7 +197,27 @@
 		ASFUNCTIONBODY_GETTER(c,name) \
 		ASFUNCTIONBODY_SETTER_CB(c,name,callback)
 
+#define ASFUNCTIONBODY_GETTER_SETTER_STATIC(c,name) \
+		ASFUNCTIONBODY_GETTER_STATIC(c,name) \
+		ASFUNCTIONBODY_SETTER_STATIC(c,name)
+
+#define ASFUNCTIONBODY_GETTER_SETTER_STRINGID(c,name) \
+		ASFUNCTIONBODY_GETTER_STRINGID(c,name) \
+		ASFUNCTIONBODY_SETTER_STRINGID(c,name)
+
+#define ASFUNCTIONBODY_GETTER_SETTER_STRINGID_CB(c,name,callback) \
+		ASFUNCTIONBODY_GETTER_STRINGID(c,name) \
+		ASFUNCTIONBODY_SETTER_STRINGID_CB(c,name,callback)
+
 /* registers getter/setter with Class_base. To be used in ::sinit()-functions */
+#define REGISTER_GETTER_RESULTTYPE(c,name,cls) \
+	c->setDeclaredMethodByQName(#name,"",Class<IFunction>::getFunction(c->getSystemState(),_getter_##name,0,Class<cls>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true)
+
+
+#define REGISTER_GETTER_SETTER_RESULTTYPE(c,name,cls) \
+		REGISTER_GETTER_RESULTTYPE(c,name,cls); \
+		REGISTER_SETTER(c,name)
+
 #define REGISTER_GETTER(c,name) \
 	c->setDeclaredMethodByQName(#name,"",Class<IFunction>::getFunction(c->getSystemState(),_getter_##name),GETTER_METHOD,true)
 
@@ -149,6 +227,23 @@
 #define REGISTER_GETTER_SETTER(c,name) \
 		REGISTER_GETTER(c,name); \
 		REGISTER_SETTER(c,name)
+
+#define REGISTER_GETTER_STATIC(c,name) \
+	c->setDeclaredMethodByQName(#name,"",Class<IFunction>::getFunction(c->getSystemState(),_getter_##name),GETTER_METHOD,false)
+
+#define REGISTER_SETTER_STATIC(c,name) \
+	c->setDeclaredMethodByQName(#name,"",Class<IFunction>::getFunction(c->getSystemState(),_setter_##name),SETTER_METHOD,false)
+
+#define REGISTER_GETTER_STATIC_RESULTTYPE(c,name,cls) \
+	c->setDeclaredMethodByQName(#name,"",Class<IFunction>::getFunction(c->getSystemState(),_getter_##name,0,Class<cls>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false)
+
+#define REGISTER_GETTER_SETTER_STATIC(c,name) \
+		REGISTER_GETTER_STATIC(c,name); \
+		REGISTER_SETTER_STATIC(c,name)
+
+#define REGISTER_GETTER_SETTER_STATIC_RESULTTYPE(c,name,cls) \
+		REGISTER_GETTER_STATIC_RESULTTYPE(c,name,cls); \
+		REGISTER_SETTER_STATIC(c,name)
 
 #define CLASS_DYNAMIC_NOT_FINAL 0
 #define CLASS_FINAL 1
@@ -174,6 +269,7 @@ namespace lightspark
 {
 
 class ASObject;
+class ASWorker;
 class IFunction;
 template<class T> class Class;
 class Class_base;
@@ -182,64 +278,188 @@ class Loader;
 class Type;
 class ABCContext;
 class SystemState;
-struct asfreelist;
+class SyntheticFunction;
+class SoundTransform;
+class KeyboardEvent;
+class EventDispatcher;
+class MouseEvent;
+class Event;
+
+#define FREELIST_SIZE 16
+struct asfreelist
+{
+	ASObject* freelist[FREELIST_SIZE];
+	int freelistsize;
+	asfreelist():freelistsize(0) {}
+	~asfreelist();
+
+	inline ASObject* getObjectFromFreeList();
+	inline bool pushObjectToFreeList(ASObject *obj);
+};
 
 extern SystemState* getSys();
+extern ASWorker* getWorker();
 enum TRAIT_KIND { NO_CREATE_TRAIT=0, DECLARED_TRAIT=1, DYNAMIC_TRAIT=2, INSTANCE_TRAIT=5, CONSTANT_TRAIT=9 /* constants are also declared traits */ };
+enum GET_VARIABLE_RESULT {GETVAR_NORMAL=0x00, GETVAR_CACHEABLE=0x01, GETVAR_ISGETTER=0x02, GETVAR_ISCONSTANT=0x04, GETVAR_ISNEWOBJECT=0x08};
+enum GET_VARIABLE_OPTION {NONE=0x00, SKIP_IMPL=0x01, FROM_GETLEX=0x02, DONT_CALL_GETTER=0x04, NO_INCREF=0x08, DONT_CHECK_CLASS=0x10};
 
-class asAtom
+#ifdef LIGHTSPARK_64
+union asAtom
 {
-friend class multiname;
-friend class ABCContext;
+	int64_t intval;
+	uint64_t uintval;
+};
+#define LIGHTSPARK_ATOM_VALTYPE uint64_t
+#else
+union asAtom
+{
+	int32_t intval;
+	uint32_t uintval;
+};
+#define LIGHTSPARK_ATOM_VALTYPE uint32_t
+#endif
+// atom is a 32bit value (64bit on 64bit architecture):
+// malloc guarantees that the returned pointer is always a multiple of eight
+// so we can use the lower 3 bits to indicate the type
+// layout of the least significant byte:
+// d: data
+// p: indicates that data is pointer to ASObject
+// t: defines type of atom
+// dddd dptt
+// 0000 0000: invalid
+// 0100 0000: null
+// 0010 0000: undefined
+// d001 0000: bool (d indicates true/false)
+// dddd d001: uint
+// dddd d101: Number
+// dddd d010: stringID
+// dddd d110: ASString
+// dddd d011: int
+// dddd d111: (U)Integer
+// dddd d100: ASObject
+enum ATOM_TYPE 
+{ 
+	ATOM_INVALID_UNDEFINED_NULL_BOOL=0x0, 
+	ATOM_UINTEGER=0x1, 
+	ATOM_STRINGID=0x2,
+	ATOM_INTEGER=0x3, 
+	ATOM_OBJECTPTR=0x4, 
+	ATOM_NUMBERPTR=0x5,
+	ATOM_STRINGPTR=0x6, 
+	ATOM_U_INTEGERPTR=0x7
+};
 
+class asAtomHandler
+{
 private:
-	union
-	{
-		int32_t intval;
-		uint32_t uintval;
-		uint32_t stringID;
-		number_t numberval;
-		bool boolval;
-		ASObject* closure_this; // used for T_FUNCTION objects
-	};
-	ASObject* objval;
-	inline void decRef();
-	void replaceNumber(ASObject* obj);
-	void replaceBool(ASObject* obj);
-	bool Boolean_concrete_string();
+#define ATOMTYPE_NULL_BIT 0x40
+#define ATOMTYPE_UNDEFINED_BIT 0x20
+#define ATOMTYPE_BOOL_BIT 0x10
+#define ATOMTYPE_OBJECT_BIT 0x4
+	static void decRef(asAtom& a);
+	static void replaceBool(asAtom &a, ASObject* obj);
+	static bool Boolean_concrete_string(asAtom &a);
+	static TRISTATE isLessIntern(asAtom& a, ASWorker* w, asAtom& v2);
+	static bool isEqualIntern(asAtom& a, ASWorker* w, asAtom& v2);
 public:
-	SWFOBJECT_TYPE type;
-	asAtom():intval(0),objval(NULL),type(T_INVALID) {}
-	asAtom(SWFOBJECT_TYPE _t):intval(0),objval(NULL),type(_t) {}
-	asAtom(int32_t val):intval(val),objval(NULL),type(T_INTEGER) {}
-	asAtom(uint32_t val):uintval(val),objval(NULL),type(T_UINTEGER) {}
-	asAtom(number_t val):numberval(val),objval(NULL),type(T_NUMBER) {}
-	asAtom(bool val):boolval(val),objval(NULL),type(T_BOOLEAN) {}
-	ASObject* toObject(SystemState* sys);
-	// returns NULL if this atom is a primitive;
-	FORCE_INLINE ASObject* getObject() const { return objval; }
-	FORCE_INLINE number_t getNumber() const { return numberval; }
-	static FORCE_INLINE asAtom fromObject(ASObject* obj)
+	static FORCE_INLINE asAtom fromType(SWFOBJECT_TYPE _t)
 	{
-		asAtom a;
-		if (obj)
-			a.replace(obj);
+		asAtom a=asAtomHandler::invalidAtom;
+		switch (_t)
+		{
+			case T_INVALID:
+				a.uintval=ATOM_INVALID_UNDEFINED_NULL_BOOL;
+				break;
+			case T_UNDEFINED:
+				a.uintval=ATOM_INVALID_UNDEFINED_NULL_BOOL | ATOMTYPE_UNDEFINED_BIT;
+				break;
+			case T_NULL:
+				a.uintval=ATOM_INVALID_UNDEFINED_NULL_BOOL | ATOMTYPE_NULL_BIT;
+				break;
+			case T_BOOLEAN:
+				a.uintval=ATOM_INVALID_UNDEFINED_NULL_BOOL | ATOMTYPE_BOOL_BIT;
+				break;
+			case T_NUMBER:
+				a.uintval=ATOM_NUMBERPTR;
+				break;
+			case T_INTEGER:
+				a.uintval=ATOM_INTEGER;
+				break;
+			case T_UINTEGER:
+				a.uintval=ATOM_UINTEGER;
+				break;
+			case T_STRING:
+				a.uintval=ATOM_STRINGID;
+				break;
+			default:
+				a.uintval=ATOM_OBJECTPTR;
+				break;
+		}
+		return a;
+	}
+	static FORCE_INLINE asAtom fromInt(int32_t val)
+	{
+		asAtom a=asAtomHandler::invalidAtom;
+#ifdef LIGHTSPARK_64
+		a.intval = ((((int64_t)val)<<3)|ATOM_INTEGER);
+#else
+		a.intval = ((val<<3)|ATOM_INTEGER);
+		if (val <-(1<<28)  && val > (1<<28))
+			a.uintval =((LIGHTSPARK_ATOM_VALTYPE)(abstract_d(getWorker(),val))|ATOM_NUMBERPTR);
+#endif
+		return a;
+	}
+	static FORCE_INLINE asAtom fromUInt(uint32_t val)
+	{
+		asAtom a=asAtomHandler::invalidAtom;
+#ifdef LIGHTSPARK_64
+		a.uintval = ((((uint64_t)val)<<3)|ATOM_UINTEGER);
+#else
+		a.uintval =((val<<3)|ATOM_UINTEGER);
+		if (val >= (1<<29))
+			a.uintval =((LIGHTSPARK_ATOM_VALTYPE)(abstract_d(getWorker(),val))|ATOM_NUMBERPTR);
+#endif
+		return a;
+	}
+	static FORCE_INLINE asAtom fromNumber(ASWorker* wrk, number_t val,bool constant)
+	{
+		asAtom a=asAtomHandler::invalidAtom;
+		a.uintval =((LIGHTSPARK_ATOM_VALTYPE)(constant ? abstract_d_constant(wrk,val) : abstract_d(wrk,val))|ATOM_NUMBERPTR);
 		return a;
 	}
 	
-	static FORCE_INLINE asAtom fromFunction(ASObject *f, ASObject *closure);
+	static FORCE_INLINE asAtom fromBool(bool val)
+	{
+		asAtom a=asAtomHandler::invalidAtom;
+		a.uintval =(ATOM_INVALID_UNDEFINED_NULL_BOOL | ATOMTYPE_BOOL_BIT | (val ? 0x80 : 0));
+		return a;
+	}
+	static ASObject* toObject(asAtom& a, ASWorker* wrk, bool isconstant=false);
+	// returns NULL if this atom is a primitive;
+	static FORCE_INLINE ASObject* getObject(const asAtom& a);
+	static FORCE_INLINE ASObject* getObjectNoCheck(const asAtom& a);
+	static FORCE_INLINE void resetCached(const asAtom& a);
+	static FORCE_INLINE asAtom fromObject(ASObject* obj)
+	{
+		asAtom a=asAtomHandler::invalidAtom;
+		if (obj)
+			replace(a,obj);
+		return a;
+	}
+	static FORCE_INLINE asAtom fromObjectNoPrimitive(ASObject* obj);
 	static FORCE_INLINE asAtom fromStringID(uint32_t sID)
 	{
-		asAtom a;
-		a.type = T_STRING;
-		a.stringID = sID;
-		a.objval = NULL;
+#ifndef LIGHTSPARK_64
+		assert(sID <(1<<29));
+#endif
+		asAtom a=asAtomHandler::invalidAtom;
+		a.uintval= (sID<<3)|ATOM_STRINGID;
 		return a;
 	}
 	// only use this for strings that should get an internal stringID
 	static asAtom fromString(SystemState *sys, const tiny_string& s);
-	FORCE_INLINE  bool isBound() const { return type == T_FUNCTION && closure_this; }
-	FORCE_INLINE  ASObject* getClosure() const  { return type == T_FUNCTION ? closure_this : NULL; }
+	static ASObject* getClosure(asAtom& a);
+	static asAtom getClosureAtom(asAtom& a, asAtom defaultAtom=asAtomHandler::nullAtom);
 	static asAtom undefinedAtom;
 	static asAtom nullAtom;
 	static asAtom invalidAtom;
@@ -251,84 +471,121 @@ public:
 	 * Return the asAtom the function returned.
 	 * if coerceresult is false, the result of the function will not be coerced into the type provided by the method_info
 	 */
-	void callFunction(asAtom& ret,asAtom &obj, asAtom *args, uint32_t num_args, bool args_refcounted, bool coerceresult=true);
+	static void callFunction(asAtom& caller, ASWorker* wrk, asAtom& ret, asAtom &obj, asAtom *args, uint32_t num_args, bool args_refcounted, bool coerceresult=true, bool coercearguments=true);
 	// returns invalidAtom for not-primitive values
-	void getVariableByMultiname(asAtom &ret, SystemState *sys, const multiname& name);
-	Class_base* getClass(SystemState *sys);
-	bool canCacheMethod(const multiname* name);
-	void fillMultiname(SystemState *sys, multiname& name);
-	void replace(ASObject* obj);
-	FORCE_INLINE void set(const asAtom& a)
+	static void getVariableByMultiname(asAtom& a, asAtom &ret, SystemState *sys, const multiname& name, ASWorker* wrk);
+	static bool hasPropertyByMultiname(const asAtom& a, const multiname& name, bool considerDynamic, bool considerPrototype, ASWorker* wrk);
+	static Class_base* getClass(asAtom& a,SystemState *sys, bool followclass=true);
+	static bool canCacheMethod(asAtom& a,const multiname* name);
+	static void fillMultiname(asAtom& a, ASWorker *wrk, multiname& name);
+	static void replace(asAtom& a,ASObject* obj);
+	static FORCE_INLINE void set(asAtom& a,const asAtom& b)
 	{
-		type = a.type;
-		numberval = a.numberval;
-		objval = a.objval;
+		a.uintval = b.uintval;
 	}
-	bool stringcompare(SystemState* sys, uint32_t stringID);
-	std::string toDebugString();
-	FORCE_INLINE void applyProxyProperty(SystemState *sys, multiname& name);
-	FORCE_INLINE TRISTATE isLess(SystemState *sys, asAtom& v2);
-	FORCE_INLINE bool isEqual(SystemState *sys, asAtom& v2);
-	FORCE_INLINE bool isEqualStrict(SystemState *sys, asAtom& v2);
-	FORCE_INLINE bool isConstructed() const;
-	FORCE_INLINE bool isPrimitive() const;
-	FORCE_INLINE bool isNumeric() const { return (type==T_NUMBER || type==T_INTEGER || type==T_UINTEGER); }
-	FORCE_INLINE bool checkArgumentConversion(const asAtom& obj) const;
-	FORCE_INLINE ASObject* checkObject();
-	asAtom asTypelate(asAtom& atomtype);
-	FORCE_INLINE number_t toNumber();
-	FORCE_INLINE int32_t toInt();
-	FORCE_INLINE int32_t toIntStrict();
-	FORCE_INLINE int64_t toInt64();
-	FORCE_INLINE uint32_t toUInt();
-	tiny_string toString(SystemState *sys);
-	tiny_string toLocaleString();
-	uint32_t toStringId(SystemState *sys);
-	asAtom typeOf(SystemState *sys);
-	FORCE_INLINE bool Boolean_concrete();
-	FORCE_INLINE void convert_i();
-	FORCE_INLINE void convert_u();
-	FORCE_INLINE void convert_d();
-	void convert_b();
-	FORCE_INLINE int32_t getInt() const { assert(type == T_INTEGER); return intval; }
-	FORCE_INLINE uint32_t getUInt() const{ assert(type == T_UINTEGER); return uintval; }
-	FORCE_INLINE uint32_t getStringId() const{ assert(type == T_STRING); return stringID; }
-	FORCE_INLINE void setInt(int32_t val);
-	FORCE_INLINE void setUInt(uint32_t val);
-	FORCE_INLINE void setNumber(number_t val);
-	FORCE_INLINE void setBool(bool val);
-	FORCE_INLINE void setNull();
-	FORCE_INLINE void setUndefined();
-	FORCE_INLINE void setFunction(ASObject* obj, ASObject* closure);
-	FORCE_INLINE void increment();
-	FORCE_INLINE void decrement();
-	FORCE_INLINE void increment_i();
-	FORCE_INLINE void decrement_i();
-	void add(asAtom& v2, SystemState *sys, bool isrefcounted);
-	FORCE_INLINE void bitnot();
-	FORCE_INLINE void subtract(asAtom& v2);
-	FORCE_INLINE void multiply(asAtom& v2);
-	FORCE_INLINE void divide(asAtom& v2);
-	FORCE_INLINE void modulo(asAtom& v2);
-	FORCE_INLINE void lshift(asAtom& v1);
-	FORCE_INLINE void rshift(asAtom& v1);
-	FORCE_INLINE void urshift(asAtom& v1);
-	FORCE_INLINE void bit_and(asAtom& v1);
-	FORCE_INLINE void bit_or(asAtom& v1);
-	FORCE_INLINE void bit_xor(asAtom& v1);
-	FORCE_INLINE void _not();
-	FORCE_INLINE void negate_i();
-	FORCE_INLINE void add_i(asAtom& v2);
-	FORCE_INLINE void subtract_i(asAtom& v2);
-	FORCE_INLINE void multiply_i(asAtom& v2);
-	template<class T> bool is() const;
-	template<class T> const T* as() const { return static_cast<const T*>(this->objval); }
-	template<class T> T* as() { return static_cast<T*>(this->objval); }
+	static bool stringcompare(asAtom& a, ASWorker* wrk, uint32_t stringID);
+	static bool functioncompare(asAtom& a, ASWorker* wrk, asAtom& v2);
+	static std::string toDebugString(const asAtom a);
+	static FORCE_INLINE void applyProxyProperty(asAtom& a,SystemState *sys, multiname& name);
+	static FORCE_INLINE TRISTATE isLess(asAtom& a, ASWorker* wrk, asAtom& v2);
+	static FORCE_INLINE bool isEqual(asAtom& a, ASWorker* wrk, asAtom& v2);
+	static FORCE_INLINE bool isEqualStrict(asAtom& a, ASWorker* wrk, asAtom& v2);
+	static FORCE_INLINE bool isConstructed(const asAtom& a);
+	static FORCE_INLINE bool isPrimitive(const asAtom& a);
+	static FORCE_INLINE bool isNumeric(const asAtom& a); 
+	static FORCE_INLINE bool isNumber(const asAtom& a); 
+	static FORCE_INLINE bool isValid(const asAtom& a) { return a.uintval; }
+	static FORCE_INLINE bool isInvalid(const asAtom& a) { return !a.uintval; }
+	static FORCE_INLINE bool isNull(const asAtom& a) { return (a.uintval&0x7f) == ATOMTYPE_NULL_BIT; }
+	static FORCE_INLINE bool isUndefined(const asAtom& a) { return (a.uintval&0x7f) == ATOMTYPE_UNDEFINED_BIT; }
+	static FORCE_INLINE bool isBool(const asAtom& a) { return (a.uintval&0x7f) == ATOMTYPE_BOOL_BIT; }
+	static FORCE_INLINE bool isInteger(const asAtom& a);
+	static FORCE_INLINE bool isUInteger(const asAtom& a);
+	static FORCE_INLINE bool isObject(const asAtom& a) { return a.uintval & ATOMTYPE_OBJECT_BIT; }
+	static FORCE_INLINE bool isFunction(const asAtom& a);
+	static FORCE_INLINE bool isString(const asAtom& a);
+	static FORCE_INLINE bool isStringID(const asAtom& a) { return (a.uintval&0x7) == ATOM_STRINGID; }
+	static FORCE_INLINE bool isQName(const asAtom& a);
+	static FORCE_INLINE bool isNamespace(const asAtom& a);
+	static FORCE_INLINE bool isArray(const asAtom& a);
+	static FORCE_INLINE bool isClass(const asAtom& a);
+	static FORCE_INLINE bool isTemplate(const asAtom& a);
+	static FORCE_INLINE SWFOBJECT_TYPE getObjectType(const asAtom& a);
+	static FORCE_INLINE bool checkArgumentConversion(const asAtom& a,const asAtom& obj);
+	static asAtom asTypelate(asAtom& a, asAtom& b, ASWorker* wrk);
+	static bool isTypelate(asAtom& a,ASObject* type);
+	static bool isTypelate(asAtom& a,asAtom& t);
+	static FORCE_INLINE number_t toNumber(const asAtom& a);
+	static FORCE_INLINE number_t AVM1toNumber(asAtom& a, uint32_t swfversion);
+	static FORCE_INLINE bool AVM1toBool(asAtom& a);
+	static FORCE_INLINE int32_t toInt(const asAtom& a);
+	static FORCE_INLINE int32_t toIntStrict(const asAtom& a);
+	static FORCE_INLINE int64_t toInt64(const asAtom& a);
+	static FORCE_INLINE uint32_t toUInt(asAtom& a);
+	static void getStringView(tiny_string& res, const asAtom &a, ASWorker* wrk); // this doesn't deep copy the data buffer if parameter a is an ASString
+	static tiny_string toString(const asAtom &a, ASWorker* wrk);
+	static tiny_string toLocaleString(const asAtom &a, ASWorker* wrk);
+	static uint32_t toStringId(asAtom &a, ASWorker* wrk);
+	static FORCE_INLINE asAtom typeOf(asAtom& a);
+	static bool Boolean_concrete(asAtom& a);
+	static bool Boolean_concrete_object(asAtom& a);
+	static void convert_b(asAtom& a, bool refcounted);
+	static FORCE_INLINE int32_t getInt(const asAtom& a) { assert((a.uintval&0x7) == ATOM_INTEGER || (a.uintval&0x7) == ATOM_UINTEGER); return a.intval>>3; }
+	static FORCE_INLINE uint32_t getUInt(const asAtom& a) { assert((a.uintval&0x7) == ATOM_UINTEGER || (a.uintval&0x7) == ATOM_INTEGER); return a.uintval>>3; }
+	static FORCE_INLINE uint32_t getStringId(const asAtom& a) { assert((a.uintval&0x7) == ATOM_STRINGID); return a.uintval>>3; }
+	static FORCE_INLINE void setInt(asAtom& a,ASWorker* wrk, int64_t val);
+	static FORCE_INLINE void setUInt(asAtom& a, ASWorker* wrk, uint32_t val);
+	static void setNumber(asAtom& a,ASWorker* w,number_t val);
+	static bool replaceNumber(asAtom& a, ASWorker* w, number_t val);
+	static FORCE_INLINE void setBool(asAtom& a,bool val);
+	static FORCE_INLINE void setNull(asAtom& a);
+	static FORCE_INLINE void setUndefined(asAtom& a);
+	static void setFunction(asAtom& a, ASObject* obj, ASObject* closure, ASWorker* wrk);
+	static FORCE_INLINE void increment(asAtom& a, ASWorker* wrk);
+	static FORCE_INLINE void decrement(asAtom& a, ASWorker* wrk);
+	static FORCE_INLINE void increment_i(asAtom& a, ASWorker* wrk, int32_t amount=1);
+	static FORCE_INLINE void decrement_i(asAtom& a, ASWorker* wrk, int32_t amount=1);
+	static bool add(asAtom& a, asAtom& v2, ASWorker *wrk, bool forceint);
+	static void addreplace(asAtom& ret, ASWorker* wrk, asAtom &v1, asAtom &v2,bool forceint);
+	static FORCE_INLINE void bitnot(asAtom& a, ASWorker* wrk);
+	static FORCE_INLINE void subtract(asAtom& a,ASWorker* wrk,asAtom& v2,bool forceint);
+	static FORCE_INLINE void subtractreplace(asAtom& ret, ASWorker* wrk,const asAtom& v1, const asAtom& v2,bool forceint);
+	static FORCE_INLINE void multiply(asAtom& a,ASWorker* wrk,asAtom& v2,bool forceint);
+	static FORCE_INLINE void multiplyreplace(asAtom& ret, ASWorker* wrk,const asAtom& v1, const asAtom &v2,bool forceint);
+	static FORCE_INLINE void divide(asAtom& a,ASWorker* wrk,asAtom& v2,bool forceint);
+	static FORCE_INLINE void dividereplace(asAtom& ret, ASWorker* wrk,const asAtom& v1, const asAtom& v2,bool forceint);
+	static FORCE_INLINE void modulo(asAtom& a,ASWorker* wrk,asAtom& v2,bool forceint);
+	static FORCE_INLINE void moduloreplace(asAtom& ret, ASWorker* wrk, const asAtom& v1, const asAtom &v2, bool forceint);
+	static FORCE_INLINE void lshift(asAtom& a,ASWorker* wrk,asAtom& v1);
+	static FORCE_INLINE void rshift(asAtom& a,ASWorker* wrk,asAtom& v1);
+	static FORCE_INLINE void urshift(asAtom& a,ASWorker* wrk,asAtom& v1);
+	static FORCE_INLINE void bit_and(asAtom& a,ASWorker* wrk,asAtom& v1);
+	static FORCE_INLINE void bit_or(asAtom& a,ASWorker* wrk,asAtom& v1);
+	static FORCE_INLINE void bit_xor(asAtom& a, ASWorker* wrk, asAtom& v1);
+	static FORCE_INLINE void _not(asAtom& a);
+	static FORCE_INLINE void negate_i(asAtom& a,ASWorker* wrk);
+	static FORCE_INLINE void add_i(asAtom& a,ASWorker* wrk,asAtom& v2);
+	static FORCE_INLINE void subtract_i(asAtom& a,ASWorker* wrk,asAtom& v2);
+	static FORCE_INLINE void multiply_i(asAtom& a,ASWorker* wrk,asAtom& v2);
+	static void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
+						  std::map<const ASObject*, uint32_t>& objMap,
+						  std::map<const Class_base*, uint32_t>& traitsMap, ASWorker* wrk,
+						  asAtom& a);
+	template<class T> static bool is(asAtom& a);
+	template<class T> static T* as(asAtom& a) 
+	{ 
+		assert(isObject(a));
+		return static_cast<T*>((void*)(a.uintval& ~((LIGHTSPARK_ATOM_VALTYPE)0x7)));
+	}
 };
-#define ASATOM_INCREF(a) if (a.getObject()) a.getObject()->incRef()
-#define ASATOM_INCREF_POINTER(a) if (a->getObject()) a->getObject()->incRef()
-#define ASATOM_DECREF(a) do { ASObject* b = a.getObject(); if (b && !b->getInDestruction()) b->decRef(); } while (0)
-#define ASATOM_DECREF_POINTER(a) { ASObject* b = a->getObject(); if (b && !b->getInDestruction()) b->decRef(); } while (0)
+#define ASATOM_INCREF(a) if (asAtomHandler::isObject(a)) asAtomHandler::getObjectNoCheck(a)->incRef()
+#define ASATOM_INCREF_POINTER(a) if (asAtomHandler::isObject(*a)) asAtomHandler::getObjectNoCheck(*a)->incRef()
+#define ASATOM_DECREF(a) if (asAtomHandler::isObject(a)) { ASObject* obj_b = asAtomHandler::getObjectNoCheck(a); if (!obj_b->getConstant() && !obj_b->getInDestruction()) obj_b->decRef(); }
+#define ASATOM_DECREF_POINTER(a) if (asAtomHandler::isObject(*a)) { ASObject* obj_b = asAtomHandler::getObject(*a); if (obj_b && !obj_b->getConstant() && !obj_b->getInDestruction()) obj_b->decRef(); }
+#define ASATOM_ADDSTOREDMEMBER(a) if (asAtomHandler::isObject(a)) { asAtomHandler::getObjectNoCheck(a)->incRef();asAtomHandler::getObjectNoCheck(a)->addStoredMember(); }
+#define ASATOM_REMOVESTOREDMEMBER(a) if (asAtomHandler::isObject(a)) { asAtomHandler::getObjectNoCheck(a)->removeStoredMember();}
+#define ASATOM_PREPARESHUTDOWN(a) if (asAtomHandler::isObject(a)) { asAtomHandler::getObjectNoCheck(a)->prepareShutdown();}
+
 struct variable
 {
 	asAtom var;
@@ -341,19 +598,49 @@ struct variable
 	asAtom setter;
 	asAtom getter;
 	nsNameAndKind ns;
+	uint32_t slotid;
 	TRAIT_KIND kind:4;
 	bool isResolved:1;
 	bool isenumerable:1;
 	bool issealed:1;
 	bool isrefcounted:1;
 	variable(TRAIT_KIND _k,const nsNameAndKind& _ns)
-		: typeUnion(NULL),ns(_ns),kind(_k),isResolved(false),isenumerable(true),issealed(false),isrefcounted(true) {}
+		: var(asAtomHandler::invalidAtom),typeUnion(nullptr),setter(asAtomHandler::invalidAtom),getter(asAtomHandler::invalidAtom),ns(_ns),slotid(0),kind(_k),isResolved(false),isenumerable(true),issealed(false),isrefcounted(true) {}
 	variable(TRAIT_KIND _k, asAtom _v, multiname* _t, const Type* type, const nsNameAndKind &_ns, bool _isenumerable);
-	void setVar(asAtom& v, SystemState* sys, bool _isrefcounted = true);
+	void setVar(ASWorker* wrk, asAtom v, bool _isrefcounted = true);
 	/*
 	 * To be used only if the value is guaranteed to be of the right type
 	 */
 	void setVarNoCoerce(asAtom &v);
+
+	void setResultType(const Type* t)
+	{
+		isResolved=true;
+		type=t;
+	}
+};
+// struct used to count cyclic references
+struct cyclicmembercount
+{
+	uint32_t count; // number of references counted
+	bool hasmember; // indicates if the member object has any references to the main object in it's members
+};
+// struct used to keep track of entries when executing garbage collection
+struct garbagecollectorstate
+{
+	std::unordered_map<ASObject*,cyclicmembercount> checkedobjects;
+	std::unordered_set<ASObject*> ancestors;
+	std::unordered_set<ASObject*> countedobjects;
+	ASObject* startobj;
+	int level;
+	int incCount(ASObject* o);
+	FORCE_INLINE bool checkAncestors(ASObject* o)
+	{
+		return ancestors.find(o)!=ancestors.end();
+	}
+	garbagecollectorstate(ASObject* _startobj):startobj(_startobj),level(0)
+	{
+	}
 };
 
 struct varName
@@ -387,8 +674,13 @@ public:
 	mapType Variables;
 	typedef std::unordered_multimap<uint32_t,variable>::iterator var_iterator;
 	typedef std::unordered_multimap<uint32_t,variable>::const_iterator const_var_iterator;
-	std::vector<varName> slots_vars;
-	variables_map(MemoryAccount* m);
+	std::vector<variable*> slots_vars;
+	uint32_t slotcount;
+	// indicates if this map was initialized with no variables with non-primitive values
+	bool cloneable;
+	variables_map():slotcount(0),cloneable(true)
+	{
+	}
 	/**
 	   Find a variable in the map
 
@@ -399,23 +691,16 @@ public:
 	variable* findObjVar(uint32_t nameId, const nsNameAndKind& ns, TRAIT_KIND createKind, uint32_t traitKinds);
 	variable* findObjVar(SystemState* sys,const multiname& mname, TRAIT_KIND createKind, uint32_t traitKinds);
 	// adds a dynamic variable without checking if a variable with this name already exists
-	FORCE_INLINE void setDynamicVarNoCheck(uint32_t nameID,asAtom& v)
-	{
-		var_iterator inserted=Variables.insert(Variables.cbegin(),
-				make_pair(nameID,variable(DYNAMIC_TRAIT,nsNameAndKind())));
-		inserted->second.var.set(v);
-	}
-
+	void setDynamicVarNoCheck(uint32_t nameID,asAtom& v);
 	/**
 	 * Const version of findObjVar, useful when looking for getters
 	 */
-	FORCE_INLINE const variable* findObjVarConst(SystemState* sys,const multiname& mname, uint32_t traitKinds, uint32_t* nsRealId = NULL) const
+	FORCE_INLINE const variable* findObjVarConst(SystemState* sys,const multiname& mname, uint32_t traitKinds, uint32_t* nsRealId = nullptr) const
 	{
 		if (mname.isEmpty())
-			return NULL;
+			return nullptr;
 		uint32_t name=mname.name_type == multiname::NAME_STRING ? mname.name_s_id : mname.normalizedNameId(sys);
-		assert(!mname.ns.empty());
-		
+		bool noNS = mname.ns.empty(); // no Namespace in multiname means we don't care about the namespace and take the first match
 		const_var_iterator ret=Variables.find(name);
 		auto nsIt=mname.ns.cbegin();
 		//Find the namespace
@@ -423,7 +708,7 @@ public:
 		{
 			//breaks when the namespace is not found
 			const nsNameAndKind& ns=ret->second.ns;
-			if(ns==*nsIt || (mname.hasEmptyNS && ns.hasEmptyName()) || (mname.hasBuiltinNS && ns.hasBuiltinName()))
+			if(noNS || ns==*nsIt || (mname.hasEmptyNS && ns.hasEmptyName()) || (mname.hasBuiltinNS && ns.hasBuiltinName()))
 			{
 				if(ret->second.kind & traitKinds)
 				{
@@ -432,7 +717,7 @@ public:
 					return &ret->second;
 				}
 				else
-					return NULL;
+					return nullptr;
 			}
 			else
 			{
@@ -445,14 +730,14 @@ public:
 			}
 		}
 	
-		return NULL;
+		return nullptr;
 	}
 
 	//
-	FORCE_INLINE variable* findObjVar(SystemState* sys,const multiname& mname, uint32_t traitKinds, uint32_t* nsRealId = NULL)
+	FORCE_INLINE variable* findObjVar(SystemState* sys,const multiname& mname, uint32_t traitKinds, uint32_t* nsRealId = nullptr)
 	{
 		if (mname.isEmpty())
-			return NULL;
+			return nullptr;
 		uint32_t name=mname.name_type == multiname::NAME_STRING ? mname.name_s_id : mname.normalizedNameId(sys);
 		bool noNS = mname.ns.empty(); // no Namespace in multiname means we don't care about the namespace and take the first match
 
@@ -472,7 +757,7 @@ public:
 					return &ret->second;
 				}
 				else
-					return NULL;
+					return nullptr;
 			}
 			else
 			{
@@ -485,45 +770,78 @@ public:
 			}
 		}
 
-		return NULL;
+		return nullptr;
 	}
 	
 	//Initialize a new variable specifying the type (TODO: add support for const)
-	void initializeVar(const multiname& mname, asAtom &obj, multiname *typemname, ABCContext* context, TRAIT_KIND traitKind, ASObject* mainObj, uint32_t slot_id, bool isenumerable);
+	void initializeVar(multiname &mname, asAtom &obj, multiname *typemname, ABCContext* context, TRAIT_KIND traitKind, ASObject* mainObj, uint32_t slot_id, bool isenumerable);
 	void killObjVar(SystemState* sys, const multiname& mname);
-	asAtom getSlot(unsigned int n);
-	/*
-	 * This method does throw if the slot id is not valid
-	 */
-	void validateSlotId(unsigned int n) const;
-	void setSlot(unsigned int n,asAtom o,SystemState* sys);
+	FORCE_INLINE asAtom getSlot(unsigned int n)
+	{
+		assert_and_throw(n > 0 && n <= slotcount);
+		return slots_vars[n-1]->var;
+	}
+	FORCE_INLINE variable* getSlotVar(unsigned int n)
+	{
+		return slots_vars[n-1];
+	}
+	FORCE_INLINE asAtom getSlotNoCheck(unsigned int n)
+	{
+		return slots_vars[n]->var;
+	}
+	FORCE_INLINE TRAIT_KIND getSlotKind(unsigned int n)
+	{
+		assert_and_throw(n > 0 && n <= slotcount);
+		return slots_vars[n-1]->kind;
+	}
+	Class_base* getSlotType(unsigned int n);
+	
+	uint32_t findInstanceSlotByMultiname(multiname* name, SystemState *sys);
+	FORCE_INLINE bool setSlot(ASWorker* wrk, unsigned int n, asAtom &o);
 	/*
 	 * This version of the call is guarantee to require no type conversion
 	 * this is verified at optimization time
 	 */
-	void setSlotNoCoerce(unsigned int n, asAtom o);
-	void initSlot(unsigned int n, uint32_t nameId, const nsNameAndKind& ns);
-	inline unsigned int size() const
+	FORCE_INLINE void setSlotNoCoerce(unsigned int n, asAtom o);
+
+	FORCE_INLINE void initSlot(unsigned int n, variable *v)
+	{
+		if (n>slots_vars.capacity())
+			slots_vars.reserve(n+8);
+		if(n>slotcount)
+		{
+			slots_vars.resize(n);
+			slotcount= n;
+		}
+		v->slotid = n;
+		slots_vars[n-1]=v;
+	}
+	FORCE_INLINE  unsigned int size() const
 	{
 		return Variables.size();
 	}
-	tiny_string getNameAt(SystemState* sys,unsigned int i) const;
+	uint32_t getNameAt(unsigned int i) const;
 	variable* getValueAt(unsigned int i);
 	int getNextEnumerable(unsigned int i) const;
 	~variables_map();
 	void check() const;
 	void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap);
+				std::map<const Class_base*, uint32_t>& traitsMap, bool forsharedobject, ASWorker* wrk);
 	void dumpVariables();
 	void destroyContents();
+	void prepareShutdown();
+	bool cloneInstance(variables_map& map);
+	void removeAllDeclaredProperties();
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate, ASObject* parent);
 };
-
-enum GET_VARIABLE_RESULT {GETVAR_NORMAL=0x00, GETVAR_CACHEABLE=0x01, GETVAR_ISGETTER=0x02};
 
 enum METHOD_TYPE { NORMAL_METHOD=0, SETTER_METHOD=1, GETTER_METHOD=2 };
 //for toPrimitive
 enum TP_HINT { NO_HINT, NUMBER_HINT, STRING_HINT };
+class ASWorker;
+
+extern ASWorker* getWorker();
 
 class ASObject: public memory_reporter, public RefCountable
 {
@@ -534,76 +852,73 @@ friend class Class_inherit;
 friend void lookupAndLink(Class_base* c, const tiny_string& name, const tiny_string& interfaceNs);
 friend class IFunction; //Needed for clone
 friend struct asfreelist;
+friend class SystemState;
+friend struct variable;
+friend class variables_map;
+friend class RootMovieClip;
+friend class asAtomHandler;
+friend class ASWorker;
 public:
 	asfreelist* objfreelist;
 private:
 	variables_map Variables;
-	unsigned int varcount;
+	// list of ASObjects which have a (not refcounted) reference to this ASObject (used to avoid circular references)
+	unordered_set<ASObject*> ownedObjects;
 	Class_base* classdef;
-	inline const variable* findGettable(const multiname& name, uint32_t* nsRealId = NULL) const DLL_LOCAL
+	inline const variable* findGettable(const multiname& name, uint32_t* nsRealId = nullptr) const DLL_LOCAL
 	{
-		const variable* ret=varcount ? Variables.findObjVarConst(getSystemState(),name,DECLARED_TRAIT|DYNAMIC_TRAIT,nsRealId):NULL;
+		const variable* ret=Variables.findObjVarConst(getSystemState(),name,DECLARED_TRAIT|DYNAMIC_TRAIT,nsRealId);
 		if(ret)
 		{
 			//It seems valid for a class to redefine only the setter, so if we can't find
 			//something to get, it's ok
-			if(!(ret->getter.type != T_INVALID || ret->var.type != T_INVALID))
-				ret=NULL;
+			if(!(asAtomHandler::isValid(ret->getter) || asAtomHandler::isValid(ret->var)))
+				ret=nullptr;
 		}
 		return ret;
 	}
 	
-	variable* findSettable(const multiname& name, bool* has_getter=NULL) DLL_LOCAL;
+	variable* findSettable(const multiname& name, bool* has_getter=nullptr) DLL_LOCAL;
 	multiname* proxyMultiName;
 	SystemState* sys;
+	ASWorker* worker;
 protected:
-	ASObject(MemoryAccount* m):objfreelist(NULL),Variables(m),varcount(0),classdef(NULL),proxyMultiName(NULL),sys(NULL),
-		stringId(UINT32_MAX),type(T_OBJECT),subtype(SUBTYPE_NOT_SET),traitsInitialized(false),constructIndicator(false),constructorCallComplete(false),implEnable(true)
-	{
-#ifndef NDEBUG
-		//Stuff only used in debugging
-		initialized=false;
-#endif
-	}
+	ASObject(MemoryAccount* m);
 	
 	ASObject(const ASObject& o);
-	virtual ~ASObject()
-	{
-		destroy();
-	}
+	virtual ~ASObject();
 	uint32_t stringId;
+	uint32_t storedmembercount; // count how often this object is stored as a member of another object (needed for cyclic reference detection)
 	SWFOBJECT_TYPE type;
 	CLASS_SUBTYPE subtype;
 	
 	bool traitsInitialized:1;
 	bool constructIndicator:1;
 	bool constructorCallComplete:1; // indicates that the constructor including all super constructors has been called
-	void serializeDynamicProperties(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
-				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t> traitsMap);
-	void setClass(Class_base* c);
+	bool preparedforshutdown:1;
+	bool markedforgarbagecollection:1;
 	static variable* findSettableImpl(SystemState* sys,variables_map& map, const multiname& name, bool* has_getter);
-	static FORCE_INLINE const variable* findGettableImplConst(SystemState* sys, const variables_map& map, const multiname& name, uint32_t* nsRealId = NULL)
+	static FORCE_INLINE const variable* findGettableImplConst(SystemState* sys, const variables_map& map, const multiname& name, uint32_t* nsRealId = nullptr)
 	{
 		const variable* ret=map.findObjVarConst(sys,name,DECLARED_TRAIT|DYNAMIC_TRAIT,nsRealId);
 		if(ret)
 		{
 			//It seems valid for a class to redefine only the setter, so if we can't find
 			//something to get, it's ok
-			if(!(ret->getter.type != T_INVALID || ret->var.type != T_INVALID))
-				ret=NULL;
+			if(!(asAtomHandler::isValid(ret->getter) || asAtomHandler::isValid(ret->var)))
+				ret=nullptr;
 		}
 		return ret;
 	}
-	static FORCE_INLINE variable* findGettableImpl(SystemState* sys, variables_map& map, const multiname& name, uint32_t* nsRealId = NULL)
+	static FORCE_INLINE variable* findGettableImpl(SystemState* sys, variables_map& map, const multiname& name, uint32_t* nsRealId = nullptr)
 	{
 		variable* ret=map.findObjVar(sys,name,DECLARED_TRAIT|DYNAMIC_TRAIT,nsRealId);
 		if(ret)
 		{
 			//It seems valid for a class to redefine only the setter, so if we can't find
 			//something to get, it's ok
-			if(!(ret->getter.type != T_INVALID || ret->var.type != T_INVALID))
-				ret=NULL;
+			if(!(asAtomHandler::isValid(ret->getter) || asAtomHandler::isValid(ret->var)))
+				ret=nullptr;
 		}
 		return ret;
 	}
@@ -617,19 +932,98 @@ protected:
 	   It has to call ASObject::destruct() as last instruction
 	   The destruct method must be callable multiple time with the same effects (no double frees).
 	*/
-	bool destruct();
-	// called when object is really destroyed
-	virtual void destroy(){}
+	bool destruct() override;
+
+	FORCE_INLINE bool destructIntern()
+	{
+		if (markedforgarbagecollection)
+			removefromGarbageCollection();
+		destroyContents();
+		for (auto it = ownedObjects.begin(); it != ownedObjects.end(); it++)
+		{
+			(*it)->removeStoredMember();
+		}
+		ownedObjects.clear();
+		if (proxyMultiName)
+		{
+			delete proxyMultiName;
+			proxyMultiName = nullptr;
+		}
+		stringId = UINT32_MAX;
+		traitsInitialized =false;
+		constructIndicator = false;
+		constructorCallComplete =false;
+		markedforgarbagecollection=false;
+		implEnable = true;
+		storedmembercount=0;
+#ifndef NDEBUG
+		//Stuff only used in debugging
+		initialized=false;
+#endif
+		bool dodestruct = true;
+		if (objfreelist)
+		{
+			if (!getCached())
+			{
+				assert(getWorker() == this->getInstanceWorker() || !getWorker());
+				dodestruct = !objfreelist->pushObjectToFreeList(this);
+			}
+			else
+				dodestruct = false;
+		}
+		if (dodestruct)
+		{
+#ifndef NDEBUG
+			if (classdef)
+			{
+				uint32_t x = objectcounter[classdef];
+				x--;
+				objectcounter[classdef] = x;
+			}
+#endif
+			finalize();
+		}
+		return dodestruct;
+	}
 public:
-	ASObject(Class_base* c,SWFOBJECT_TYPE t = T_OBJECT,CLASS_SUBTYPE subtype = SUBTYPE_NOT_SET);
-	
+	ASObject(ASWorker* wrk, Class_base* c,SWFOBJECT_TYPE t = T_OBJECT,CLASS_SUBTYPE subtype = SUBTYPE_NOT_SET);
+	void serializeDynamicProperties(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
+				std::map<const ASObject*, uint32_t>& objMap,
+				std::map<const Class_base*, uint32_t> traitsMap, ASWorker* wrk, bool usedynamicPropertyWriter=true, bool forSharedObject = false);
 #ifndef NDEBUG
 	//Stuff only used in debugging
 	bool initialized:1;
+	static std::map<Class_base*,uint32_t> objectcounter;
+	static void dumpObjectCounters(uint32_t threshhold);
 #endif
 	bool implEnable:1;
 
 	inline Class_base* getClass() const { return classdef; }
+	void setClass(Class_base* c);
+	FORCE_INLINE void addStoredMember()
+	{
+		assert(storedmembercount<=uint32_t(this->getRefCount()) || this->getConstant());
+		storedmembercount++;
+		if (markedforgarbagecollection)
+		{
+			removefromGarbageCollection();
+			decRef();
+		}
+	}
+	bool isMarkedForGarbageCollection() const { return markedforgarbagecollection; }
+	void removefromGarbageCollection();
+	void removeStoredMember();
+	void handleGarbageCollection();
+	virtual bool countCylicMemberReferences(garbagecollectorstate& gcstate);
+	FORCE_INLINE bool canHaveCyclicMemberReference()
+	{
+		return type == T_ARRAY || type == T_CLASS || type == T_PROXY || type == T_TEMPLATE || type == T_FUNCTION ||
+				(type == T_OBJECT && 
+				subtype != SUBTYPE_DATE && 
+				subtype != SUBTYPE_URLREQUEST); // TODO check other subtypes
+	}
+	bool countAllCylicMemberReferences(garbagecollectorstate& gcstate);
+	
 	ASFUNCTION_ATOM(_constructor);
 	// constructor for subclasses that can't be instantiated.
 	// Throws ArgumentError.
@@ -641,6 +1035,10 @@ public:
 	ASFUNCTION_ATOM(isPrototypeOf);
 	ASFUNCTION_ATOM(propertyIsEnumerable);
 	ASFUNCTION_ATOM(setPropertyIsEnumerable);
+	ASFUNCTION_ATOM(addProperty);
+	ASFUNCTION_ATOM(registerClass);
+	ASFUNCTION_ATOM(AVM1_IgnoreSetter);
+	
 	void check() const;
 	static void s_incRef(ASObject* o)
 	{
@@ -657,34 +1055,47 @@ public:
 			o->decRef();
 	}
 	/*
-	   The finalize function is used only for classes that don't have the reusable flag set
-	   if a class is made reusable, it should implement destruct() instead
+	   The finalize function is used only for classes that don't have the reusable flag set and on destruction at application exit
 	   It should decRef all referenced objects.
 	   It has to reset all data to their default state.
 	   The finalize method must be callable multiple time with the same effects (no double frees).
 	*/
 	inline virtual void finalize() {}
+	// use this to mark an ASObject as constant, instead of RefCountable->setConstant()
+	// because otherwise it will not be properly deleted on application exit.
+	void setRefConstant();
 
-	enum GET_VARIABLE_OPTION {NONE=0x00, SKIP_IMPL=0x01, FROM_GETLEX=0x02, DONT_CALL_GETTER=0x04};
-
-	virtual GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt=NONE)
+	virtual GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk)
 	{
-		return getVariableByMultinameIntern(ret,name,classdef,opt);
+		return getVariableByMultinameIntern(ret,name,classdef,opt,wrk);
 	}
+	virtual GET_VARIABLE_RESULT getVariableByInteger(asAtom& ret, int index, GET_VARIABLE_OPTION opt, ASWorker* wrk)
+	{
+		return getVariableByIntegerIntern(ret,index,opt,wrk);
+	}
+	// AVM1 needs to check the "protoype" variable in addition to the normal behaviour
+	GET_VARIABLE_RESULT AVM1getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk);
 	/*
 	 * Helper method using the get the raw variable struct instead of calling the getter.
 	 * It is used by getVariableByMultiname and by early binding code
 	 */
-	variable *findVariableByMultiname(const multiname& name, GET_VARIABLE_OPTION opt, Class_base* cls, uint32_t* nsRealID = NULL);
+	virtual variable *findVariableByMultiname(const multiname& name, Class_base* cls, uint32_t* nsRealID, bool* isborrowed, bool considerdynamic, ASWorker* wrk);
 	/*
 	 * Gets a variable of this object. It looks through all classes (beginning at cls),
 	 * then the prototype chain, and then instance variables.
 	 * If the property found is a getter, it is called and its return value returned.
 	 */
-	GET_VARIABLE_RESULT getVariableByMultinameIntern(asAtom& ret, const multiname& name, Class_base* cls, GET_VARIABLE_OPTION opt=NONE);
-	virtual int32_t getVariableByMultiname_i(const multiname& name);
+	GET_VARIABLE_RESULT getVariableByMultinameIntern(asAtom& ret, const multiname& name, Class_base* cls, GET_VARIABLE_OPTION opt,ASWorker* wrk);
+	GET_VARIABLE_RESULT getVariableByIntegerIntern(asAtom& ret, int index, GET_VARIABLE_OPTION opt,ASWorker* wrk)
+	{
+		multiname m(nullptr);
+		m.name_type = multiname::NAME_INT;
+		m.name_i = index;
+		return getVariableByMultiname(ret,m,opt,wrk);
+	}
+	virtual int32_t getVariableByMultiname_i(const multiname& name, ASWorker* wrk);
 	/* Simple getter interface for the common case */
-	void getVariableByMultiname(asAtom& ret, const tiny_string& name, std::list<tiny_string> namespaces);
+	void getVariableByMultiname(asAtom& ret, const tiny_string& name, std::list<tiny_string> namespaces,ASWorker* wrk);
 	/*
 	 * Execute a AS method on this object. Returns the value
 	 * returned by the function. One reference of each args[i] is
@@ -692,11 +1103,20 @@ public:
 	 * thrown.
 	 */
 	void executeASMethod(asAtom &ret, const tiny_string& methodName, std::list<tiny_string> namespaces, asAtom *args, uint32_t num_args);
-	virtual void setVariableByMultiname_i(const multiname& name, int32_t value);
+	virtual void setVariableByMultiname_i(multiname &name, int32_t value, ASWorker* wrk);
 	enum CONST_ALLOWED_FLAG { CONST_ALLOWED=0, CONST_NOT_ALLOWED };
-	virtual void setVariableByMultiname(const multiname& name, asAtom& o, CONST_ALLOWED_FLAG allowConst)
+	/*
+	 * If alreadyset is not null, it has to be initialized to false by the caller.
+	 * It will be set to true if the old and new value are the same.
+	 * In that case the old value will not be decReffed.
+	 */
+	virtual multiname* setVariableByMultiname(multiname& name, asAtom& o, CONST_ALLOWED_FLAG allowConst, bool* alreadyset, ASWorker* wrk)
 	{
-		setVariableByMultiname(name,o,allowConst,classdef);
+		return setVariableByMultiname_intern(name,o,allowConst,classdef,alreadyset,wrk);
+	}
+	virtual void setVariableByInteger(int index, asAtom& o, CONST_ALLOWED_FLAG allowConst, bool* alreadyset, ASWorker* wrk)
+	{
+		setVariableByInteger_intern(index,o,allowConst,alreadyset,wrk);
 	}
 	/*
 	 * Sets  variable of this object. It looks through all classes (beginning at cls),
@@ -705,26 +1125,32 @@ public:
 	 * If no property is found, an instance variable is created.
 	 * Setting CONSTANT_TRAIT is only allowed if allowConst is true
 	 */
-	void setVariableByMultiname(const multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst, Class_base* cls);
+	multiname* setVariableByMultiname_intern(multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst, Class_base* cls, bool *alreadyset, ASWorker* wrk);
+	void setVariableByInteger_intern(int index, asAtom &o, CONST_ALLOWED_FLAG allowConst, bool* alreadyset, ASWorker* wrk)
+	{
+		multiname m(nullptr);
+		m.name_type = multiname::NAME_INT;
+		m.name_i = index;
+		setVariableByMultiname(m,o,allowConst,alreadyset,wrk);
+	}
 	
 	// sets dynamic variable without checking for existence
 	// use it if it is guarranteed that the variable doesn't exist in this object
 	FORCE_INLINE void setDynamicVariableNoCheck(uint32_t nameID, asAtom& o)
 	{
 		Variables.setDynamicVarNoCheck(nameID,o);
-		++varcount;
 	}
 	/*
 	 * Called by ABCVm::buildTraits to create DECLARED_TRAIT or CONSTANT_TRAIT and set their type
 	 */
-	void initializeVariableByMultiname(const multiname& name, asAtom& o, multiname* typemname,
+	void initializeVariableByMultiname(multiname &name, asAtom& o, multiname* typemname,
 			ABCContext* context, TRAIT_KIND traitKind, uint32_t slot_id, bool isenumerable);
-	virtual bool deleteVariableByMultiname(const multiname& name);
+	virtual bool deleteVariableByMultiname(const multiname& name, ASWorker* wrk);
 	void setVariableByQName(const tiny_string& name, const tiny_string& ns, ASObject* o, TRAIT_KIND traitKind, bool isEnumerable = true);
 	void setVariableByQName(const tiny_string& name, const nsNameAndKind& ns, ASObject* o, TRAIT_KIND traitKind, bool isEnumerable = true);
-	void setVariableByQName(uint32_t nameId, const nsNameAndKind& ns, ASObject* o, TRAIT_KIND traitKind, bool isEnumerable = true);
-	void setVariableAtomByQName(const tiny_string& name, const nsNameAndKind& ns, asAtom o, TRAIT_KIND traitKind, bool isEnumerable = true);
-	void setVariableAtomByQName(uint32_t nameId, const nsNameAndKind& ns, asAtom o, TRAIT_KIND traitKind, bool isEnumerable = true, bool isRefcounted = true);
+	variable *setVariableByQName(uint32_t nameId, const nsNameAndKind& ns, ASObject* o, TRAIT_KIND traitKind, bool isEnumerable = true);
+	variable *setVariableAtomByQName(const tiny_string& name, const nsNameAndKind& ns, asAtom o, TRAIT_KIND traitKind, bool isEnumerable = true);
+	variable *setVariableAtomByQName(uint32_t nameId, const nsNameAndKind& ns, asAtom o, TRAIT_KIND traitKind, bool isEnumerable = true, bool isRefcounted = true);
 	//NOTE: the isBorrowed flag is used to distinguish methods/setters/getters that are inside a class but on behalf of the instances
 	void setDeclaredMethodByQName(const tiny_string& name, const tiny_string& ns, IFunction* o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
 	void setDeclaredMethodByQName(const tiny_string& name, const nsNameAndKind& ns, IFunction* o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
@@ -732,25 +1158,51 @@ public:
 	void setDeclaredMethodAtomByQName(const tiny_string& name, const tiny_string& ns, asAtom o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
 	void setDeclaredMethodAtomByQName(const tiny_string& name, const nsNameAndKind& ns, asAtom o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
 	void setDeclaredMethodAtomByQName(uint32_t nameId, const nsNameAndKind& ns, asAtom f, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
-	virtual bool hasPropertyByMultiname(const multiname& name, bool considerDynamic, bool considerPrototype);
-	asAtom getSlot(unsigned int n)
+	virtual bool hasPropertyByMultiname(const multiname& name, bool considerDynamic, bool considerPrototype, ASWorker* wrk);
+	FORCE_INLINE asAtom getSlot(unsigned int n)
 	{
 		return Variables.getSlot(n);
 	}
-	void setSlot(unsigned int n,asAtom o)
+	FORCE_INLINE variable* getSlotVar(unsigned int n)
 	{
-		Variables.setSlot(n,o,getSystemState());
+		return Variables.getSlotVar(n);
 	}
-	void setSlotNoCoerce(unsigned int n,asAtom o)
+	FORCE_INLINE asAtom getSlotNoCheck(unsigned int n)
+	{
+		return Variables.getSlotNoCheck(n);
+	}
+	FORCE_INLINE TRAIT_KIND getSlotKind(unsigned int n)
+	{
+		return Variables.getSlotKind(n);
+	}
+	FORCE_INLINE bool setSlot(ASWorker* wrk,unsigned int n,asAtom o)
+	{
+		return Variables.setSlot(wrk,n,o);
+	}
+	FORCE_INLINE void setSlotNoCoerce(unsigned int n,asAtom o)
 	{
 		Variables.setSlotNoCoerce(n,o);
 	}
-	void initSlot(unsigned int n, const multiname& name);
-	void initAdditionalSlots(std::vector<multiname*> additionalslots);
-	unsigned int numVariables() const;
-	inline tiny_string getNameAt(int i) const
+	FORCE_INLINE Class_base* getSlotType(unsigned int n)
 	{
-		return Variables.getNameAt(sys,i);
+		return Variables.getSlotType(n);
+	}
+	uint32_t findInstanceSlotByMultiname(multiname* name)
+	{
+		return Variables.findInstanceSlotByMultiname(name,getSystemState());
+	}
+	unsigned int numSlots() const
+	{
+		return Variables.slots_vars.size();
+	}
+	
+	void initSlot(unsigned int n, variable *v);
+	
+	void initAdditionalSlots(std::vector<multiname *> &additionalslots);
+	unsigned int numVariables() const;
+	inline uint32_t getNameAt(int i) const
+	{
+		return Variables.getNameAt(i);
 	}
 	void getValueAt(asAtom &ret, int i);
 	inline SWFOBJECT_TYPE getObjectType() const
@@ -762,9 +1214,17 @@ public:
 		assert(sys);
 		return sys;
 	}
-	void setSystemState(SystemState* s)
+	inline void setSystemState(SystemState* s)
 	{
 		sys = s;
+	}
+	inline ASWorker* getInstanceWorker() const
+	{
+		return worker;
+	}
+	inline void setWorker(ASWorker* w)
+	{
+		worker = w;
 	}
 
 	/* Implements ECMA's 9.8 ToString operation, but returns the concrete value */
@@ -778,8 +1238,9 @@ public:
 	uint16_t toUInt16();
 	/* Implements ECMA's 9.3 ToNumber operation, but returns the concrete value */
 	virtual number_t toNumber();
+	virtual number_t toNumberForComparison();
 	/* Implements ECMA's ToPrimitive (9.1) and [[DefaultValue]] (8.6.2.6) */
-	void toPrimitive(asAtom& ret,TP_HINT hint = NO_HINT);
+	bool toPrimitive(asAtom& ret,bool& isrefcounted, TP_HINT hint = NO_HINT);
 	bool isPrimitive() const;
 
 	bool isInitialized() const {return traitsInitialized;}
@@ -802,12 +1263,13 @@ public:
 	/* helpers for the dynamic property 'prototype' */
 	bool hasprop_prototype();
 	ASObject* getprop_prototype();
-	void setprop_prototype(_NR<ASObject>& prototype);
+	void setprop_prototype(_NR<ASObject>& prototype, uint32_t nameID=BUILTIN_STRINGS::PROTOTYPE);
 
 	//Comparison operators
 	virtual bool isEqual(ASObject* r);
 	virtual bool isEqualStrict(ASObject* r);
 	virtual TRISTATE isLess(ASObject* r);
+	virtual TRISTATE isLessAtom(asAtom& r);
 
 	static void sinit(Class_base* c);
 	static void buildTraits(ASObject* o);
@@ -826,6 +1288,7 @@ public:
 	{
 	}
 
+	void addOwnedObject(ASObject* obj);
 	/**
 	  Serialization interface
 
@@ -833,9 +1296,9 @@ public:
 	*/
 	virtual void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap);
+				std::map<const Class_base*, uint32_t>& traitsMap, ASWorker*wrk);
 
-	virtual ASObject *describeType() const;
+	virtual ASObject *describeType(ASWorker* wrk) const;
 
 	virtual tiny_string toJSON(std::vector<ASObject *> &path, asAtom replacer, const tiny_string &spaces,const tiny_string& filter);
 	/* returns true if the current object is of type T */
@@ -850,7 +1313,7 @@ public:
 	template<class T> T* as() { return static_cast<T*>(this); }
 
 	/* Returns a debug string identifying this object */
-	virtual std::string toDebugString();
+	virtual std::string toDebugString() const;
 	
 	/* stores proxy namespace settings for internal usage */
 	void setProxyProperty(const multiname& name); 
@@ -861,45 +1324,128 @@ public:
 	
 	inline void setConstructIndicator() { constructIndicator = true; }
 	inline void setConstructorCallComplete() { constructorCallComplete = true; }
-	inline void setIsInitialized() { traitsInitialized=true;}
+	inline void setIsInitialized(bool init=true) { traitsInitialized=init; }
+	inline bool getConstructIndicator() const { return constructIndicator; }
+
 	
 	void setIsEnumerable(const multiname& name, bool isEnum);
 	inline void destroyContents()
 	{
-		if (varcount)
-		{
-			Variables.destroyContents();
-			varcount=0;
-		}
+		Variables.destroyContents();
 	}
+	// this is called when shutting down the application, removes all pointers to freelist to avoid any caching of ASObjects
+	virtual void prepareShutdown();
 	CLASS_SUBTYPE getSubtype() const { return subtype;}
+	// copies all variables into the target
+	// returns false if cloning is not possible
+	bool cloneInstance(ASObject* target);
+
+	virtual asAtom getVariableBindingValue(const tiny_string &name);
+	virtual void AVM1HandleEvent(EventDispatcher* dispatcher, Event* e) { }
+	virtual bool AVM1HandleKeyboardEvent(KeyboardEvent* e);
+	virtual bool AVM1HandleMouseEvent(EventDispatcher* dispatcher,MouseEvent* e);
+	bool AVM1HandleMouseEventStandard(ASObject *dispobj, MouseEvent *e);
+	// updates AVM1 bindings in target for all members of this ASObject
+	void AVM1UpdateAllBindings(DisplayObject* target, ASWorker* wrk);
+
+	// copies all dynamic values to the target
+	void copyValues(ASObject* target, ASWorker* wrk);
 };
 
+
+FORCE_INLINE bool variables_map::setSlot(ASWorker* wrk,unsigned int n, asAtom &o)
+{
+	assert_and_throw(n < slotcount);
+	if (slots_vars[n]->var.uintval != o.uintval)
+	{
+		slots_vars[n]->setVar(wrk,o);
+		return slots_vars[n]->var.uintval == o.uintval; // setVar may coerce the object into a new instance, so we need to check if incRef is necessary
+	}
+	return false;
+}
+
+FORCE_INLINE void variables_map::setSlotNoCoerce(unsigned int n, asAtom o)
+{
+	assert_and_throw(n < slotcount);
+	if (slots_vars[n]->var.uintval != o.uintval)
+		slots_vars[n]->setVarNoCoerce(o);
+}
+FORCE_INLINE void variables_map::setDynamicVarNoCheck(uint32_t nameID,asAtom& v)
+{
+	var_iterator inserted=Variables.insert(Variables.cbegin(),
+			make_pair(nameID,variable(DYNAMIC_TRAIT,nsNameAndKind())));
+	ASObject* o = asAtomHandler::getObject(v);
+	if (o && !o->getConstant())
+		o->addStoredMember();
+	asAtomHandler::set(inserted->second.var,v);
+}
+FORCE_INLINE void variable::setVarNoCoerce(asAtom &v)
+{
+	asAtom oldvar = var;
+	var=v;
+	if(isrefcounted && asAtomHandler::isObject(oldvar))
+	{
+		LOG_CALL("remove old var no coerce:"<<asAtomHandler::toDebugString(oldvar));
+		asAtomHandler::getObjectNoCheck(oldvar)->removeStoredMember();
+	}
+	isrefcounted = asAtomHandler::isObject(v);
+	if(isrefcounted)
+	{
+		asAtomHandler::getObjectNoCheck(v)->incRef();
+		asAtomHandler::getObjectNoCheck(v)->addStoredMember();
+	}
+}
+
+
+class AVM1Function;
 class Activation_object;
 class ApplicationDomain;
 class Array;
+class ASCondition;
+class ASFile;
+class ASMutex;
 class ASQName;
 class ASString;
+class ASWorker;
+class BevelFilter;
 class Bitmap;
 class BitmapData;
+class BitmapFilter;
 class Boolean;
+class BlurFilter;
 class ByteArray;
 class Class_inherit;
 class ColorTransform;
+class ColorMatrixFilter;
+class ConvolutionFilter;
 class ContentElement;
 class Context3D;
 class ContextMenu;
 class ContextMenuBuiltInItems;
+class ContextMenuEvent;
 class CubeTexture;
+class DatagramSocket;
 class Date;
+class Dictionary;
+class DisplacementFilter;
 class DisplayObject;
 class DisplayObjectContainer;
+class DropShadowFilter;
 class ElementFormat;
 class Event;
+class ExtensionContext;
+class FileMode;
+class FileReference;
+class FileStream;
 class Function;
 class Function_object;
 class FontDescription;
+class GameInputDevice;
+class GameInputEvent;
 class Global;
+class GlowFilter;
+class GradientGlowFilter;
+class GradientBevelFilter;
 class IFunction;
 class Integer;
 class InteractiveObject;
@@ -909,9 +1455,13 @@ class LoaderContext;
 class LoaderInfo;
 class Matrix;
 class Matrix3D;
+class MessageChannel;
+class MorphShape;
 class MouseEvent;
 class MovieClip;
 class Namespace;
+class NativeWindow;
+class NetStream;
 class Null;
 class Number;
 class ObjectConstructor;
@@ -923,73 +1473,111 @@ class Rectangle;
 class RectangleTexture;
 class RegExp;
 class RootMovieClip;
+class SampleDataEvent;
+class ShaderFilter;
 class SharedObject;
+class Shape;
+class SimpleButton;
 class Sound;
 class SoundChannel;
-class SoundTransform;
 class Sprite;
 class Stage;
 class Stage3D;
-class SyntheticFunction;
 class Template_base;
 class TextBlock;
 class TextElement;
 class TextField;
 class TextFormat;
 class TextLine;
+class TextLineMetrics;
 class Texture;
 class TextureBase;
+class ThrottleEvent;
 class Type;
 class UInteger;
 class Undefined;
+class URLLoader;
+class URLRequest;
 class Vector;
 class Vector3D;
 class VertexBuffer3D;
+class Video;
 class VideoTexture;
 class WaitableEvent;
+class WorkerDomain;
 class XML;
+class XMLNode;
+class XMLDocument;
 class XMLList;
 
 
 // this is used to avoid calls to dynamic_cast when testing for some classes
 // keep in mind that when adding a class here you have to take care of the class inheritance and add the new SUBTYPE_ to all apropriate is<> methods 
+template<> inline bool ASObject::is<AVM1Function>() const { return subtype==SUBTYPE_AVM1FUNCTION; }
 template<> inline bool ASObject::is<Activation_object>() const { return subtype==SUBTYPE_ACTIVATIONOBJECT; }
 template<> inline bool ASObject::is<ApplicationDomain>() const { return subtype==SUBTYPE_APPLICATIONDOMAIN; }
 template<> inline bool ASObject::is<Array>() const { return type==T_ARRAY; }
+template<> inline bool ASObject::is<ASCondition>() const { return subtype==SUBTYPE_CONDITION; }
+template<> inline bool ASObject::is<ASFile>() const { return subtype==SUBTYPE_FILE; }
+template<> inline bool ASObject::is<ASMutex>() const { return subtype==SUBTYPE_MUTEX; }
 template<> inline bool ASObject::is<ASObject>() const { return true; }
 template<> inline bool ASObject::is<ASQName>() const { return type==T_QNAME; }
 template<> inline bool ASObject::is<ASString>() const { return type==T_STRING; }
+template<> inline bool ASObject::is<ASWorker>() const { return subtype==SUBTYPE_WORKER; }
+template<> inline bool ASObject::is<BevelFilter>() const { return subtype==SUBTYPE_BEVELFILTER; }
 template<> inline bool ASObject::is<Bitmap>() const { return subtype==SUBTYPE_BITMAP; }
 template<> inline bool ASObject::is<BitmapData>() const { return subtype==SUBTYPE_BITMAPDATA; }
+template<> inline bool ASObject::is<BitmapFilter>() const { return subtype==SUBTYPE_BITMAPFILTER || subtype==SUBTYPE_GLOWFILTER || subtype==SUBTYPE_DROPSHADOWFILTER || subtype==SUBTYPE_GRADIENTGLOWFILTER || subtype==SUBTYPE_BEVELFILTER || subtype==SUBTYPE_COLORMATRIXFILTER || subtype==SUBTYPE_BLURFILTER || subtype==SUBTYPE_CONVOLUTIONFILTER || subtype==SUBTYPE_DISPLACEMENTFILTER || subtype==SUBTYPE_GRADIENTBEVELFILTER || subtype==SUBTYPE_SHADERFILTER; }
 template<> inline bool ASObject::is<Boolean>() const { return type==T_BOOLEAN; }
+template<> inline bool ASObject::is<BlurFilter>() const { return subtype==SUBTYPE_BLURFILTER; }
 template<> inline bool ASObject::is<ByteArray>() const { return subtype==SUBTYPE_BYTEARRAY; }
 template<> inline bool ASObject::is<Class_base>() const { return type==T_CLASS; }
 template<> inline bool ASObject::is<Class_inherit>() const { return subtype==SUBTYPE_INHERIT; }
 template<> inline bool ASObject::is<ColorTransform>() const { return subtype==SUBTYPE_COLORTRANSFORM; }
+template<> inline bool ASObject::is<ColorMatrixFilter>() const { return subtype==SUBTYPE_COLORMATRIXFILTER; }
 template<> inline bool ASObject::is<ContentElement>() const { return subtype==SUBTYPE_CONTENTELEMENT || subtype == SUBTYPE_TEXTELEMENT; }
 template<> inline bool ASObject::is<Context3D>() const { return subtype==SUBTYPE_CONTEXT3D; }
 template<> inline bool ASObject::is<ContextMenu>() const { return subtype==SUBTYPE_CONTEXTMENU; }
 template<> inline bool ASObject::is<ContextMenuBuiltInItems>() const { return subtype==SUBTYPE_CONTEXTMENUBUILTINITEMS; }
+template<> inline bool ASObject::is<ContextMenuEvent>() const { return subtype==SUBTYPE_CONTEXTMENUEVENT; }
+template<> inline bool ASObject::is<ConvolutionFilter>() const { return subtype==SUBTYPE_CONVOLUTIONFILTER; }
 template<> inline bool ASObject::is<CubeTexture>() const { return subtype==SUBTYPE_CUBETEXTURE; }
 template<> inline bool ASObject::is<Date>() const { return subtype==SUBTYPE_DATE; }
-template<> inline bool ASObject::is<DisplayObject>() const { return subtype==SUBTYPE_DISPLAYOBJECT || subtype==SUBTYPE_INTERACTIVE_OBJECT || subtype==SUBTYPE_TEXTFIELD || subtype==SUBTYPE_BITMAP || subtype==SUBTYPE_DISPLAYOBJECTCONTAINER || subtype==SUBTYPE_STAGE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype==SUBTYPE_SPRITE || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_TEXTLINE; }
-template<> inline bool ASObject::is<DisplayObjectContainer>() const { return subtype==SUBTYPE_DISPLAYOBJECTCONTAINER || subtype==SUBTYPE_STAGE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype==SUBTYPE_SPRITE || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_TEXTLINE; }
+template<> inline bool ASObject::is<DatagramSocket>() const { return subtype==SUBTYPE_DATAGRAMSOCKET; }
+template<> inline bool ASObject::is<Dictionary>() const { return subtype==SUBTYPE_DICTIONARY; }
+template<> inline bool ASObject::is<DisplacementFilter>() const { return subtype==SUBTYPE_DISPLACEMENTFILTER; }
+template<> inline bool ASObject::is<DisplayObject>() const { return subtype==SUBTYPE_DISPLAYOBJECT || subtype==SUBTYPE_INTERACTIVE_OBJECT || subtype==SUBTYPE_TEXTFIELD || subtype==SUBTYPE_BITMAP || subtype==SUBTYPE_DISPLAYOBJECTCONTAINER || subtype==SUBTYPE_STAGE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype==SUBTYPE_SPRITE || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_TEXTLINE || subtype == SUBTYPE_VIDEO || subtype == SUBTYPE_SIMPLEBUTTON || subtype == SUBTYPE_SHAPE || subtype == SUBTYPE_MORPHSHAPE; }
+template<> inline bool ASObject::is<DisplayObjectContainer>() const { return subtype==SUBTYPE_DISPLAYOBJECTCONTAINER || subtype==SUBTYPE_STAGE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype==SUBTYPE_SPRITE || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_TEXTLINE || subtype == SUBTYPE_SIMPLEBUTTON; }
+template<> inline bool ASObject::is<DropShadowFilter>() const { return subtype==SUBTYPE_DROPSHADOWFILTER; }
 template<> inline bool ASObject::is<ElementFormat>() const { return subtype==SUBTYPE_ELEMENTFORMAT; }
-template<> inline bool ASObject::is<Event>() const { return subtype==SUBTYPE_EVENT || subtype==SUBTYPE_WAITABLE_EVENT || subtype==SUBTYPE_PROGRESSEVENT || subtype==SUBTYPE_KEYBOARD_EVENT || subtype==SUBTYPE_MOUSE_EVENT; }
+template<> inline bool ASObject::is<Event>() const { return subtype==SUBTYPE_EVENT || subtype==SUBTYPE_WAITABLE_EVENT || subtype==SUBTYPE_PROGRESSEVENT || subtype==SUBTYPE_KEYBOARD_EVENT || subtype==SUBTYPE_MOUSE_EVENT || subtype==SUBTYPE_SAMPLEDATA_EVENT || subtype == SUBTYPE_THROTTLE_EVENT || subtype == SUBTYPE_CONTEXTMENUEVENT || subtype == SUBTYPE_GAMEINPUTEVENT; }
+template<> inline bool ASObject::is<ExtensionContext>() const { return subtype==SUBTYPE_EXTENSIONCONTEXT; }
 template<> inline bool ASObject::is<FontDescription>() const { return subtype==SUBTYPE_FONTDESCRIPTION; }
+template<> inline bool ASObject::is<FileMode>() const { return subtype==SUBTYPE_FILEMODE; }
+template<> inline bool ASObject::is<FileReference>() const { return subtype==SUBTYPE_FILE||subtype==SUBTYPE_FILEREFERENCE; }
+template<> inline bool ASObject::is<FileStream>() const { return subtype==SUBTYPE_FILESTREAM; }
 template<> inline bool ASObject::is<Function_object>() const { return subtype==SUBTYPE_FUNCTIONOBJECT; }
 template<> inline bool ASObject::is<Function>() const { return subtype==SUBTYPE_FUNCTION; }
+template<> inline bool ASObject::is<GameInputDevice>() const { return subtype==SUBTYPE_GAMEINPUTDEVICE; }
+template<> inline bool ASObject::is<GameInputEvent>() const { return subtype==SUBTYPE_GAMEINPUTEVENT; }
 template<> inline bool ASObject::is<Global>() const { return subtype==SUBTYPE_GLOBAL; }
+template<> inline bool ASObject::is<GlowFilter>() const { return subtype==SUBTYPE_GLOWFILTER; }
+template<> inline bool ASObject::is<GradientGlowFilter>() const { return subtype==SUBTYPE_GRADIENTGLOWFILTER; }
+template<> inline bool ASObject::is<GradientBevelFilter>() const { return subtype==SUBTYPE_GRADIENTBEVELFILTER; }
 template<> inline bool ASObject::is<IFunction>() const { return type==T_FUNCTION; }
 template<> inline bool ASObject::is<IndexBuffer3D>() const { return subtype==SUBTYPE_INDEXBUFFER3D; }
 template<> inline bool ASObject::is<Integer>() const { return type==T_INTEGER; }
-template<> inline bool ASObject::is<InteractiveObject>() const { return subtype==SUBTYPE_INTERACTIVE_OBJECT || subtype==SUBTYPE_TEXTFIELD || subtype==SUBTYPE_DISPLAYOBJECTCONTAINER || subtype==SUBTYPE_STAGE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype==SUBTYPE_SPRITE || subtype == SUBTYPE_MOVIECLIP; }
+template<> inline bool ASObject::is<InteractiveObject>() const { return subtype==SUBTYPE_INTERACTIVE_OBJECT || subtype==SUBTYPE_TEXTFIELD || subtype==SUBTYPE_DISPLAYOBJECTCONTAINER || subtype==SUBTYPE_STAGE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype==SUBTYPE_SPRITE || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_SIMPLEBUTTON; }
 template<> inline bool ASObject::is<KeyboardEvent>() const { return subtype==SUBTYPE_KEYBOARD_EVENT; }
 template<> inline bool ASObject::is<LoaderContext>() const { return subtype==SUBTYPE_LOADERCONTEXT; }
 template<> inline bool ASObject::is<LoaderInfo>() const { return subtype==SUBTYPE_LOADERINFO; }
 template<> inline bool ASObject::is<Namespace>() const { return type==T_NAMESPACE; }
+template<> inline bool ASObject::is<NativeWindow>() const { return subtype==SUBTYPE_NATIVEWINDOW; }
+template<> inline bool ASObject::is<NetStream>() const { return subtype==SUBTYPE_NETSTREAM; }
 template<> inline bool ASObject::is<Matrix>() const { return subtype==SUBTYPE_MATRIX; }
 template<> inline bool ASObject::is<Matrix3D>() const { return subtype==SUBTYPE_MATRIX3D; }
+template<> inline bool ASObject::is<MessageChannel>() const { return subtype==SUBTYPE_MESSAGECHANNEL; }
+template<> inline bool ASObject::is<MorphShape>() const { return subtype==SUBTYPE_MORPHSHAPE; }
 template<> inline bool ASObject::is<MouseEvent>() const { return subtype==SUBTYPE_MOUSE_EVENT; }
 template<> inline bool ASObject::is<MovieClip>() const { return subtype==SUBTYPE_ROOTMOVIECLIP || subtype == SUBTYPE_MOVIECLIP; }
 template<> inline bool ASObject::is<Null>() const { return type==T_NULL; }
@@ -1003,7 +1591,11 @@ template<> inline bool ASObject::is<Rectangle>() const { return subtype==SUBTYPE
 template<> inline bool ASObject::is<RectangleTexture>() const { return subtype==SUBTYPE_RECTANGLETEXTURE; }
 template<> inline bool ASObject::is<RegExp>() const { return subtype==SUBTYPE_REGEXP; }
 template<> inline bool ASObject::is<RootMovieClip>() const { return subtype==SUBTYPE_ROOTMOVIECLIP; }
+template<> inline bool ASObject::is<SampleDataEvent>() const { return subtype==SUBTYPE_SAMPLEDATA_EVENT; }
+template<> inline bool ASObject::is<ShaderFilter>() const { return subtype==SUBTYPE_SHADERFILTER; }
+template<> inline bool ASObject::is<Shape>() const { return subtype==SUBTYPE_SHAPE; }
 template<> inline bool ASObject::is<SharedObject>() const { return subtype==SUBTYPE_SHAREDOBJECT; }
+template<> inline bool ASObject::is<SimpleButton>() const { return subtype==SUBTYPE_SIMPLEBUTTON; }
 template<> inline bool ASObject::is<Sound>() const { return subtype==SUBTYPE_SOUND; }
 template<> inline bool ASObject::is<SoundChannel>() const { return subtype==SUBTYPE_SOUNDCHANNEL; }
 template<> inline bool ASObject::is<SoundTransform>() const { return subtype==SUBTYPE_SOUNDTRANSFORM; }
@@ -1017,1080 +1609,1027 @@ template<> inline bool ASObject::is<TextElement>() const { return subtype==SUBTY
 template<> inline bool ASObject::is<TextField>() const { return subtype==SUBTYPE_TEXTFIELD; }
 template<> inline bool ASObject::is<TextFormat>() const { return subtype==SUBTYPE_TEXTFORMAT; }
 template<> inline bool ASObject::is<TextLine>() const { return subtype==SUBTYPE_TEXTLINE; }
+template<> inline bool ASObject::is<TextLineMetrics>() const { return subtype==SUBTYPE_TEXTLINEMETRICS; }
 template<> inline bool ASObject::is<Texture>() const { return subtype==SUBTYPE_TEXTURE; }
 template<> inline bool ASObject::is<TextureBase>() const { return subtype==SUBTYPE_TEXTUREBASE || subtype==SUBTYPE_TEXTURE || subtype==SUBTYPE_CUBETEXTURE || subtype==SUBTYPE_RECTANGLETEXTURE || subtype==SUBTYPE_TEXTURE || subtype==SUBTYPE_VIDEOTEXTURE; }
+template<> inline bool ASObject::is<ThrottleEvent>() const { return subtype==SUBTYPE_THROTTLE_EVENT; }
 template<> inline bool ASObject::is<Type>() const { return type==T_CLASS; }
 template<> inline bool ASObject::is<UInteger>() const { return type==T_UINTEGER; }
 template<> inline bool ASObject::is<Undefined>() const { return type==T_UNDEFINED; }
+template<> inline bool ASObject::is<URLLoader>() const { return subtype == SUBTYPE_URLLOADER; }
+template<> inline bool ASObject::is<URLRequest>() const { return subtype == SUBTYPE_URLREQUEST; }
 template<> inline bool ASObject::is<Vector>() const { return subtype==SUBTYPE_VECTOR; }
 template<> inline bool ASObject::is<Vector3D>() const { return subtype==SUBTYPE_VECTOR3D; }
 template<> inline bool ASObject::is<VertexBuffer3D>() const { return subtype==SUBTYPE_VERTEXBUFFER3D; }
+template<> inline bool ASObject::is<Video>() const { return subtype==SUBTYPE_VIDEO; }
 template<> inline bool ASObject::is<VideoTexture>() const { return subtype==SUBTYPE_VIDEOTEXTURE; }
 template<> inline bool ASObject::is<WaitableEvent>() const { return subtype==SUBTYPE_WAITABLE_EVENT; }
+template<> inline bool ASObject::is<WorkerDomain>() const { return subtype==SUBTYPE_WORKERDOMAIN; }
 template<> inline bool ASObject::is<XML>() const { return subtype==SUBTYPE_XML; }
+template<> inline bool ASObject::is<XMLDocument>() const { return subtype==SUBTYPE_XMLDOCUMENT; }
+template<> inline bool ASObject::is<XMLNode>() const { return subtype==SUBTYPE_XMLNODE || subtype==SUBTYPE_XMLDOCUMENT; }
 template<> inline bool ASObject::is<XMLList>() const { return subtype==SUBTYPE_XMLLIST; }
 
 
 
-template<class T> inline bool asAtom::is() const {
-	return objval ? objval->is<T>() : false;
+template<class T> inline bool asAtomHandler::is(asAtom& a) {
+	return isObject(a) ? getObjectNoCheck(a)->is<T>() : false;
 }
-template<> inline bool asAtom::is<Array>() const { return type==T_ARRAY; }
-template<> inline bool asAtom::is<asAtom>() const { return true; }
-template<> inline bool asAtom::is<ASObject>() const { return true; }
-template<> inline bool asAtom::is<ASQName>() const { return type==T_QNAME; }
-template<> inline bool asAtom::is<ASString>() const { return type==T_STRING; }
-template<> inline bool asAtom::is<Boolean>() const { return type==T_BOOLEAN; }
-template<> inline bool asAtom::is<Class_base>() const { return type==T_CLASS; }
-template<> inline bool asAtom::is<IFunction>() const { return type==T_FUNCTION; }
-template<> inline bool asAtom::is<Integer>() const { return type==T_INTEGER; }
-template<> inline bool asAtom::is<Namespace>() const { return type==T_NAMESPACE; }
-template<> inline bool asAtom::is<Null>() const { return type==T_NULL; }
-template<> inline bool asAtom::is<Number>() const { return type==T_NUMBER; }
-template<> inline bool asAtom::is<Type>() const { return type==T_CLASS; }
-template<> inline bool asAtom::is<UInteger>() const { return type==T_UINTEGER; }
-template<> inline bool asAtom::is<Undefined>() const { return type==T_UNDEFINED; }
+template<> inline bool asAtomHandler::is<asAtom>(asAtom& a) { return true; }
+template<> inline bool asAtomHandler::is<ASObject>(asAtom& a) { return true; }
+template<> inline bool asAtomHandler::is<ASString>(asAtom& a) { return isStringID(a) || isString(a); }
+template<> inline bool asAtomHandler::is<Boolean>(asAtom& a) { return isBool(a); }
+template<> inline bool asAtomHandler::is<Integer>(asAtom& a) { return isInteger(a); }
+template<> inline bool asAtomHandler::is<Null>(asAtom& a) { return isNull(a); }
+template<> inline bool asAtomHandler::is<Number>(asAtom& a) { return isNumber(a); }
+template<> inline bool asAtomHandler::is<UInteger>(asAtom& a) { return isUInteger(a); }
+template<> inline bool asAtomHandler::is<Undefined>(asAtom& a) { return isUndefined(a); }
 
 
-void asAtom::decRef()
+FORCE_INLINE int32_t asAtomHandler::toInt(const asAtom& a)
 {
-	if (objval && objval->decRef())
-		objval = NULL;
+	if ((a.uintval&0x7)==ATOM_INTEGER)
+        return a.intval>>3;
+    else if ((a.uintval&0x7)==ATOM_UINTEGER)
+        return a.uintval>>3;
+    else if ((a.uintval&0x7)==ATOM_INVALID_UNDEFINED_NULL_BOOL)
+        return (a.uintval&ATOMTYPE_BOOL_BIT) ? (a.uintval&0x80)>>7 : 0;
+    else if ((a.uintval&0x7)==ATOM_STRINGID)
+    {
+        ASObject* s = abstract_s(getWorker(),a.uintval>>3);
+        int32_t ret = s->toInt();
+        s->decRef();
+        return ret;
+    }
+    assert(getObject(a));
+    return getObjectNoCheck(a)->toInt();
 }
-
-static int32_t NumbertoInt(number_t val)
+FORCE_INLINE int32_t asAtomHandler::toIntStrict(const asAtom& a)
 {
-	double posInt;
-
-	/* step 2 */
-	if(std::isnan(val) || std::isinf(val) || val == 0.0)
-		return 0;
-	/* step 3 */
-	posInt = std::floor(std::abs(val));
-	/* step 4 */
-	if (posInt > 4294967295.0)
-		posInt = fmod(posInt, 4294967296.0);
-	/* step 5 */
-	if (posInt >= 2147483648.0) {
-		// follow tamarin
-		if(val < 0.0)
-			return 0x80000000 - (int32_t)(posInt - 2147483648.0);
-		else
-			return 0x80000000 + (int32_t)(posInt - 2147483648.0);
-	}
-	return (int32_t)(val < 0.0 ? -posInt : posInt);
-}
-ASObject* asAtom::checkObject()
-{
-	if (type == T_STRING && stringID != UINT32_MAX && !objval)
-		objval = (ASObject*)abstract_s(getSys(),stringID);
-	assert(objval);
-	return objval;
-}
-
-FORCE_INLINE int32_t asAtom::toInt()
-{
-	switch(type)
+	switch(a.uintval&0x7)
 	{
-		case T_INTEGER:
-			return intval;
-		case T_UINTEGER:
-			return uintval;
-		case T_NUMBER:
-			return NumbertoInt(numberval);
-		case T_BOOLEAN:
-			return boolval;
-		case T_UNDEFINED:
-		case T_NULL:
-		case T_INVALID:
-			return 0;
+		case ATOM_INTEGER:
+			return a.intval>>3;
+		case ATOM_UINTEGER:
+			return a.uintval>>3;
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+			return (a.uintval&ATOMTYPE_BOOL_BIT) ? (a.uintval&0x80)>>7 : 0;
+		case ATOM_STRINGID:
+		{
+			ASObject* s = abstract_s(getWorker(),a.uintval>>3);
+			int32_t ret = s->toIntStrict();
+			s->decRef();
+			return ret;
+		}
 		default:
-			return checkObject()->toInt();
+			assert(getObject(a));
+			return getObjectNoCheck(a)->toIntStrict();
 	}
 }
-FORCE_INLINE int32_t asAtom::toIntStrict()
+FORCE_INLINE number_t asAtomHandler::toNumber(const asAtom& a)
 {
-	switch(type)
+	switch(a.uintval&0x7)
 	{
-		case T_INTEGER:
-			return intval;
-		case T_UINTEGER:
-			return uintval;
-		case T_NUMBER:
-			return NumbertoInt(numberval);
-		case T_BOOLEAN:
-			return boolval;
-		case T_UNDEFINED:
-		case T_NULL:
-		case T_INVALID:
-			return 0;
+		case ATOM_INTEGER:
+			return a.intval>>3;
+		case ATOM_UINTEGER:
+			return a.uintval>>3;
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+			return (a.uintval&ATOMTYPE_BOOL_BIT) ? (a.uintval&0x80)>>7 : (a.uintval&ATOMTYPE_UNDEFINED_BIT) ? numeric_limits<double>::quiet_NaN() : 0;
+		case ATOM_STRINGID:
+		{
+			ASObject* s = abstract_s(getWorker(),a.uintval>>3);
+			number_t ret = s->toNumber();
+			s->decRef();
+			return ret;
+		}
 		default:
-			return checkObject()->toIntStrict();
+			assert(getObject(a));
+			return getObjectNoCheck(a)->toNumber();
 	}
 }
-FORCE_INLINE number_t asAtom::toNumber()
+FORCE_INLINE number_t asAtomHandler::AVM1toNumber(asAtom& a, uint32_t swfversion)
 {
-	switch(type)
+	switch(a.uintval&0x7)
 	{
-		case T_INTEGER:
-			return intval;
-		case T_UINTEGER:
-			return uintval;
-		case T_NUMBER:
-			return numberval;
-		case T_BOOLEAN:
-			return boolval;
-		case T_NULL:
-			return 0;
-		case T_UNDEFINED:
-			return numeric_limits<double>::quiet_NaN();
-		case T_INVALID:
-			return 0;
+		case ATOM_INTEGER:
+			return a.intval>>3;
+		case ATOM_UINTEGER:
+			return a.uintval>>3;
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+			return (a.uintval&ATOMTYPE_BOOL_BIT) ? (a.uintval&0x80)>>7 : (a.uintval&ATOMTYPE_UNDEFINED_BIT) && swfversion > 6 ? numeric_limits<double>::quiet_NaN() : 0;
+		case ATOM_STRINGID:
+		{
+			ASObject* s = abstract_s(getWorker(),a.uintval>>3);
+			number_t ret = s->toNumber();
+			s->decRef();
+			return ret;
+		}
 		default:
-			return checkObject()->toNumber();
+			assert(getObject(a));
+			return getObjectNoCheck(a)->toNumber();
 	}
 }
-FORCE_INLINE int64_t asAtom::toInt64()
+FORCE_INLINE bool asAtomHandler::AVM1toBool(asAtom& a)
 {
-	switch(type)
+	switch(a.uintval&0x7)
 	{
-		case T_UNDEFINED:
-			return 0;
-		case T_NULL:
-			return 0;
-		case T_INTEGER:
-			return intval;
-		case T_UINTEGER:
-			return uintval;
-		case T_NUMBER:
-			return numberval;
-		case T_BOOLEAN:
-			return boolval;
-		case T_INVALID:
-			return 0;
+		case ATOM_INTEGER:
+			return a.intval>>3;
+		case ATOM_UINTEGER:
+			return a.uintval>>3;
+		case ATOM_NUMBERPTR:
+			return toNumber(a);
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+			return (a.uintval&ATOMTYPE_BOOL_BIT) ? (a.uintval&0x80)>>7 : false;
 		default:
-			return checkObject()->toInt64();
-	}
-}
-FORCE_INLINE uint32_t asAtom::toUInt()
-{
-	switch(type)
-	{
-		case T_UNDEFINED:
-			return 0;
-		case T_NULL:
-			return 0;
-		case T_INTEGER:
-			return intval;
-		case T_UINTEGER:
-			return uintval;
-		case T_NUMBER:
-			return numberval;
-		case T_BOOLEAN:
-			return boolval;
-		case T_INVALID:
-			return 0;
-		default:
-			return checkObject()->toUInt();
+			return true;
 	}
 }
 
-FORCE_INLINE void asAtom::applyProxyProperty(SystemState* sys,multiname &name)
+FORCE_INLINE int64_t asAtomHandler::toInt64(const asAtom& a)
 {
-	switch(type)
+	switch(a.uintval&0x7)
 	{
-		case T_INTEGER:
-		case T_UINTEGER:
-		case T_NUMBER:
-		case T_BOOLEAN:
-		case T_NULL:
-		case T_UNDEFINED:
-		case T_INVALID:
-			break;
-		case T_STRING:
-			if (!objval && stringID != UINT32_MAX)
-				break; // no need to create string, as it won't have a proxyMultiName
-			assert(objval);
-			objval->applyProxyProperty(name);
-			break;
+		case ATOM_INTEGER:
+			return a.intval>>3;
+		case ATOM_UINTEGER:
+			return a.uintval>>3;
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+			return (a.uintval&ATOMTYPE_BOOL_BIT) ? (a.uintval&0x80)>>7 : 0;
+		case ATOM_STRINGID:
+		{
+			ASObject* s = abstract_s(getWorker(),a.uintval>>3);
+			int64_t ret = s->toInt64();
+			s->decRef();
+			return ret;
+		}
 		default:
-			assert(objval);
-			objval->applyProxyProperty(name);
-			break;
+			assert(getObject(a));
+			return getObjectNoCheck(a)->toInt64();
 	}
 }
-FORCE_INLINE TRISTATE asAtom::isLess(SystemState* sys,asAtom &v2)
+FORCE_INLINE uint32_t asAtomHandler::toUInt(asAtom& a)
 {
-	switch (type)
+	switch(a.uintval&0x7)
 	{
-		case T_INTEGER:
+		case ATOM_INTEGER:
+			return a.intval>>3;
+		case ATOM_UINTEGER:
+			return a.uintval>>3;
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+			return (a.uintval&ATOMTYPE_BOOL_BIT) ? (a.uintval&0x80)>>7 : 0;
+		case ATOM_STRINGID:	
 		{
-			switch (v2.type)
-			{
-				case T_INTEGER:
-					return (intval < v2.intval)?TTRUE:TFALSE;
-				case T_UINTEGER:
-					return (intval < 0 || ((uint32_t)intval)  < v2.uintval)?TTRUE:TFALSE;
-				case T_NUMBER:
-					if(std::isnan(v2.numberval))
-						return TUNDEFINED;
-					return (intval < v2.numberval)?TTRUE:TFALSE;
-				case T_BOOLEAN:
-					return (intval < v2.toInt())?TTRUE:TFALSE;
-				case T_UNDEFINED:
-					return TUNDEFINED;
-				case T_NULL:
-					return (intval < 0)?TTRUE:TFALSE;
-				default:
-					break;
-			}
-			break;
-		}
-		case T_UINTEGER:
-		{
-			switch (v2.type)
-			{
-				case T_INTEGER:
-					return (v2.intval > 0 && (uintval < (uint32_t)v2.intval))?TTRUE:TFALSE;
-				case T_UINTEGER:
-					return (uintval < v2.uintval)?TTRUE:TFALSE;
-				case T_NUMBER:
-					if(std::isnan(v2.numberval))
-						return TUNDEFINED;
-					return (uintval < v2.numberval)?TTRUE:TFALSE;
-				case T_BOOLEAN:
-					return (uintval < v2.toUInt())?TTRUE:TFALSE;
-				case T_UNDEFINED:
-					return TUNDEFINED;
-				case T_NULL:
-					return TFALSE;
-				default:
-					break;
-			}
-			break;
-		}
-		case T_NUMBER:
-		{
-			if(std::isnan(numberval))
-				return TUNDEFINED;
-			switch (v2.type)
-			{
-				case T_INTEGER:
-					return (numberval  < v2.intval)?TTRUE:TFALSE;
-				case T_UINTEGER:
-					return (numberval < v2.uintval)?TTRUE:TFALSE;
-				case T_NUMBER:
-					if(std::isnan(v2.numberval))
-						return TUNDEFINED;
-					return (numberval < v2.numberval)?TTRUE:TFALSE;
-				case T_BOOLEAN:
-					return (numberval < v2.toInt())?TTRUE:TFALSE;
-				case T_UNDEFINED:
-					return TUNDEFINED;
-				case T_NULL:
-					return (numberval < 0)?TTRUE:TFALSE;
-				default:
-					break;
-			}
-			break;
-		}
-		case T_BOOLEAN:
-		{
-			switch (v2.type)
-			{
-				case T_INTEGER:
-					return (boolval < v2.intval)?TTRUE:TFALSE;
-				case T_UINTEGER:
-					return (boolval < v2.uintval)?TTRUE:TFALSE;
-				case T_NUMBER:
-					if(std::isnan(v2.numberval))
-						return TUNDEFINED;
-					return (boolval < v2.numberval)?TTRUE:TFALSE;
-				case T_BOOLEAN:
-					return (boolval < v2.boolval)?TTRUE:TFALSE;
-				case T_UNDEFINED:
-					return TUNDEFINED;
-				case T_NULL:
-					return (boolval)?TTRUE:TFALSE;
-				default:
-					break;
-			}
-			break;
-		}
-		case T_NULL:
-		{
-			switch (v2.type)
-			{
-				case T_INTEGER:
-					return (0 < v2.intval)?TTRUE:TFALSE;
-				case T_UINTEGER:
-					return (0 < v2.uintval)?TTRUE:TFALSE;
-				case T_NUMBER:
-					if(std::isnan(v2.numberval))
-						return TUNDEFINED;
-					return (0 < v2.numberval)?TTRUE:TFALSE;
-				case T_BOOLEAN:
-					return (0 < v2.boolval)?TTRUE:TFALSE;
-				case T_UNDEFINED:
-					return TUNDEFINED;
-				case T_NULL:
-					return TFALSE;
-				default:
-					break;
-			}
-			break;
-		}
-		case T_UNDEFINED:
-			return TUNDEFINED;
-		case T_INVALID:
-			return TUNDEFINED;
-		default:
-			break;
-	}
-	return toObject(sys)->isLess(v2.toObject(sys));
-}
-FORCE_INLINE bool asAtom::isEqual(SystemState *sys, asAtom &v2)
-{
-	switch (type)
-	{
-		case T_INTEGER:
-		{
-			switch (v2.type)
-			{
-				case T_INTEGER:
-					return intval==v2.toInt();
-				case T_UINTEGER:
-					return intval >= 0 && intval==v2.toInt();
-				case T_NUMBER:
-					return intval==v2.toNumber();
-				case T_BOOLEAN:
-					return intval==v2.toInt();
-				case T_STRING:
-					return intval==v2.toNumber();
-				case T_NULL:
-				case T_UNDEFINED:
-					return false;
-				default:
-					return v2.toObject(sys)->isEqual(this->toObject(sys));
-			}
-			break;
-		}
-		case T_UINTEGER:
-		{
-			switch (v2.type)
-			{
-				case T_INTEGER:
-					return v2.intval >= 0 && uintval==v2.toUInt();
-				case T_UINTEGER:
-				case T_NUMBER:
-				case T_STRING:
-				case T_BOOLEAN:
-					return uintval==v2.toUInt();
-				case T_NULL:
-				case T_UNDEFINED:
-					return false;
-				default:
-					return v2.toObject(sys)->isEqual(this->toObject(sys));
-			}
-			break;
-		}
-		case T_NUMBER:
-		{
-			switch (v2.type)
-			{
-				case T_INTEGER:
-				case T_UINTEGER:
-				case T_BOOLEAN:
-					return toNumber()==v2.toNumber();
-				case T_NUMBER:
-				case T_STRING:
-					return toNumber()==v2.toNumber();
-				case T_NULL:
-				case T_UNDEFINED:
-					return false;
-				default:
-					return v2.toObject(sys)->isEqual(this->toObject(sys));
-			}
-			break;
-		}
-		case T_BOOLEAN:
-		{
-			switch (v2.type)
-			{
-				case T_BOOLEAN:
-					return boolval==v2.boolval;
-				case T_STRING:
-					if ((!v2.objval && v2.stringID == UINT32_MAX) || (v2.objval && !v2.objval->isConstructed()))
-						return false;
-					return boolval==v2.toNumber();
-				case T_INTEGER:
-				case T_UINTEGER:
-				case T_NUMBER:
-					return boolval==v2.toNumber();
-				case T_NULL:
-				case T_UNDEFINED:
-					return false;
-				default:
-					return v2.toObject(sys)->isEqual(this->toObject(sys));
-			}
-			break;
-		}
-		case T_NULL:
-		{
-			switch (v2.type)
-			{
-				case T_NULL:
-				case T_UNDEFINED:
-					return true;
-				case T_INTEGER:
-				case T_UINTEGER:
-				case T_NUMBER:
-				case T_BOOLEAN:
-					return false;
-				case T_FUNCTION:
-					if (!v2.objval->isConstructed())
-						return true;
-					return false;
-				case T_STRING:
-					if ((!v2.objval && v2.stringID == UINT32_MAX) || (v2.objval && !v2.objval->isConstructed()))
-						return true;
-					return false;
-				default:
-					return v2.toObject(sys)->isEqual(this->toObject(sys));
-			}
-			break;
-		}
-		case T_UNDEFINED:
-		{
-			switch (v2.type)
-			{
-				case T_UNDEFINED:
-				case T_NULL:
-					return true;
-				case T_NUMBER:
-				case T_INTEGER:
-				case T_UINTEGER:
-				case T_BOOLEAN:
-					return false;
-				case T_FUNCTION:
-					if (!v2.objval->isConstructed())
-						return true;
-					return false;
-				case T_STRING:
-					if ((!v2.objval && v2.stringID == UINT32_MAX) || (v2.objval && !v2.objval->isConstructed()))
-						return true;
-					return false;
-				default:
-					return v2.toObject(sys)->isEqual(this->toObject(sys));
-			}
-		}
-		case T_FUNCTION:
-		{
-			switch (v2.type)
-			{
-				case T_FUNCTION:
-					if (closure_this != NULL && v2.closure_this != NULL && closure_this != v2.closure_this)
-						return false;
-					return v2.toObject(sys)->isEqual(this->toObject(sys));
-				default:
-					return false;
-			}
-		}
-		case T_INVALID:
-			return false;
-		case T_STRING:
-		{
-			if (stringID != UINT32_MAX)
-			{
-				switch (v2.type)
-				{
-					case T_NULL:
-					case T_UNDEFINED:
-						return false;
-					case T_STRING:
-						if (v2.stringID != UINT32_MAX)
-							return v2.stringID == stringID;
-						break;
-					default:
-						break;
-				}
-			}
-			else
-			{
-				switch (v2.type)
-				{
-					case T_STRING:
-						if (v2.stringID != UINT32_MAX)
-							return stringcompare(sys,v2.stringID);
-						break;
-					default:
-						break;
-				}
-			}
-			break;
+			ASObject* s = abstract_s(getWorker(),a.uintval>>3);
+			uint32_t ret = s->toUInt();
+			s->decRef();
+			return ret;
 		}
 		default:
-			break;
+			assert(getObject(a));
+			return getObjectNoCheck(a)->toUInt();
 	}
-	return toObject(sys)->isEqual(v2.toObject(sys));
 }
 
-FORCE_INLINE bool asAtom::isEqualStrict(SystemState *sys, asAtom &v2)
+FORCE_INLINE void asAtomHandler::applyProxyProperty(asAtom& a,SystemState* sys,multiname &name)
 {
-	if(type!=v2.type)
+	switch(a.uintval&0x7)
+	{
+		case ATOM_INTEGER:
+		case ATOM_UINTEGER:
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+		case ATOM_NUMBERPTR:
+		case ATOM_U_INTEGERPTR:
+			break;
+		case ATOM_STRINGID:
+			break; // no need to create string, as it won't have a proxyMultiName
+		default:
+			assert(getObject(a));
+			getObjectNoCheck(a)->applyProxyProperty(name);
+			break;
+	}
+}
+
+FORCE_INLINE bool asAtomHandler::isEqualStrict(asAtom& a, ASWorker* wrk, asAtom &v2)
+{
+	if(getObjectType(a)!=getObjectType(v2))
 	{
 		//Type conversions are ok only for numeric types
-		switch(type)
+		switch(a.uintval&0x7)
 		{
-			case T_NUMBER:
-			case T_INTEGER:
-			case T_UINTEGER:
+			case ATOM_NUMBERPTR:
+			case ATOM_INTEGER:
+			case ATOM_UINTEGER:
+			case ATOM_U_INTEGERPTR:
 				break;
-			case T_NULL:
-				if (!v2.isConstructed() && v2.type!=T_CLASS)
-					return true;
+			case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+			{
+				switch (v2.uintval&0x70)
+				{
+					case ATOMTYPE_NULL_BIT:
+						if (!isConstructed(v2) && getObjectType(v2)!=T_CLASS)
+							return true;
+						return false;
+					default:
+						return false;
+				}
+				break;
+			}
+			case ATOM_OBJECTPTR:
+				if (isNumber(a))
+					break;
 				return false;
 			default:
 				return false;
 		}
-		switch(v2.type)
+		switch(v2.uintval&0x7)
 		{
-			case T_NUMBER:
-			case T_INTEGER:
-			case T_UINTEGER:
+			case ATOM_NUMBERPTR:
+			case ATOM_INTEGER:
+			case ATOM_UINTEGER:
+			case ATOM_U_INTEGERPTR:
 				break;
-			case T_NULL:
-				if (!isConstructed() && type!=T_CLASS)
-					return true;
+			case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+			{
+				switch (v2.uintval&0x70)
+				{
+					case ATOMTYPE_NULL_BIT:
+						if (!isConstructed(a) && getObjectType(a)!=T_CLASS)
+							return true;
+						return false;
+					default:
+						return false;
+				}
+				break;
+			}
+			case ATOM_OBJECTPTR:
+				if (isNumber(v2))
+					break;
 				return false;
 			default:
 				return false;
 		}
 	}
-	return isEqual(sys,v2);
-	
+	return isEqual(a,wrk,v2);
 }
 
-FORCE_INLINE bool asAtom::isConstructed() const
+FORCE_INLINE bool asAtomHandler::isConstructed(const asAtom& a)
 {
-	switch(type)
+	switch(a.uintval&0x7)
 	{
-		case T_INTEGER:
-		case T_UINTEGER:
-		case T_NUMBER:
-		case T_BOOLEAN:
-		case T_NULL:
-		case T_UNDEFINED:
+		case ATOM_INTEGER:
+		case ATOM_UINTEGER:
+		case ATOM_NUMBERPTR:
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+			return a.uintval;
+		case ATOM_STRINGID:
 			return true;
-		case T_INVALID:
-			return false;
-		case T_STRING:
-			return stringID != UINT32_MAX || objval->isConstructed();
 		default:
-			assert(objval);
-			return objval->isConstructed();
+			return isObject(a) && getObjectNoCheck(a)->isConstructed();
 	}
 }
 
-FORCE_INLINE bool asAtom::isPrimitive() const
+FORCE_INLINE bool asAtomHandler::isPrimitive(const asAtom& a)
 {
 	// ECMA 3, section 4.3.2, T_INTEGER and T_UINTEGER are added
 	// because they are special cases of Number
-	return type==T_NUMBER || type ==T_UNDEFINED || type == T_NULL ||
-		type==T_STRING || type==T_BOOLEAN || type==T_INTEGER ||
-			type==T_UINTEGER;
+	return isUndefined(a) || isNull(a) || isNumber(a) || isString(a) || isInteger(a)|| isUInteger(a) || isBool(a);
 }
-FORCE_INLINE bool asAtom::checkArgumentConversion(const asAtom& obj) const
+FORCE_INLINE bool asAtomHandler::checkArgumentConversion(const asAtom& a,const asAtom& obj)
 {
-	if (type == obj.type)
-		return true;
-	if ((type==T_NUMBER || type==T_INTEGER || type==T_UINTEGER) &&
-		(obj.type==T_NUMBER || obj.type==T_INTEGER || obj.type==T_UINTEGER))
-		return true;
-	return false;
-}
-
-FORCE_INLINE void asAtom::setInt(int32_t val)
-{
-	type = T_INTEGER;
-	intval = val;
-	objval = NULL;
-}
-
-FORCE_INLINE void asAtom::setUInt(uint32_t val)
-{
-	type = T_UINTEGER;
-	uintval = val;
-	objval = NULL;
-}
-
-FORCE_INLINE void asAtom::setNumber(number_t val)
-{
-	type = T_NUMBER;
-	numberval = val;
-	objval = NULL;
-}
-
-FORCE_INLINE void asAtom::setBool(bool val)
-{
-	type = T_BOOLEAN;
-	boolval = val;
-	objval = NULL;
-}
-
-FORCE_INLINE void asAtom::setNull()
-{
-	type = T_NULL;
-	objval = NULL;
-}
-FORCE_INLINE void asAtom::setUndefined()
-{
-	type = T_UNDEFINED;
-	objval = NULL;
-}
-FORCE_INLINE void asAtom::setFunction(ASObject* obj, ASObject* closure)
-{
-	type = obj->getObjectType(); // type may be T_CLASS or T_FUNCTION
-	objval = obj;
-	closure_this = closure;
-}
-FORCE_INLINE void asAtom::increment()
-{
-	switch(type)
+	if ((a.uintval&0x7) == (obj.uintval&0x7))
 	{
-		case T_UNDEFINED:
-			setNumber(numeric_limits<double>::quiet_NaN());
-			break;
-		case T_NULL:
-			setInt(1);
-			break;
-		case T_INTEGER:
-			setInt(intval+1);
-			break;
-		case T_UINTEGER:
-			setUInt(uintval+1);
-			break;
-		case T_NUMBER:
-			setNumber(numberval+1);
-			break;
-		case T_BOOLEAN:
-			setInt((boolval ? 1 : 0)+1);
-			break;
-		default:
-		{
-			number_t n=checkObject()->toNumber();
-			objval->decRef();
-			setNumber(n+1);
-			break;
-		}
+		if ((a.uintval&0x7) == ATOM_OBJECTPTR)
+			return getObjectNoCheck(a)->getObjectType() == getObjectNoCheck(obj)->getObjectType();
+		return true;
 	}
+	if (isNumeric(a) && isNumeric(obj))
+		return true;
+	if (isString(a) && isString(obj))
+		return true;
+	return asAtomHandler::isInvalid(obj);
 }
 
-FORCE_INLINE void asAtom::decrement()
+FORCE_INLINE void asAtomHandler::setInt(asAtom& a, ASWorker* wrk, int64_t val)
 {
-	switch(type)
+#ifdef LIGHTSPARK_64
+	a.intval = ((int64_t)val<<3)|ATOM_INTEGER;
+#else
+	if (val >=-(1<<28)  && val <=(1<<28))
+		a.intval = (val<<3)|ATOM_INTEGER;
+	else
+		setNumber(a,wrk,val);
+#endif
+}
+
+FORCE_INLINE void asAtomHandler::setUInt(asAtom& a, ASWorker* wrk, uint32_t val)
+{
+#ifdef LIGHTSPARK_64
+	a.uintval = ((uint64_t)val<<3)|ATOM_UINTEGER;
+#else
+	if (val <(1<<29))
+		a.uintval = (val<<3)|ATOM_UINTEGER;
+	else
+		setNumber(a,wrk,val);
+#endif
+}
+
+FORCE_INLINE void asAtomHandler::setBool(asAtom& a,bool val)
+{
+	a.uintval = ATOM_INVALID_UNDEFINED_NULL_BOOL | ATOMTYPE_BOOL_BIT | (val ? 0x80 : 0);
+}
+
+FORCE_INLINE void asAtomHandler::setNull(asAtom& a)
+{
+	a.uintval = ATOM_INVALID_UNDEFINED_NULL_BOOL | ATOMTYPE_NULL_BIT;
+}
+FORCE_INLINE void asAtomHandler::setUndefined(asAtom& a)
+{
+	a.uintval = ATOM_INVALID_UNDEFINED_NULL_BOOL | ATOMTYPE_UNDEFINED_BIT;
+}
+FORCE_INLINE void asAtomHandler::increment(asAtom& a, ASWorker* wrk)
+{
+	switch(a.uintval&0x7)
 	{
-		case T_UNDEFINED:
-			setNumber(numeric_limits<double>::quiet_NaN());
-			break;
-		case T_NULL:
-			setInt(-1);
-			break;
-		case T_INTEGER:
-			setInt(intval-1);
-			break;
-		case T_UINTEGER:
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
 		{
-			if (uintval > 0)
-				setUInt(uintval-1);
-			else
+			switch (a.uintval&0x70)
 			{
-				number_t val = uintval;
-				setNumber(val-1);
+				case ATOMTYPE_NULL_BIT:
+					setInt(a,wrk,1);
+					break;
+				case ATOMTYPE_UNDEFINED_BIT:
+					setNumber(a,wrk,numeric_limits<double>::quiet_NaN());
+					break;
+				case ATOMTYPE_BOOL_BIT:
+					setInt(a,wrk,(a.uintval & 0x80 ? 1 : 0)+1);
+					break;
+				default:
+					return;
 			}
 			break;
 		}
-		case T_NUMBER:
-			setNumber(numberval-1);
+		case ATOM_INTEGER:
+			setInt(a,wrk,(a.intval>>3)+1);
 			break;
-		case T_BOOLEAN:
-			setInt((boolval ? 1 : 0)-1);
+		case ATOM_UINTEGER:
+			setUInt(a,wrk,(a.uintval>>3)+1);
 			break;
+		case ATOM_NUMBERPTR:
+			setNumber(a,wrk,toNumber(a)+1);
+			break;
+		case ATOM_STRINGID:
+		{
+			ASObject* s = abstract_s(wrk,a.uintval>>3);
+			number_t n = s->toNumber();
+			setNumber(a,wrk,n+1);
+			s->decRef();
+			break;
+		}
 		default:
 		{
-			number_t n=checkObject()->toNumber();
-			objval->decRef();
-			setNumber(n-1);
+			number_t n=toNumber(a);
+			setNumber(a,wrk,n+1);
+			break;
+		}
+	}
+}
+
+FORCE_INLINE void asAtomHandler::decrement(asAtom& a, ASWorker* wrk)
+{
+	switch(a.uintval&0x7)
+	{
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+		{
+			switch (a.uintval&0x70)
+			{
+				case ATOMTYPE_NULL_BIT:
+					setInt(a,wrk,-1);
+					break;
+				case ATOMTYPE_UNDEFINED_BIT:
+					setNumber(a,wrk,numeric_limits<double>::quiet_NaN());
+					break;
+				case ATOMTYPE_BOOL_BIT:
+					setInt(a,wrk,(a.uintval & 0x80 ? 1 : 0)-1);
+					break;
+				default:
+					return;
+			}
+			break;
+		}
+		case ATOM_INTEGER:
+			setInt(a,wrk,(a.uintval>>3)-1);
+			break;
+		case ATOM_UINTEGER:
+		{
+			if (a.uintval>>3 > 0)
+				setUInt(a,wrk,(a.uintval>>3)-1);
+			else
+			{
+				number_t val = a.uintval>>3;
+				setNumber(a,wrk,val-1);
+			}
+			break;
+		}
+		case ATOM_NUMBERPTR:
+			setNumber(a,wrk,toNumber(a)-1);
+			break;
+		case ATOM_STRINGID:
+		{
+			ASObject* s = abstract_s(wrk,a.uintval>>3);
+			number_t n = s->toNumber();
+			setNumber(a,wrk,n-1);
+			s->decRef();
+			break;
+		}
+		default:
+		{
+			number_t n=toNumber(a);
+			setNumber(a,wrk,n-1);
 			break;
 		}
 	}
 
 }
 
-FORCE_INLINE void asAtom::increment_i()
+FORCE_INLINE void asAtomHandler::increment_i(asAtom& a, ASWorker* wrk, int32_t amount)
 {
-	setInt(toInt()+1);
+	if ((a.uintval&0x7) == ATOM_INTEGER)
+		setInt(a,wrk,int32_t(a.intval>>3)+amount);
+	else
+		setInt(a,wrk,toInt(a)+amount);
 }
-FORCE_INLINE void asAtom::decrement_i()
+FORCE_INLINE void asAtomHandler::decrement_i(asAtom& a, ASWorker* wrk, int32_t amount)
 {
-	setInt(toInt()-1);
-}
-
-FORCE_INLINE void asAtom::convert_i()
-{
-	if (type == T_INTEGER)
-		return;
-	int32_t v = toIntStrict();
-	decRef();
-	setInt(v);
+	if ((a.uintval&0x7) == ATOM_INTEGER)
+		setInt(a,wrk,int32_t(a.intval>>3)-amount);
+	else
+		setInt(a,wrk,toInt(a)-amount);
 }
 
-FORCE_INLINE void asAtom::convert_u()
+FORCE_INLINE void asAtomHandler::bit_xor(asAtom& a, ASWorker* wrk, asAtom &v1)
 {
-	if (type == T_UINTEGER)
-		return;
-	uint32_t v = toUInt();
-	decRef();
-	setUInt(v);
+	int32_t i1=toInt(v1);
+	int32_t i2=toInt(a);
+	LOG_CALL("bitXor " << std::hex << i1 << '^' << i2 << std::dec);
+	setInt(a,wrk,i1^i2);
 }
 
-FORCE_INLINE void asAtom::convert_d()
+FORCE_INLINE void asAtomHandler::bitnot(asAtom& a, ASWorker* wrk)
 {
-	if (type == T_NUMBER || type == T_INTEGER || type == T_UINTEGER)
-		return;
-	number_t v = toNumber();
-	decRef();
-	setNumber(v);
+	int32_t i1=toInt(a);
+	LOG_CALL("bitNot " << std::hex << i1 << std::dec);
+	setInt(a,wrk,~i1);
 }
 
-FORCE_INLINE void asAtom::bit_xor(asAtom &v1)
+FORCE_INLINE void asAtomHandler::subtract(asAtom& a, ASWorker* wrk, asAtom &v2, bool forceint)
 {
-	int32_t i1=v1.toInt();
-	int32_t i2=toInt();
-	ASATOM_DECREF(v1);
-	decRef();
-	LOG_CALL(_("bitXor ") << std::hex << i1 << '^' << i2 << std::dec);
-	setInt(i1^i2);
-}
-
-FORCE_INLINE void asAtom::bitnot()
-{
-	int32_t i1=toInt();
-	decRef();
-	LOG_CALL(_("bitNot ") << std::hex << i1 << std::dec);
-	setInt(~i1);
-}
-
-FORCE_INLINE void asAtom::subtract(asAtom &v2)
-{
-	if( (type == T_INTEGER || type == T_UINTEGER) &&
-		(v2.type == T_INTEGER || v2.type ==T_UINTEGER))
+	if( ((a.uintval&0x7) == ATOM_INTEGER || (a.uintval&0x7) == ATOM_UINTEGER) &&
+		(isInteger(v2) || (v2.uintval&0x7) ==ATOM_UINTEGER))
 	{
-		int64_t num1=toInt64();
-		int64_t num2=v2.toInt64();
+		int64_t num1=toInt64(a);
+		int64_t num2=toInt64(v2);
 	
-		decRef();
-		ASATOM_DECREF(v2);
-		LOG_CALL(_("subtractI ") << num1 << '-' << num2);
+		LOG_CALL("subtractI " << num1 << '-' << num2);
 		int64_t res = num1-num2;
-		if (res > INT32_MIN && res < INT32_MAX)
-			setInt(res);
-		else if (res >= 0 && res < UINT32_MAX)
-			setUInt(res);
+		if (forceint || (res > INT32_MIN>>3 && res < INT32_MAX>>3))
+			setInt(a,wrk,int32_t(res));
+		else if (res >= 0 && res < UINT32_MAX>>3)
+			setUInt(a,wrk,res);
 		else
-			setNumber(res);
+			setNumber(a,wrk,res);
 	}
 	else
 	{
-		number_t num2=v2.toNumber();
-		number_t num1=toNumber();
+		number_t num2=toNumber(v2);
+		number_t num1=toNumber(a);
 	
-		decRef();
-		ASATOM_DECREF(v2);
-		LOG_CALL(_("subtract ") << num1 << '-' << num2);
-		setNumber(num1-num2);
+		LOG_CALL("subtract " << num1 << '-' << num2);
+		if (forceint)
+			setInt(a,wrk,num1-num2);
+		else
+			setNumber(a,wrk,num1-num2);
+	}
+}
+FORCE_INLINE void asAtomHandler::subtractreplace(asAtom& ret, ASWorker* wrk, const asAtom &v1, const asAtom &v2, bool forceint)
+{
+	if( ((v1.uintval&0x7) == ATOM_INTEGER || (v1.uintval&0x7) == ATOM_UINTEGER) &&
+		(isInteger(v2) || (v2.uintval&0x7) ==ATOM_UINTEGER))
+	{
+		int64_t num1=toInt64(v1);
+		int64_t num2=toInt64(v2);
+	
+		LOG_CALL("subtractreplaceI " << num1 << '-' << num2);
+		ASATOM_DECREF(ret);
+		int64_t res = num1-num2;
+		if (forceint || (res > INT32_MIN>>3 && res < INT32_MAX>>3))
+			setInt(ret,wrk,int32_t(res));
+		else if (res >= 0 && res < UINT32_MAX>>3)
+			setUInt(ret,wrk,res);
+		else
+			setNumber(ret,wrk,res);
+	}
+	else
+	{
+		number_t num2=toNumber(v2);
+		number_t num1=toNumber(v1);
+	
+		ASObject* o = getObject(ret);
+		LOG_CALL("subtractreplace "  << num1 << '-' << num2);
+		if (forceint)
+		{
+			setInt(ret,wrk,num1-num2);
+			if (o)
+				o->decRef();
+		}
+		else if (replaceNumber(ret,wrk,num1-num2) && o)
+			o->decRef();
 	}
 }
 
-FORCE_INLINE void asAtom::multiply(asAtom &v2)
+FORCE_INLINE void asAtomHandler::multiply(asAtom& a, ASWorker* wrk, asAtom &v2, bool forceint)
 {
-	if( (type == T_INTEGER || type == T_UINTEGER) &&
-		(v2.type == T_INTEGER || v2.type ==T_UINTEGER))
+	if( ((a.uintval&0x7) == ATOM_INTEGER || (a.uintval&0x7) == ATOM_UINTEGER) &&
+		(isInteger(v2) || (v2.uintval&0x7) ==ATOM_UINTEGER))
 	{
-		int64_t num1=toInt64();
-		int64_t num2=v2.toInt64();
+		int64_t num1=toInt64(a);
+		int64_t num2=toInt64(v2);
 	
-		decRef();
-		ASATOM_DECREF(v2);
-		LOG_CALL(_("multiplyI ") << num1 << '*' << num2);
+		LOG_CALL("multiplyI " << num1 << '*' << num2);
 		int64_t res = num1*num2;
-		if (res > INT32_MIN && res < INT32_MAX)
-			setInt(res);
-		else if (res >= 0 && res < UINT32_MAX)
-			setUInt(res);
+		if (forceint || (res > INT32_MIN>>3 && res < INT32_MAX>>3))
+			setInt(a,wrk,res);
+		else if (res >= 0 && res < UINT32_MAX>>3)
+			setUInt(a,wrk,res);
 		else
-			setNumber(res);
+			setNumber(a,wrk,res);
 	}
 	else
 	{
-		double num1=v2.toNumber();
-		double num2=toNumber();
-		LOG_CALL(_("multiply ")  << num1 << '*' << num2);
-	
-		setNumber(num1*num2);
+		double num1=toNumber(v2);
+		double num2=toNumber(a);
+		LOG_CALL("multiply "  << num1 << '*' << num2);
+		if (forceint)
+			setInt(a,wrk,num1*num2);
+		else 
+			setNumber(a,wrk,num1*num2);
 	}
 }
 
-FORCE_INLINE void asAtom::divide(asAtom &v2)
+FORCE_INLINE void asAtomHandler::multiplyreplace(asAtom& ret, ASWorker* wrk, const asAtom& v1, const asAtom &v2, bool forceint)
 {
-	double num1=toNumber();
-	double num2=v2.toNumber();
+	if( ((v1.uintval&0x7) == ATOM_INTEGER || (v1.uintval&0x7) == ATOM_UINTEGER) &&
+		(isInteger(v2) || (v2.uintval&0x7) ==ATOM_UINTEGER))
+	{
+		int64_t num1=toInt64(v1);
+		int64_t num2=toInt64(v2);
+	
+		LOG_CALL("multiplyreplaceI " << num1 << '*' << num2);
+		ASATOM_DECREF(ret);
+		int64_t res = num1*num2;
+		
+		if (forceint || (res > INT32_MIN>>3 && res < INT32_MAX>>3))
+			setInt(ret,wrk,res);
+		else if (res >= 0 && res < UINT32_MAX>>3)
+			setUInt(ret,wrk,res);
+		else
+			setNumber(ret,wrk,res);
+	}
+	else
+	{
+		double num1=toNumber(v2);
+		double num2=toNumber(v1);
+		ASObject* o = getObject(ret);
+		LOG_CALL("multiplyreplace "  << num1 << '*' << num2);
+		if (forceint)
+		{
+			setInt(ret,wrk,num1*num2);
+			if (o)
+				o->decRef();
+		}
+		else if (replaceNumber(ret,wrk,num1*num2) && o)
+			o->decRef();
+	}
+}
 
-	decRef();
-	ASATOM_DECREF(v2);
-	LOG_CALL(_("divide ")  << num1 << '/' << num2);
+FORCE_INLINE void asAtomHandler::divide(asAtom& a, ASWorker* wrk, asAtom &v2, bool forceint)
+{
+	double num1=toNumber(a);
+	double num2=toNumber(v2);
+
+	LOG_CALL("divide "  << num1 << '/' << num2);
 	// handling of infinity according to ECMA-262, chapter 11.5.2
 	if (std::isinf(num1))
 	{
 		if (std::isinf(num2) || std::isnan(num2))
-			setNumber(numeric_limits<double>::quiet_NaN());
+			setNumber(a,wrk,numeric_limits<double>::quiet_NaN());
 		else
 		{
 			bool needssign = (std::signbit(num1) || std::signbit(num2)) && !(std::signbit(num1) && std::signbit(num2)); 
-			setNumber( needssign  ? -numeric_limits<double>::infinity() : numeric_limits<double>::infinity());
+			setNumber(a,wrk, needssign  ? -numeric_limits<double>::infinity() : numeric_limits<double>::infinity());
+		}
+	}
+	else if (forceint)
+		setInt(a,wrk,num1/num2);
+	else
+		setNumber(a,wrk,num1/num2);
+}
+FORCE_INLINE void asAtomHandler::dividereplace(asAtom& ret, ASWorker* wrk, const asAtom& v1, const asAtom &v2, bool forceint)
+{
+	double num1=toNumber(v1);
+	double num2=toNumber(v2);
+
+	number_t res=0;
+	LOG_CALL("divide "  << num1 << '/' << num2);
+	// handling of infinity according to ECMA-262, chapter 11.5.2
+	if (std::isinf(num1))
+	{
+		if (std::isinf(num2) || std::isnan(num2))
+			res = numeric_limits<double>::quiet_NaN();
+		else
+		{
+			bool needssign = (std::signbit(num1) || std::signbit(num2)) && !(std::signbit(num1) && std::signbit(num2)); 
+			res = needssign  ? -numeric_limits<double>::infinity() : numeric_limits<double>::infinity();
 		}
 	}
 	else
-		setNumber(num1/num2);
+		res = num1/num2;
+	
+	ASObject* o = getObject(ret);
+	LOG_CALL("dividereplace "  << num1 << '/' << num2);
+	if (forceint)
+	{
+		setInt(ret,wrk,num1/num2);
+		if (o)
+			o->decRef();
+	}
+	else if (replaceNumber(ret,wrk,res) && o)
+		o->decRef();
+	
 }
 
-FORCE_INLINE void asAtom::modulo(asAtom &v2)
+FORCE_INLINE void asAtomHandler::modulo(asAtom& a, ASWorker* wrk, asAtom &v2, bool forceint)
 {
 	// if both values are Integers the result is also an int
-	if( ((type == T_INTEGER) || (type == T_UINTEGER)) &&
-		((v2.type == T_INTEGER) || (v2.type == T_UINTEGER)))
+	if( ((a.uintval&0x7) == ATOM_INTEGER || (a.uintval&0x7) == ATOM_UINTEGER) &&
+		(isInteger(v2) || (v2.uintval&0x7) ==ATOM_UINTEGER))
 	{
-		int32_t num1=toInt();
-		int32_t num2=v2.toInt();
-		LOG_CALL(_("moduloI ")  << num1 << '%' << num2);
-		if (num2 == 0)
-			setNumber(numeric_limits<double>::quiet_NaN());
+		int32_t num1=toInt(a);
+		int32_t num2=toInt(v2);
+		LOG_CALL("moduloI "  << num1 << '%' << num2);
+		if (!forceint && num2 == 0)
+			setNumber(a,wrk,numeric_limits<double>::quiet_NaN());
 		else
-			setInt(num1%num2);
+			setInt(a,wrk,num1%num2);
 	}
 	else
 	{
-		number_t num1=toNumber();
-		number_t num2=v2.toNumber();
-
-		decRef();
-		ASATOM_DECREF(v2);
-		LOG_CALL(_("modulo ")  << num1 << '%' << num2);
+		number_t num1=toNumber(a);
+		number_t num2=toNumber(v2);
+		LOG_CALL("modulo "  << num1 << '%' << num2);
 		/* fmod returns NaN if num2 == 0 as the spec mandates */
-		setNumber(::fmod(num1,num2));
+		if (forceint)
+			setInt(a,wrk,::fmod(num1,num2));
+		else 
+			setNumber(a,wrk,::fmod(num1,num2));
+	}
+}
+FORCE_INLINE void asAtomHandler::moduloreplace(asAtom& ret, ASWorker* wrk, const asAtom& v1, const asAtom &v2, bool forceint)
+{
+	// if both values are Integers the result is also an int
+	if( ((v1.uintval&0x7) == ATOM_INTEGER || (v1.uintval&0x7) == ATOM_UINTEGER) &&
+		(isInteger(v2) || (v2.uintval&0x7) ==ATOM_UINTEGER))
+	{
+		int32_t num1=toInt(v1);
+		int32_t num2=toInt(v2);
+		ASATOM_DECREF(ret);
+		LOG_CALL("moduloreplaceI "  << num1 << '%' << num2);
+		if (!forceint && num2 == 0)
+			setNumber(ret,wrk,numeric_limits<double>::quiet_NaN());
+		else
+			setInt(ret,wrk,num2 == 0 ? 0 :num1%num2);
+	}
+	else
+	{
+		number_t num1=toNumber(v1);
+		number_t num2=toNumber(v2);
+		LOG_CALL("moduloreplace "  << num1 << '%' << num2);
+		/* fmod returns NaN if num2 == 0 as the spec mandates */
+		ASObject* o = getObject(ret);
+		if (forceint)
+		{
+			setInt(ret,wrk,::fmod(num1,num2));
+			if (o)
+				o->decRef();
+		}
+		else if (replaceNumber(ret,wrk,::fmod(num1,num2)) && o)
+			o->decRef();
 	}
 }
 
-FORCE_INLINE void asAtom::lshift(asAtom &v1)
+FORCE_INLINE void asAtomHandler::lshift(asAtom& a, ASWorker* wrk, asAtom &v1)
 {
-	int32_t i2=toInt();
-	uint32_t i1=v1.toUInt()&0x1f;
-	ASATOM_DECREF(v1);
-	decRef();
-	LOG_CALL(_("lShift ")<<std::hex<<i2<<_("<<")<<i1<<std::dec);
+	int32_t i2=toInt(a);
+	uint32_t i1=toUInt(v1)&0x1f;
+	LOG_CALL("lShift "<<std::hex<<i2<<"<<"<<i1<<std::dec);
 	//Left shift are supposed to always work in 32bit
-	setInt(i2<<i1);
+	setInt(a,wrk,i2<<i1);
 }
 
-FORCE_INLINE void asAtom::rshift(asAtom &v1)
+FORCE_INLINE void asAtomHandler::rshift(asAtom& a, ASWorker* wrk, asAtom &v1)
 {
-	int32_t i2=toInt();
-	uint32_t i1=v1.toUInt()&0x1f;
-	ASATOM_DECREF(v1);
-	decRef();
-	LOG_CALL(_("rShift ")<<std::hex<<i2<<_(">>")<<i1<<std::dec);
-	setInt(i2>>i1);
+	int32_t i2=toInt(a);
+	uint32_t i1=toUInt(v1)&0x1f;
+	LOG_CALL("rShift "<<std::hex<<i2<<">>"<<i1<<std::dec);
+	setInt(a,wrk,i2>>i1);
 }
 
-FORCE_INLINE void asAtom::urshift(asAtom &v1)
+FORCE_INLINE void asAtomHandler::urshift(asAtom& a, ASWorker* wrk, asAtom &v1)
 {
-	uint32_t i2=toUInt();
-	uint32_t i1=v1.toUInt()&0x1f;
-	ASATOM_DECREF(v1);
-	decRef();
-	LOG_CALL(_("urShift ")<<std::hex<<i2<<_(">>")<<i1<<std::dec);
-	setUInt(i2>>i1);
+	uint32_t i2=toUInt(a);
+	uint32_t i1=toUInt(v1)&0x1f;
+	LOG_CALL("urShift "<<std::hex<<i2<<">>"<<i1<<std::dec);
+	setInt(a,wrk,i2>>i1);
 }
-FORCE_INLINE void asAtom::bit_and(asAtom &v1)
+FORCE_INLINE void asAtomHandler::bit_and(asAtom& a, ASWorker* wrk, asAtom &v1)
 {
-	int32_t i1=v1.toInt();
-	int32_t i2=toInt();
-	ASATOM_DECREF(v1);
-	decRef();
-	LOG_CALL(_("bitAnd_oo ") << std::hex << i1 << '&' << i2 << std::dec);
-	setInt(i1&i2);
+	int32_t i1=toInt(v1);
+	int32_t i2=toInt(a);
+	LOG_CALL("bitAnd_oo " << std::hex << i1 << '&' << i2 << std::dec);
+	setInt(a,wrk,i1&i2);
 }
-FORCE_INLINE void asAtom::bit_or(asAtom &v1)
+FORCE_INLINE void asAtomHandler::bit_or(asAtom& a, ASWorker* wrk, asAtom &v1)
 {
-	int32_t i1=v1.toInt();
-	int32_t i2=toInt();
-	LOG_CALL(_("bitOr ") << std::hex << i1 << '|' << i2 << std::dec);
-	setInt(i1|i2);
+	int32_t i1=toInt(v1);
+	int32_t i2=toInt(a);
+	LOG_CALL("bitOr " << std::hex << i1 << '|' << i2 << std::dec);
+	setInt(a,wrk,i1|i2);
 }
-FORCE_INLINE void asAtom::_not()
+FORCE_INLINE void asAtomHandler::_not(asAtom& a)
 {
-	LOG_CALL( _("not:") <<this->toDebugString()<<" "<<!Boolean_concrete());
+	LOG_CALL("not:" <<toDebugString(a)<<" "<<!Boolean_concrete(a));
 	
-	bool ret=!Boolean_concrete();
-	decRef();
-	setBool(ret);
+	bool ret=!Boolean_concrete(a);
+	ASATOM_DECREF(a);
+	setBool(a,ret);
 }
 
-FORCE_INLINE void asAtom::negate_i()
+FORCE_INLINE void asAtomHandler::negate_i(asAtom& a, ASWorker* wrk)
 {
-	LOG_CALL(_("negate_i"));
-	int n=toInt();
-	decRef();
-	setInt(-n);
+	LOG_CALL("negate_i");
+	int n=toInt(a);
+	setInt(a,wrk,-n);
 }
 
-FORCE_INLINE void asAtom::add_i(asAtom &v2)
+FORCE_INLINE void asAtomHandler::add_i(asAtom& a, ASWorker* wrk, asAtom &v2)
 {
-	int32_t num2=v2.toInt();
-	int32_t num1=toInt();
+	int64_t num2=toInt(v2);
+	int64_t num1=toInt(a);
 
-	decRef();
-	ASATOM_DECREF(v2);
-	LOG_CALL(_("add_i ") << num1 << '+' << num2);
-	setInt(num1+num2);
-}
-
-FORCE_INLINE void asAtom::subtract_i(asAtom &v2)
-{
-	int num2=v2.toInt();
-	int num1=toInt();
-
-	decRef();
-	ASATOM_DECREF(v2);
-	LOG_CALL(_("subtract_i ") << num1 << '-' << num2);
-	setInt(num1-num2);
+	LOG_CALL("add_i " << num1 << '+' << num2);
+	int64_t res = num1+num2;
+	if (res >= INT32_MAX || res <= INT32_MIN)
+		setNumber(a,wrk,res);
+	else
+		setInt(a,wrk,res);
 }
 
-FORCE_INLINE void asAtom::multiply_i(asAtom &v2)
+FORCE_INLINE void asAtomHandler::subtract_i(asAtom& a, ASWorker* wrk, asAtom &v2)
 {
-	int num1=toInt();
-	int num2=v2.toInt();
-	decRef();
-	ASATOM_DECREF(v2);
-	LOG_CALL(_("multiply ")  << num1 << '*' << num2);
-	setInt(num1*num2);
+	int num2=toInt(v2);
+	int num1=toInt(a);
+
+	LOG_CALL("subtract_i " << num1 << '-' << num2);
+	setInt(a,wrk,num1-num2);
 }
-FORCE_INLINE ASObject *asAtom::toObject(SystemState *sys)
+
+FORCE_INLINE void asAtomHandler::multiply_i(asAtom& a, ASWorker* wrk, asAtom &v2)
 {
-	if (objval)
-		return objval;
-	switch(type)
-	{
-		case T_INTEGER:
-			// ints are internally treated as numbers, so create a Number instance
-			objval = abstract_di(sys,intval);
-			break;
-		case T_UINTEGER:
-			// uints are internally treated as numbers, so create a Number instance
-			objval = abstract_di(sys,uintval);
-			break;
-		case T_NUMBER:
-			objval = abstract_d(sys,numberval);
-			break;
-		case T_BOOLEAN:
-			return abstract_b(sys,boolval);
-		case T_NULL:
-			return abstract_null(sys);
-		case T_UNDEFINED:
-			return abstract_undefined(sys);
-		case T_STRING:
-			if (stringID != UINT32_MAX)
-				objval = abstract_s(sys,stringID);
-			break;
-		case T_INVALID:
-			LOG(LOG_ERROR,"calling toObject on invalid asAtom, should not happen");
-			return objval;
-		default:
-			break;
-	}
-	return objval;
+	int num1=toInt(a);
+	int num2=toInt(v2);
+	LOG_CALL("multiply_i "  << num1 << '*' << num2);
+	int64_t res = num1*num2;
+	setInt(a,wrk,res);
 }
-FORCE_INLINE void asAtom::replace(ASObject *obj)
+
+FORCE_INLINE bool asAtomHandler::isNumeric(const asAtom& a)
 {
-	assert(obj);
-	type = obj->getObjectType();
-	switch(type)
-	{
-		case T_INTEGER:
-			intval = obj->toInt();
-			break;
-		case T_UINTEGER:
-			uintval = obj->toUInt();
-			break;
-		case T_NUMBER:
-			replaceNumber(obj);
-			break;
-		case T_BOOLEAN:
-			replaceBool(obj);
-			break;
-		case T_FUNCTION:
-			closure_this = NULL;
-			break;
-		case T_STRING:
-			stringID = UINT32_MAX;
-			break;
-		default:
-			break;
-	}
-	objval = obj;
+	return (isInteger(a) || isUInteger(a) || isNumber(a));
 }
-FORCE_INLINE asAtom asAtom::fromFunction(ASObject *f, ASObject *closure)
+FORCE_INLINE bool asAtomHandler::isNumber(const asAtom& a)
 {
+	return (a.uintval&0x7)==ATOM_NUMBERPTR;
+}
+FORCE_INLINE bool asAtomHandler::isInteger(const asAtom& a)
+{ 
+	return (a.uintval&0x3) == ATOM_INTEGER || ((a.uintval&0x7) == ATOM_U_INTEGERPTR && isObject(a) && getObjectNoCheck(a)->getObjectType() == T_INTEGER);
+}
+FORCE_INLINE bool asAtomHandler::isUInteger(const asAtom& a)
+{ 
+	return (a.uintval&0x7) == ATOM_UINTEGER || ((a.uintval&0x7) == ATOM_U_INTEGERPTR  && isObject(a) && getObjectNoCheck(a)->getObjectType() == T_UINTEGER);
+}
+FORCE_INLINE asAtom asAtomHandler::fromObjectNoPrimitive(ASObject* obj)
+{
+	assert(!obj->isPrimitive());
 	asAtom a;
-	a.type = f->getObjectType();
-	a.objval = f;
-	a.closure_this = closure;
+	a.uintval = ATOM_OBJECTPTR | (LIGHTSPARK_ATOM_VALTYPE)obj;
 	return a;
 }
-/* implements ecma3's ToBoolean() operation, see section 9.2, but returns the value instead of an Boolean object */
-FORCE_INLINE bool asAtom::Boolean_concrete()
+
+FORCE_INLINE SWFOBJECT_TYPE asAtomHandler::getObjectType(const asAtom& a)
 {
-	switch(type)
+	switch (a.uintval&0x7)
 	{
-		case T_UNDEFINED:
-		case T_NULL:
-			return false;
-		case T_BOOLEAN:
-			return boolval;
-		case T_NUMBER:
-			return numberval != 0.0 && !std::isnan(numberval);
-		case T_INTEGER:
-			return intval != 0;
-		case T_UINTEGER:
-			return uintval != 0;
-		case T_STRING:
-			if (stringID != UINT32_MAX && !objval)
-				return stringID != BUILTIN_STRINGS::EMPTY;
-			if (!objval->isConstructed())
-				return false;
-			return Boolean_concrete_string();
-		case T_FUNCTION:
-		case T_ARRAY:
-		case T_OBJECT:
-			assert(objval);
-			// not constructed objects return false
-			if (!objval->isConstructed())
-				return false;
-			return true;
+		case ATOM_INTEGER:
+			return T_INTEGER;
+		case ATOM_UINTEGER:
+			return T_UINTEGER;
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+			switch (a.uintval&0xf0)
+			{
+				case ATOMTYPE_NULL_BIT: 
+					return T_NULL;
+				case ATOMTYPE_UNDEFINED_BIT: // UNDEFINED
+					return T_UNDEFINED;
+				default: // BOOL
+					return T_BOOLEAN;
+			}
+		case ATOM_NUMBERPTR:
+			return T_NUMBER;
+		case ATOM_STRINGID:
+		case ATOM_STRINGPTR:
+			return T_STRING;
+		case ATOM_U_INTEGERPTR:
+		case ATOM_OBJECTPTR:
+			return isObject(a) ? getObjectNoCheck(a)->getObjectType() : T_INVALID;
 		default:
-			//everything else is an Object regarding to the spec
-			return true;
+			return T_INVALID;
 	}
 }
+FORCE_INLINE asAtom asAtomHandler::typeOf(asAtom& a)
+{
+	BUILTIN_STRINGS ret=BUILTIN_STRINGS::STRING_OBJECT;
+	switch(a.uintval&0x7)
+	{
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+		{
+			switch (a.uintval&0x70)
+			{
+				case ATOMTYPE_NULL_BIT:
+					ret= BUILTIN_STRINGS::STRING_OBJECT;
+					break;
+				case ATOMTYPE_UNDEFINED_BIT:
+					ret=BUILTIN_STRINGS::STRING_UNDEFINED;
+					break;
+				case ATOMTYPE_BOOL_BIT:
+					ret=BUILTIN_STRINGS::STRING_BOOLEAN;
+					break;
+				default:
+					break;
+			}
+			break;
+		}
+		case ATOM_OBJECTPTR:
+			if(getObjectNoCheck(a)->is<XML>() || getObjectNoCheck(a)->is<XMLList>())
+				ret = BUILTIN_STRINGS::STRING_XML;
+			if(getObjectNoCheck(a)->is<Number>() || getObjectNoCheck(a)->is<Integer>() || getObjectNoCheck(a)->is<UInteger>())
+				ret = BUILTIN_STRINGS::STRING_NUMBER;
+			if(getObjectNoCheck(a)->is<ASString>())
+				ret = BUILTIN_STRINGS::STRING_STRING;
+			if(getObjectNoCheck(a)->is<IFunction>())
+				ret = BUILTIN_STRINGS::STRING_FUNCTION_LOWERCASE;
+			if(getObjectNoCheck(a)->is<Undefined>())
+				ret = BUILTIN_STRINGS::STRING_UNDEFINED;
+			if(getObjectNoCheck(a)->is<Boolean>())
+				ret = BUILTIN_STRINGS::STRING_BOOLEAN;
+			break;
+		case ATOM_NUMBERPTR:
+		case ATOM_INTEGER:
+		case ATOM_UINTEGER:
+		case ATOM_U_INTEGERPTR:
+			ret=BUILTIN_STRINGS::STRING_NUMBER;
+			break;
+		case ATOM_STRINGID:
+		case ATOM_STRINGPTR:
+			ret = BUILTIN_STRINGS::STRING_STRING;
+			break;
+		default:
+			break;
+	}
+	return asAtomHandler::fromStringID(ret);
+}
+bool asAtomHandler::isEqual(asAtom& a, ASWorker* wrk, asAtom &v2)
+{
+	if ((((a.intval ^ ATOM_INTEGER) | (v2.intval ^ ATOM_INTEGER)) & 7) == 0)
+		return (a.intval == v2.intval);
+	if (a.uintval == v2.uintval && 
+			((a.uintval&0x7) != ATOM_NUMBERPTR)) // number needs special handling for NaN
+		return true;
+	return isEqualIntern(a,wrk,v2);
+}
+TRISTATE asAtomHandler::isLess(asAtom& a, ASWorker* wrk, asAtom &v2)
+{
+	if ((((a.intval ^ ATOM_INTEGER) | (v2.intval ^ ATOM_INTEGER)) & 7) == 0)
+		return (a.intval < v2.intval)?TTRUE:TFALSE;
+	if (a.uintval == v2.uintval && 
+			((a.uintval&0x7) != ATOM_NUMBERPTR)) // number needs special handling for NaN
+	{
+		return a.uintval == ATOMTYPE_UNDEFINED_BIT ? TUNDEFINED : TFALSE;
+	}
+	return isLessIntern(a,wrk,v2);
+}
+/* implements ecma3's ToBoolean() operation, see section 9.2, but returns the value instead of an Boolean object */
+FORCE_INLINE bool asAtomHandler::Boolean_concrete(asAtom& a)
+{
+	switch(a.uintval&0x7)
+	{
+		case ATOM_INVALID_UNDEFINED_NULL_BOOL:
+		{
+			switch (a.uintval&0x70)
+			{
+				case ATOMTYPE_NULL_BIT:
+				case ATOMTYPE_UNDEFINED_BIT:
+					return false;
+				case ATOMTYPE_BOOL_BIT:
+					return (a.uintval&0x80)>>7;
+				default:
+					return false;
+			}
+			break;
+		}
+		case ATOM_NUMBERPTR:
+			return toNumber(a) != 0.0 && !std::isnan(toNumber(a));
+		case ATOM_INTEGER:
+			return (a.intval>>3) != 0;
+		case ATOM_UINTEGER:
+			return (a.uintval>>3) != 0;
+		case ATOM_STRINGID:
+			return (a.uintval>>3) != BUILTIN_STRINGS::EMPTY;
+		default:
+			return Boolean_concrete_object(a);
+	}
+}
+
+FORCE_INLINE bool asAtomHandler::isFunction(const asAtom& a) { return isObject(a) && getObjectNoCheck(a)->is<IFunction>(); }
+FORCE_INLINE bool asAtomHandler::isString(const asAtom& a) { return isStringID(a) || (isObject(a) && getObjectNoCheck(a)->is<ASString>()); }
+FORCE_INLINE bool asAtomHandler::isQName(const asAtom& a) { return getObject(a) && getObjectNoCheck(a)->is<ASQName>(); }
+FORCE_INLINE bool asAtomHandler::isNamespace(const asAtom& a) { return isObject(a) && getObjectNoCheck(a)->is<Namespace>(); }
+FORCE_INLINE bool asAtomHandler::isArray(const asAtom& a) { return isObject(a) && getObjectNoCheck(a)->is<Array>(); }
+FORCE_INLINE bool asAtomHandler::isClass(const asAtom& a) { return isObject(a) && getObjectNoCheck(a)->is<Class_base>(); }
+FORCE_INLINE bool asAtomHandler::isTemplate(const asAtom& a) { return isObject(a) && getObjectNoCheck(a)->getObjectType() == T_TEMPLATE; }
+
+FORCE_INLINE ASObject* asAtomHandler::getObject(const asAtom& a)
+{
+	assert(!(a.uintval & ATOMTYPE_OBJECT_BIT) || !((ASObject*)(a.uintval& ~((LIGHTSPARK_ATOM_VALTYPE)0x7)))->getCached() || ((ASObject*)(a.uintval& ~((LIGHTSPARK_ATOM_VALTYPE)0x7)))->getInDestruction());
+	return a.uintval & ATOMTYPE_OBJECT_BIT ? (ASObject*)(a.uintval& ~((LIGHTSPARK_ATOM_VALTYPE)0x7)) : nullptr;
+}
+FORCE_INLINE ASObject* asAtomHandler::getObjectNoCheck(const asAtom& a)
+{
+	assert(!(a.uintval & ATOMTYPE_OBJECT_BIT) || !((ASObject*)(a.uintval& ~((LIGHTSPARK_ATOM_VALTYPE)0x7)))->getCached() || ((ASObject*)(a.uintval& ~((LIGHTSPARK_ATOM_VALTYPE)0x7)))->getInDestruction());
+	return (ASObject*)(a.uintval& ~((LIGHTSPARK_ATOM_VALTYPE)0x7));
+}
+FORCE_INLINE void asAtomHandler::resetCached(const asAtom& a)
+{
+	ASObject* o = a.uintval & ATOMTYPE_OBJECT_BIT ? (ASObject*)(a.uintval& ~((LIGHTSPARK_ATOM_VALTYPE)0x7)) : nullptr;
+	if (o)
+		o->resetCached();
+}
+
+inline ASObject* asfreelist::getObjectFromFreeList()
+{
+	assert(freelistsize>=0);
+	ASObject* o = freelistsize ? freelist[--freelistsize] :nullptr;
+	LOG_CALL("getfromfreelist:"<<freelistsize<<" "<<o<<" "<<this);
+	return o;
+}
+inline bool asfreelist::pushObjectToFreeList(ASObject *obj)
+{
+	if (freelistsize < FREELIST_SIZE)
+	{
+		assert(freelistsize>=0);
+		LOG_CALL("pushtofreelist:"<<freelistsize<<" "<<obj<<" "<<this);
+		obj->setCached();
+		obj->resetRefCount();
+		freelist[freelistsize++]=obj;
+		return true;
+	}
+	return false;
+}
+
+struct abc_limits {
+	/* maxmium number of recursion allowed. See ScriptLimitsTag */
+	uint32_t max_recursion;
+	/* maxmium number of seconds for script execution. See ScriptLimitsTag */
+	uint32_t script_timeout;
+};
+
+struct stacktrace_entry
+{
+	asAtom object;
+	uint32_t name;
+	void set(asAtom o, uint32_t n) { object=o; name=n; }
+};
+
 }
 #endif /* ASOBJECT_H */

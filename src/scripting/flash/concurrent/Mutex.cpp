@@ -22,7 +22,7 @@
 using namespace std;
 using namespace lightspark;
 
-ASMutex::ASMutex(Class_base* c):ASObject(c),lockcount(0)
+ASMutex::ASMutex(ASWorker* wrk, Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_MUTEX),lockcount(0)
 {
 	
 }
@@ -39,19 +39,19 @@ ASFUNCTIONBODY_ATOM(ASMutex,_constructor)
 }
 ASFUNCTIONBODY_ATOM(ASMutex,_lock)
 {
-	ASMutex* th=obj.as<ASMutex>();
+	ASMutex* th=asAtomHandler::as<ASMutex>(obj);
 	th->mutex.lock();
 	th->lockcount++;
 }
 ASFUNCTIONBODY_ATOM(ASMutex,_unlock)
 {
-	ASMutex* th=obj.as<ASMutex>();
+	ASMutex* th=asAtomHandler::as<ASMutex>(obj);
 	th->mutex.unlock();
 	th->lockcount--;
 }
 ASFUNCTIONBODY_ATOM(ASMutex,_trylock)
 {
-	ASMutex* th=obj.as<ASMutex>();
-	ret.setBool(th->mutex.trylock());
+	ASMutex* th=asAtomHandler::as<ASMutex>(obj);
+	asAtomHandler::setBool(ret,th->mutex.trylock());
 }
 

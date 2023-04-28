@@ -25,14 +25,16 @@
 #include "parsing/amf3_generator.h"
 #include "scripting/argconv.h"
 #include "scripting/flash/errors/flasherrors.h"
+#include "scripting/flash/utils/IntervalRunner.h"
+#include "scripting/flash/utils/IntervalManager.h"
 
 using namespace std;
 using namespace lightspark;
 
 
 IntervalRunner::IntervalRunner(IntervalRunner::INTERVALTYPE _type, uint32_t _id, asAtom _callback, asAtom* _args,
-		const unsigned int _argslen, asAtom _obj, uint32_t _interval):
-	EventDispatcher(NULL),type(_type), id(_id), callback(_callback),obj(_obj),argslen(_argslen),interval(_interval)
+		const unsigned int _argslen, asAtom _obj):
+	EventDispatcher(nullptr,nullptr),type(_type), id(_id), callback(_callback),obj(_obj),argslen(_argslen)
 {
 	args = new asAtom[argslen];
 	for(uint32_t i=0; i<argslen; i++)
@@ -46,14 +48,17 @@ IntervalRunner::~IntervalRunner()
 	delete[] args;
 }
 
-void IntervalRunner::tick() 
+void IntervalRunner::tick()
 {
+	if (getSys()->isShuttingDown())
+		return;
 	//incRef all arguments
 	uint32_t i;
 	for(i=0; i < argslen; i++)
 	{
 		ASATOM_INCREF(args[i]);
 	}
+	ASATOM_INCREF(obj);
 	_R<FunctionEvent> event(new (getSys()->unaccountedMemory) FunctionEvent(callback, obj, args, argslen));
 	getVm(getSys())->addEvent(NullRef,event);
 	event->wait();

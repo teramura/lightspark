@@ -148,7 +148,7 @@ istream& lightspark::operator>>(istream& in, method_info_simple& v)
 		{
 			in >> v.options[i].val >> v.options[i].kind;
 			if(v.options[i].kind>0x1a)
-				LOG(LOG_ERROR,_("Unexpected options type"));
+				LOG(LOG_ERROR,"Unexpected options type");
 		}
 	}
 	if(v.flags&0x80)
@@ -164,6 +164,7 @@ istream& lightspark::operator>>(istream& in, method_body_info& v)
 {
 	u30 code_length;
 	in >> v.method >> v.max_stack >> v.local_count >> v.init_scope_depth >> v.max_scope_depth >> code_length;
+	v.returnvaluepos=v.local_count+1;
 	v.code.resize(code_length);
 	in.read(&v.code[0],code_length);
 	u30 exception_count;
@@ -188,7 +189,7 @@ istream& lightspark::operator >>(istream& in, ns_set_info& v)
 	{
 		in >> v.ns[i];
 		if(v.ns[i]==0)
-			LOG(LOG_ERROR,_("0 not allowed"));
+			LOG(LOG_ERROR,"0 not allowed");
 	}
 	return in;
 }
@@ -236,7 +237,7 @@ istream& lightspark::operator>>(istream& in, multiname_info& v)
 			break;
 		}
 		default:
-			LOG(LOG_ERROR,_("Unexpected multiname kind ") << hex << v.kind);
+			LOG(LOG_ERROR,"Unexpected multiname kind " << hex << v.kind);
 			throw UnsupportedException("Unexpected namespace kind");
 	}
 	return in;
@@ -303,7 +304,7 @@ istream& lightspark::operator>>(istream& in, traits_info& v)
 			in >> v.disp_id >> v.method;
 			break;
 		default:
-			LOG(LOG_ERROR,_("Unexpected kind ") << v.kind);
+			LOG(LOG_ERROR,"Unexpected kind " << v.kind);
 			break;
 	}
 
@@ -348,6 +349,7 @@ istream& lightspark::operator>>(istream& in, instance_info& v)
 	v.traits.resize(v.trait_count);
 	for(unsigned int i=0;i<v.trait_count;i++)
 		in >> v.traits[i];
+	v.overriddenmethods=nullptr;
 	return in;
 }
 
@@ -400,4 +402,10 @@ cpool_info::cpool_info(MemoryAccount* m):
 	ns_sets(reporter_allocator<ns_set_info>(m)),
 	multinames(reporter_allocator<multiname_info>(m))
 {
+}
+
+method_body_info::~method_body_info()
+{
+	if (localsinitialvalues)
+		delete[] localsinitialvalues;
 }

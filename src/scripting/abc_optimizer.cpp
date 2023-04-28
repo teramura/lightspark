@@ -21,7 +21,12 @@
 #include "compat.h"
 #include "abcutils.h"
 #include "toplevel/toplevel.h"
-#include "toplevel/ASString.h"
+#include "scripting/toplevel/Boolean.h"
+#include "scripting/toplevel/ASString.h"
+#include "scripting/toplevel/Number.h"
+#include "scripting/toplevel/Integer.h"
+#include "scripting/toplevel/UInteger.h"
+#include "scripting/flash/system/flashsystem.h"
 #include <string>
 #include <sstream>
 
@@ -179,11 +184,11 @@ EARLY_BIND_STATUS ABCVm::earlyBindForScopeStack(ostream& out, const SyntheticFun
 				return CANNOT_BIND;
 			}
 
-			const variable* var=it->object.toObject(f->getSystemState())->findVariableByMultiname(*name, ASObject::FROM_GETLEX, it->object.toObject(f->getSystemState())->getClass());
+			const variable* var=asAtomHandler::toObject(it->object,f->getInstanceWorker())->findVariableByMultiname(*name, asAtomHandler::toObject(it->object,f->getInstanceWorker())->getClass(),nullptr,nullptr,false,f->getInstanceWorker());
 			if(var)
 			{
 				found=true;
-				inferredData.obj=it->object.toObject(f->getSystemState());
+				inferredData.obj=asAtomHandler::toObject(it->object,f->getInstanceWorker());
 				break;
 			}
 		}
@@ -206,7 +211,7 @@ InferenceData ABCVm::earlyBindFindPropStrict(ostream& out, const SyntheticFuncti
 		return ret;
 	//Look on the application domain
 	ASObject* target;
-	bool found = f->mi->context->root->applicationDomain->findTargetByMultiname(*name, target);
+	bool found = f->mi->context->root->applicationDomain->findTargetByMultiname(*name, target,f->mi->context->root->getInstanceWorker());
 	if(found)
 	{
 		//If we found the property on the application domain we can safely use the target verbatim
@@ -239,20 +244,20 @@ InferenceData ABCVm::earlyBindGetLex(ostream& out, const SyntheticFunction* f, c
 	ASObject* target;
 	//Now we should serach in the applicationDomain. The system domain is the first one searched. We can safely
 	//early bind for it, but not for custom domains, since we may change the expected order of evaluation
-	asAtom o;
-	f->getSystemState()->systemDomain->getVariableAndTargetByMultiname(o,*name, target);
-	if(o.type != T_INVALID)
+	asAtom o=asAtomHandler::invalidAtom;
+	f->getSystemState()->systemDomain->getVariableAndTargetByMultiname(o,*name, target,f->getSystemState()->worker);
+	if(asAtomHandler::isValid(o))
 	{
 		//Output a special opcode
 		out << (uint8_t)PUSH_EARLY;
-		writePtr(out, o.toObject(f->getSystemState()));
-		ret.obj=o.getObject();
+		writePtr(out, asAtomHandler::toObject(o,f->getInstanceWorker()));
+		ret.obj=asAtomHandler::getObject(o);
 		return ret;
 	}
 	//About custom domains. We can't resolve the object now. But we can output a special getLex opcode that will
 	//rewrite itself to a PUSH_EARLY when it's executed.
 	//NOTE: We use findVariableByMultiname because we don't want to actually run the init scripts now
-	bool found = f->mi->context->root->applicationDomain->findTargetByMultiname(*name, target);
+	bool found = f->mi->context->root->applicationDomain->findTargetByMultiname(*name, target,f->mi->context->root->getInstanceWorker());
 	if(found)
 	{
 		out << (uint8_t)GET_LEX_ONCE;
@@ -989,9 +994,9 @@ void ABCVm::optimizeFunction(SyntheticFunction* function)
 						if(objType)
 						{
 							const variable* var=objType->findBorrowedGettable(*name);
-							if(var && var->var.type==T_FUNCTION)
+							if(var && asAtomHandler::isFunction(var->var))
 							{
-								SyntheticFunction* calledFunc=dynamic_cast<SyntheticFunction*>(var->var.getObject());
+								SyntheticFunction* calledFunc=dynamic_cast<SyntheticFunction*>(asAtomHandler::getObject(var->var));
 								if(calledFunc)
 									inferredData.type=calledFunc->mi->returnType;
 							}
@@ -1310,7 +1315,7 @@ void ABCVm::optimizeFunction(SyntheticFunction* function)
 					const multiname* slotType = objData.type->resolveSlotTypeName(t);
 					if(slotType)
 					{
-						ASObject* ret=mi->context->root->applicationDomain->getVariableByMultinameOpportunistic(*slotType);
+						ASObject* ret=mi->context->root->applicationDomain->getVariableByMultinameOpportunistic(*slotType,mi->context->root->getInstanceWorker());
 						if(ret && ret->getObjectType()==T_CLASS)
 						{
 							Class_base* c=static_cast<Class_base*>(ret);
@@ -1409,7 +1414,7 @@ void ABCVm::optimizeFunction(SyntheticFunction* function)
 				InferenceData inferredData;
 
 				//Try to resolve the type is it is already defined
-				ASObject* ret=mi->context->root->applicationDomain->getVariableByMultinameOpportunistic(*name);
+				ASObject* ret=mi->context->root->applicationDomain->getVariableByMultinameOpportunistic(*name,mi->context->root->getInstanceWorker());
 				if(ret && ret->getObjectType()==T_CLASS)
 				{
 					coerceToClass=static_cast<Class_base*>(ret);
@@ -1660,8 +1665,8 @@ void ABCVm::optimizeFunction(SyntheticFunction* function)
 				break;
 			}
 			default:
-				LOG(LOG_ERROR,_("Not optimizable instruction @") << code.tellg());
-				LOG(LOG_ERROR,_("dump ") << hex << (unsigned int)opcode << dec);
+				LOG(LOG_ERROR,"Not optimizable instruction @" << code.tellg());
+				LOG(LOG_ERROR,"dump " << hex << (unsigned int)opcode << dec);
 				throw ParseException("Not implemented instruction in optimizer");
 		}
 	}

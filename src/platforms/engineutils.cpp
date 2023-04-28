@@ -22,14 +22,33 @@
 #include "swf.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mouse.h>
-#include <SDL2/SDL_mixer.h>
 #include "backends/input.h"
 #include "backends/rendering.h"
 #include "backends/lsopengl.h"
-#include "platforms/engineutils.h"
+#include "backends/audio.h"
+#include <pango/pangocairo.h>
+#include "version.h"
+#include "abc.h"
+#include "class.h"
+#include "scripting/flash/events/flashevents.h"
+#include "flash/display/NativeMenuItem.h"
+#include "flash/utils/ByteArray.h"
+#include <glib/gstdio.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
+extern "C" {
+#ifdef ENABLE_GLES2
+extern NVGcontext* nvgCreateGLES2(int flags);
+extern void nvgDeleteGLES2(NVGcontext* ctx);
+#else
+extern NVGcontext* nvgCreateGL2(int flags);
+extern void nvgDeleteGL2(NVGcontext* ctx);
+#endif
+}
 //The interpretation of texture data change with the endianness
-#if __BYTE_ORDER == __BIG_ENDIAN
+#if G_BYTE_ORDER == G_BIG_ENDIAN
 #define GL_UNSIGNED_INT_8_8_8_8_HOST GL_UNSIGNED_INT_8_8_8_8_REV
 #else
 #define GL_UNSIGNED_INT_8_8_8_8_HOST GL_UNSIGNED_BYTE
@@ -39,28 +58,39 @@ using namespace std;
 using namespace lightspark;
 
 uint32_t EngineData::userevent = (uint32_t)-1;
-Thread* EngineData::mainLoopThread = NULL;
+SDL_Thread* EngineData::mainLoopThread = nullptr;
 bool EngineData::mainthread_running = false;
 bool EngineData::sdl_needinit = true;
 bool EngineData::enablerendering = true;
+SDL_Cursor* EngineData::handCursor = nullptr;
 Semaphore EngineData::mainthread_initialized(0);
-EngineData::EngineData() : currentPixelBuffer(0),currentPixelBufferOffset(0),currentPixelBufPtr(NULL),pixelBufferWidth(0),pixelBufferHeight(0),widget(0), width(0), height(0),needrenderthread(true),supportPackedDepthStencil(false)
+EngineData::EngineData() : contextmenu(nullptr),contextmenurenderer(nullptr),sdleventtickjob(nullptr),incontextmenu(false),incontextmenupreparing(false),widget(nullptr),nvgcontext(nullptr), width(0), height(0),needrenderthread(true),supportPackedDepthStencil(false),hasExternalFontRenderer(false),
+	startInFullScreenMode(false),startscalefactor(1.0)
 {
 }
 
 EngineData::~EngineData()
 {
-	if (currentPixelBufPtr) {
-		free(currentPixelBufPtr);
-		currentPixelBufPtr = 0;
-	}
+	if (handCursor)
+		SDL_FreeCursor(handCursor);
+	handCursor=nullptr;
+#ifdef ENABLE_GLES2
+	if (nvgcontext)
+		nvgDeleteGLES2(nvgcontext);
+#else
+	if (nvgcontext)
+		nvgDeleteGL2(nvgcontext);
+#endif
 }
 bool EngineData::mainloop_handleevent(SDL_Event* event,SystemState* sys)
 {
+	if (sys && sys->getEngineData())
+		sys->getEngineData()->renderContextMenu();
 	if (event->type == LS_USEREVENT_INIT)
 	{
 		sys = (SystemState*)event->user.data1;
 		setTLSSys(sys);
+		setTLSWorker(sys->worker);
 	}
 	else if (event->type == LS_USEREVENT_EXEC)
 	{
@@ -69,9 +99,30 @@ bool EngineData::mainloop_handleevent(SDL_Event* event,SystemState* sys)
 	}
 	else if (event->type == LS_USEREVENT_QUIT)
 	{
-		setTLSSys(NULL);
+		setTLSSys(nullptr);
 		SDL_Quit();
 		return true;
+	}
+	else if (event->type == LS_USEREVENT_OPEN_CONTEXTMENU)
+	{
+		if (sys && sys->getEngineData())
+			sys->getEngineData()->openContextMenuIntern((InteractiveObject*)event->user.data1);
+	}
+	else if (event->type == LS_USEREVENT_UPDATE_CONTEXTMENU)
+	{
+		if (sys && sys->getEngineData())
+		{
+			int pos = *(int*)event->user.data1;
+			delete (int*)event->user.data1;
+			sys->getEngineData()->updateContextMenu(pos);
+		}
+	}
+	else if (event->type == LS_USEREVENT_SELECTITEM_CONTEXTMENU)
+	{
+		if (sys && sys->getEngineData())
+		{
+			sys->getEngineData()->selectContextMenuItemIntern();
+		}
 	}
 	else
 	{
@@ -85,17 +136,29 @@ bool EngineData::mainloop_handleevent(SDL_Event* event,SystemState* sys)
 				{
 					case SDL_WINDOWEVENT_RESIZED:
 					case SDL_WINDOWEVENT_SIZE_CHANGED:
-						if (sys && sys->getRenderThread())
+						if (sys && (!sys->getEngineData() || !sys->getEngineData()->inFullScreenMode()) &&  sys->getRenderThread())
 							sys->getRenderThread()->requestResize(event->window.data1,event->window.data2,false);
 						break;
 					case SDL_WINDOWEVENT_EXPOSED:
 					{
 						//Signal the renderThread
 						if (sys && sys->getRenderThread())
-							sys->getRenderThread()->draw(sys->isOnError());
+						{
+							sys->getRenderThread()->draw(true);
+							// it seems that sometimes the systemstate thread stops ticking when in background, this ensures it starts ticking again...
+							sys->sendMainSignal();
+						}
 						break;
 					}
-						
+					case SDL_WINDOWEVENT_FOCUS_LOST:
+						sys->getEngineData()->closeContextMenu();
+						break;
+					case SDL_WINDOWEVENT_ENTER:
+						sys->addBroadcastEvent("activate");
+						break;
+					case SDL_WINDOWEVENT_LEAVE:
+						sys->addBroadcastEvent("deactivate");
+						break;
 					default:
 						break;
 				}
@@ -108,12 +171,9 @@ bool EngineData::mainloop_handleevent(SDL_Event* event,SystemState* sys)
 	}
 	return false;
 }
-
-/* main loop handling */
-static void mainloop_runner()
+bool initSDL()
 {
 	bool sdl_available = !EngineData::sdl_needinit;
-	
 	if (EngineData::sdl_needinit)
 	{
 		if (!EngineData::enablerendering)
@@ -129,13 +189,26 @@ static void mainloop_runner()
 				sdl_available = !SDL_InitSubSystem ( SDL_INIT_VIDEO );
 			else
 				sdl_available = !SDL_Init ( SDL_INIT_VIDEO );
+			SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8); // needed for nanovg
+			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);// needed for nanovg
+			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);// needed for nanovg
+#ifdef ENABLE_GLES2
+			SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+			SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
 		}
 	}
-	if (!sdl_available)
+	return sdl_available;
+}
+/* main loop handling */
+static int mainloop_runner(void*)
+{
+	if (!initSDL())
 	{
 		LOG(LOG_ERROR,"Unable to initialize SDL:"<<SDL_GetError());
 		EngineData::mainthread_initialized.signal();
-		return;
+		return 0;
 	}
 	else
 	{
@@ -149,21 +222,51 @@ static void mainloop_runner()
 			if (EngineData::mainloop_handleevent(&event,sys))
 			{
 				EngineData::mainthread_running = false;
-				return;
+				return 0;
 			}
 		}
 	}
+	return 0;
 }
-gboolean EngineData::mainloop_from_plugin(SystemState* sys)
+void EngineData::mainloop_from_plugin(SystemState* sys)
 {
+	initSDL();
+	EngineData::sdl_needinit = false;
 	SDL_Event event;
 	setTLSSys(sys);
 	while (SDL_PollEvent(&event))
 	{
 		mainloop_handleevent(&event,sys);
 	}
-	setTLSSys(NULL);
-	return G_SOURCE_CONTINUE;
+	setTLSSys(nullptr);
+}
+
+class SDLEventTicker:public ITickJob
+{
+	EngineData* m_engine;
+	SystemState* m_sys;
+public:
+	SDLEventTicker(EngineData* engine,SystemState* sys):m_engine(engine),m_sys(sys) {}
+	void tick() override
+	{
+		m_engine->runInMainThread(m_sys,EngineData::mainloop_from_plugin);
+		if (!m_engine->inFullScreenMode() && !m_engine->inContextMenu() && !m_engine->inContextMenuPreparing() )
+			stopMe=true;
+	}
+	void tickFence() override
+	{
+		m_engine->resetSDLEventTicker();
+		delete this;
+	}
+};
+
+
+void EngineData::startSDLEventTicker(SystemState* sys)
+{
+	if (sdleventtickjob)
+		return;
+	sdleventtickjob = new SDLEventTicker(this,sys);
+	sys->addTick(50,sdleventtickjob);
 }
 
 /* This is not run in the linux plugin, as firefox
@@ -172,40 +275,72 @@ gboolean EngineData::mainloop_from_plugin(SystemState* sys)
 bool EngineData::startSDLMain()
 {
 	assert(!mainLoopThread);
-#ifdef HAVE_NEW_GLIBMM_THREAD_API
-	mainLoopThread = Thread::create(sigc::ptr_fun(&mainloop_runner));
-#else
-	mainLoopThread = Thread::create(sigc::ptr_fun(&mainloop_runner),true);
-#endif
+	mainLoopThread = SDL_CreateThread(mainloop_runner,"mainloop",nullptr);
 	mainthread_initialized.wait();
 	return mainthread_running;
 }
 
-bool EngineData::FileExists(const tiny_string &filename)
+bool EngineData::FileExists(SystemState* sys, const tiny_string &filename, bool isfullpath)
 {
 	LOG(LOG_ERROR,"FileExists not implemented");
 	return false;
 }
 
-tiny_string EngineData::FileRead(const tiny_string &filename)
+uint32_t EngineData::FileSize(SystemState* sys, const tiny_string& filename, bool isfullpath)
+{
+	LOG(LOG_ERROR,"FileSize not implemented");
+	return 0;
+}
+
+tiny_string EngineData::FileFullPath(SystemState* sys, const tiny_string& filename)
+{
+	LOG(LOG_ERROR,"FileFullPath not implemented");
+	return "";
+}
+
+tiny_string EngineData::FileRead(SystemState* sys,const tiny_string &filename, bool isfullpath)
 {
 	LOG(LOG_ERROR,"FileRead not implemented");
 	return "";
 }
 
-void EngineData::FileWrite(const tiny_string &filename, const tiny_string &data)
+void EngineData::FileWrite(SystemState* sys,const tiny_string &filename, const tiny_string &data, bool isfullpath)
 {
 	LOG(LOG_ERROR,"FileWrite not implemented");
 }
 
-void EngineData::FileReadByteArray(const tiny_string &filename,ByteArray* res)
+uint8_t EngineData::FileReadUnsignedByte(SystemState* sys, const tiny_string& filename, uint32_t startpos, bool isfullpath)
+{
+	LOG(LOG_ERROR,"FileReadUnsignedByte not implemented");
+	return 0;
+}
+
+void EngineData::FileReadByteArray(SystemState* sys, const tiny_string &filename, ByteArray* res, uint32_t startpos, uint32_t length, bool isfullpath)
 {
 	LOG(LOG_ERROR,"FileReadByteArray not implemented");
 }
 
-void EngineData::FileWriteByteArray(const tiny_string &filename, ByteArray *data)
+void EngineData::FileWriteByteArray(SystemState* sys, const tiny_string &filename, ByteArray *data, uint32_t startpos, uint32_t length, bool isfullpath)
 {
 	LOG(LOG_ERROR,"FileWriteByteArray not implemented");
+}
+
+bool EngineData::FileCreateDirectory(SystemState* sys, const tiny_string &filename, bool isfullpath)
+{
+	LOG(LOG_ERROR,"FileCreateDirectory not implemented");
+	return false;
+}
+
+bool EngineData::FilePathIsAbsolute(const tiny_string& filename)
+{
+	LOG(LOG_ERROR,"FilePathIsAbsolute not implemented");
+	return false;
+}
+
+tiny_string EngineData::FileGetApplicationStorageDir()
+{
+	LOG(LOG_ERROR,"FileGetApplicationStorageDir not implemented");
+	return "";
 }
 
 void EngineData::initGLEW()
@@ -216,13 +351,19 @@ void EngineData::initGLEW()
 	GLenum err = glewInit();
 	if (GLEW_OK != err)
 	{
-		LOG(LOG_ERROR,_("Cannot initialize GLEW: cause ") << glewGetErrorString(err));
-		throw RunTimeException("Rendering: Cannot initialize GLEW!");
+#ifdef GLEW_ERROR_NO_GLX_DISPLAY
+		char* videodriver = getenv("SDL_VIDEODRIVER"); // ignore GLEW_ERROR_NO_GLX_DISPLAY when running on wayland
+		if (!videodriver || strcmp(videodriver,"wayland")!= 0 || err != GLEW_ERROR_NO_GLX_DISPLAY)
+#endif
+		{
+			LOG(LOG_ERROR,"Cannot initialize GLEW: cause " << glewGetErrorString(err));
+			throw RunTimeException("Rendering: Cannot initialize GLEW!");
+		}
 	}
 
 	if(!GLEW_VERSION_2_0)
 	{
-		LOG(LOG_ERROR,_("Video card does not support OpenGL 2.0... Aborting"));
+		LOG(LOG_ERROR,"Video card does not support OpenGL 2.0... Aborting");
 		throw RunTimeException("Rendering: OpenGL driver does not support OpenGL 2.0");
 	}
 	if(!GLEW_ARB_framebuffer_object)
@@ -232,23 +373,354 @@ void EngineData::initGLEW()
 	}
 	supportPackedDepthStencil = GLEW_EXT_packed_depth_stencil;
 #endif
+	initNanoVG();
+}
+
+void EngineData::initNanoVG()
+{
+#ifdef ENABLE_GLES2
+	nvgcontext=nvgCreateGLES2(0);
+#else
+	nvgcontext=nvgCreateGL2(0);
+#endif
+	if (nvgcontext == nullptr)
+		LOG(LOG_ERROR,"couldn't initialize nanovg");
 }
 
 void EngineData::showWindow(uint32_t w, uint32_t h)
 {
-	RecMutex::Lock l(mutex);
-
 	assert(!widget);
-	widget = createWidget(w,h);
-	this->width = this->origwidth = w;
-	this->height = this->origheight = h;
+	this->origwidth = w;
+	this->origheight = h;
 	
+	// width and height may already be set from the plugin
+	if (this->width == 0)
+		this->width = w;
+	if (this->height == 0)
+		this->height = h;
+	widget = createWidget(this->width,this->height);
 	// plugins create a hidden window that should not be shown
 	if (widget && !(SDL_GetWindowFlags(widget) & SDL_WINDOW_HIDDEN))
 		SDL_ShowWindow(widget);
 	grabFocus();
 	
 }
+
+std::string EngineData::getsharedobjectfilename(const tiny_string& name)
+{
+	tiny_string subdir = sharedObjectDatapath + G_DIR_SEPARATOR_S;
+	subdir += "sharedObjects";
+	g_mkdir_with_parents(subdir.raw_buf(),0700);
+
+	std::string p = subdir.raw_buf();
+	p += G_DIR_SEPARATOR_S;
+	p += name.raw_buf();
+	p += ".sol";
+	return p;
+}
+void EngineData::setLocalStorageAllowedMarker(bool allowed)
+{
+	tiny_string subdir = sharedObjectDatapath + G_DIR_SEPARATOR_S;
+	g_mkdir_with_parents(subdir.raw_buf(),0700);
+
+	std::string p = subdir.raw_buf();
+	p += G_DIR_SEPARATOR_S;
+	p += "localStorageAllowed";
+	if (allowed)
+	{
+		if (!g_file_test(p.c_str(),G_FILE_TEST_EXISTS))
+			g_creat(p.c_str(),0600);
+	}
+	else
+		g_unlink(p.c_str());
+}
+bool EngineData::getLocalStorageAllowedMarker()
+{
+	tiny_string subdir = sharedObjectDatapath + G_DIR_SEPARATOR_S;
+	if (!g_file_test(subdir.raw_buf(),G_FILE_TEST_EXISTS))
+		return false;
+	g_mkdir_with_parents(subdir.raw_buf(),0700);
+
+	std::string p = subdir.raw_buf();
+	p += G_DIR_SEPARATOR_S;
+	p += "localStorageAllowed";
+	return g_file_test(p.c_str(),G_FILE_TEST_EXISTS);
+}
+bool EngineData::fillSharedObject(const tiny_string &name, ByteArray *data)
+{
+	if (!getLocalStorageAllowedMarker())
+		return false;
+	std::string p = getsharedobjectfilename(name);
+	if (!g_file_test(p.c_str(),G_FILE_TEST_EXISTS))
+		return false;
+	GStatBuf st_buf;
+	g_stat(p.c_str(),&st_buf);
+	uint32_t len = st_buf.st_size;
+	std::ifstream file;
+	uint8_t buf[len];
+	file.open(p, std::ios::in|std::ios::binary);
+	file.read((char*)buf,len);
+	data->writeBytes(buf,len);
+	file.close();
+	return true;
+}
+bool EngineData::flushSharedObject(const tiny_string &name, ByteArray *data)
+{
+	if (!getLocalStorageAllowedMarker())
+		return false;
+	std::string p = getsharedobjectfilename(name);
+	std::ofstream file;
+	file.open(p, std::ios::out|std::ios::binary|std::ios::trunc);
+	uint8_t* buf = data->getBuffer(data->getLength(),false);
+	file.write((char*)buf,data->getLength());
+	file.close();
+	return true;
+}
+void EngineData::removeSharedObject(const tiny_string &name)
+{
+	std::string p = getsharedobjectfilename(name);
+	g_unlink(p.c_str());
+}
+
+void EngineData::setDisplayState(const tiny_string &displaystate,SystemState* sys)
+{
+	if (!this->widget)
+	{
+		LOG(LOG_ERROR,"no widget available for setting displayState");
+		return;
+	}
+	SDL_SetWindowFullscreen(widget, displaystate.startsWith("fullScreen") ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+	int w,h;
+	SDL_GetWindowSize(widget,&w,&h);
+	sys->getRenderThread()->requestResize(w,h,true);
+}
+
+bool EngineData::inFullScreenMode()
+{
+	if (!this->widget)
+	{
+		LOG(LOG_ERROR,"no widget available for getting fullscreen mode");
+		return false;
+	}
+	return SDL_GetWindowFlags(widget) & SDL_WINDOW_FULLSCREEN_DESKTOP;
+}
+
+void EngineData::openContextMenuIntern(InteractiveObject *dispatcher)
+{
+	if (incontextmenu)
+		return;
+	incontextmenu=true;
+	dispatcher->incRef();
+	contextmenuDispatcher = _MR(dispatcher);
+	currentcontextmenuitems.clear();
+	contextmenuOwner= dispatcher->getCurrentContextMenuItems(currentcontextmenuitems);
+	openContextMenu();
+}
+void EngineData::openContextMenu()
+{
+	int x=0,y=0;
+#if SDL_VERSION_ATLEAST(2, 0, 4)
+	SDL_GetGlobalMouseState(&x,&y);
+#else
+	LOG(LOG_ERROR,"SDL2 version too old to get mouse position");
+	SDL_GetWindowPosition(widget,&x,&y);
+#endif
+	contextmenuheight = 0;
+	for (uint32_t i = 0; i <currentcontextmenuitems.size(); i++)
+	{
+		NativeMenuItem* item = currentcontextmenuitems.at(i).getPtr();
+		contextmenuheight += item->isSeparator ? CONTEXTMENUSEPARATORHEIGHT : CONTEXTMENUITEMHEIGHT;
+	}
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+	contextmenu = SDL_CreateWindow("",x,y,CONTEXTMENUWIDTH,contextmenuheight,SDL_WINDOW_BORDERLESS|SDL_WINDOW_SHOWN|SDL_WINDOW_INPUT_FOCUS|SDL_WINDOW_MOUSE_FOCUS|SDL_WINDOW_POPUP_MENU);
+#else
+	LOG(LOG_ERROR,"SDL2 version too old to create popup menu");
+	contextmenu = SDL_CreateWindow("",x,y,CONTEXTMENUWIDTH,contextmenuheight,SDL_WINDOW_BORDERLESS|SDL_WINDOW_SHOWN|SDL_WINDOW_INPUT_FOCUS|SDL_WINDOW_MOUSE_FOCUS);
+#endif
+	contextmenurenderer = SDL_CreateRenderer(contextmenu,-1, SDL_RENDERER_ACCELERATED);
+	contextmenutexture = SDL_CreateTexture(contextmenurenderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, CONTEXTMENUWIDTH, contextmenuheight);
+	contextmenupixels = new uint8_t[CONTEXTMENUWIDTH*contextmenuheight*4];
+	updateContextMenu(-1);
+}
+
+void EngineData::updateContextMenuFromMouse(uint32_t windowID, int mousey)
+{
+	int newselecteditem = -1;
+	int ypos = 0;
+	if (windowID == SDL_GetWindowID(contextmenu))
+	{
+		for (uint32_t i = 0; i <currentcontextmenuitems.size(); i++)
+		{
+			NativeMenuItem* item = currentcontextmenuitems.at(i).getPtr();
+			if (item->isSeparator)
+			{
+				ypos+=CONTEXTMENUSEPARATORHEIGHT;
+			}
+			else
+			{
+				if (mousey > ypos && mousey < ypos+CONTEXTMENUITEMHEIGHT)
+					newselecteditem = i;
+				ypos+=CONTEXTMENUITEMHEIGHT;
+			}
+		}
+	}
+	SDL_Event event;
+	SDL_zero(event);
+	event.type = LS_USEREVENT_UPDATE_CONTEXTMENU;
+	event.user.data1 = (void*)new int(newselecteditem);
+	SDL_PushEvent(&event);
+}
+
+void EngineData::selectContextMenuItem()
+{
+	SDL_Event event;
+	SDL_zero(event);
+	event.type = LS_USEREVENT_SELECTITEM_CONTEXTMENU;
+	SDL_PushEvent(&event);
+}
+void EngineData::InteractiveObjectRemovedFromStage()
+{
+	SDL_Event event;
+	SDL_zero(event);
+	event.type = LS_USEREVENT_INTERACTIVEOBJECT_REMOVED_FOM_STAGE;
+	SDL_PushEvent(&event);
+}
+void EngineData::selectContextMenuItemIntern()
+{
+	if (contextmenucurrentitem >=0)
+	{
+		NativeMenuItem* item = currentcontextmenuitems.at(contextmenucurrentitem).getPtr();
+		if (item->label == "Settings")
+		{
+			item->getSystemState()->getRenderThread()->inSettings=true;
+			closeContextMenu();
+			return;
+		}
+		if (item->label=="Save" ||
+			item->label=="Zoom In" ||
+			item->label=="Zoom Out" ||
+			item->label=="100%" ||
+			item->label=="Show all" ||
+			item->label=="Quality" ||
+			item->label=="Play" ||
+			item->label=="Loop" ||
+			item->label=="Rewind" ||
+			item->label=="Forward" ||
+			item->label=="Back" ||
+			item->label=="Print")
+		{
+			closeContextMenu();
+			tiny_string msg("context menu handling not implemented for \"");
+			msg += item->label;
+			msg += "\"";
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"Lightspark",msg.raw_buf(),widget);
+			return;
+		}
+		else if (item->label=="About")
+		{
+			closeContextMenu();
+			tiny_string msg("Lightspark version ");
+			msg += VERSION;
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,"Lightspark",msg.raw_buf(),widget);
+			return;
+		}
+		else
+		{
+			item->incRef();
+			getVm(item->getSystemState())->addEvent(_MR(item),_MR(Class<ContextMenuEvent>::getInstanceS(item->getInstanceWorker(),"menuItemSelect",contextmenuDispatcher,contextmenuOwner)));
+		}
+	}
+	closeContextMenu();
+}
+void EngineData::updateContextMenu(int newselecteditem)
+{
+	float bordercolor = 0.3;
+	float backgroundcolor = 0.9;
+	float selectedbackgroundcolor = 0.5;
+	float textcolor = 0.0;
+	
+	contextmenucurrentitem=newselecteditem;
+	cairo_surface_t* cairoSurface=cairo_image_surface_create_for_data(contextmenupixels, CAIRO_FORMAT_ARGB32, CONTEXTMENUWIDTH, contextmenuheight, cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, CONTEXTMENUWIDTH));
+	cairo_t* cr=cairo_create(cairoSurface);
+	cairo_surface_destroy(cairoSurface); /* cr has an reference to it */
+	cairo_set_source_rgb (cr, backgroundcolor, backgroundcolor,backgroundcolor);
+	cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+	cairo_paint(cr);
+	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+	cairo_set_antialias(cr,CAIRO_ANTIALIAS_DEFAULT);
+	cairo_set_source_rgb (cr, bordercolor, bordercolor, bordercolor);
+	cairo_set_line_width(cr, 2);
+	cairo_rectangle(cr, 1, 1, CONTEXTMENUWIDTH-2, contextmenuheight-2);
+	cairo_stroke(cr);
+	
+	PangoLayout* layout = pango_cairo_create_layout(cr);
+	PangoFontDescription* desc = pango_font_description_new();
+	pango_font_description_set_family(desc, "Helvetica");
+	pango_font_description_set_size(desc, PANGO_SCALE*11);
+	pango_layout_set_font_description(layout, desc);
+	pango_font_description_free(desc);
+
+	int ypos = 0;
+	for (int32_t i = 0; i <(int)currentcontextmenuitems.size(); i++)
+	{
+		NativeMenuItem* item = currentcontextmenuitems.at(i).getPtr();
+		if (item->isSeparator)
+		{
+			cairo_set_source_rgb (cr, bordercolor, bordercolor, bordercolor);
+			cairo_set_line_width(cr, 1);
+			cairo_move_to(cr, 0, ypos+2);
+			cairo_line_to(cr, CONTEXTMENUWIDTH, ypos+2);
+			cairo_stroke(cr);
+			ypos+=CONTEXTMENUSEPARATORHEIGHT;
+		}
+		else
+		{
+			cairo_set_source_rgb (cr, backgroundcolor, backgroundcolor,backgroundcolor);
+			if (contextmenucurrentitem == i)
+				cairo_set_source_rgb (cr, selectedbackgroundcolor, selectedbackgroundcolor, selectedbackgroundcolor);
+			cairo_set_line_width(cr, 1);
+			cairo_rectangle(cr, 2, ypos, CONTEXTMENUWIDTH-4, ypos+CONTEXTMENUITEMHEIGHT);
+			cairo_fill(cr);
+			cairo_translate(cr, 10, ypos+(CONTEXTMENUITEMHEIGHT-11)/2);
+			cairo_set_source_rgb (cr, textcolor, textcolor,textcolor);
+			pango_layout_set_text(layout, item->label.raw_buf(), -1);
+			pango_cairo_show_layout(cr, layout);
+			cairo_translate(cr, -10, -(ypos+(CONTEXTMENUITEMHEIGHT-11)/2));
+			ypos+=CONTEXTMENUITEMHEIGHT;
+		}
+	}
+	g_object_unref(layout);
+	cairo_destroy(cr);
+	SDL_UpdateTexture(contextmenutexture, nullptr, contextmenupixels, CONTEXTMENUWIDTH*4);
+}
+
+void EngineData::closeContextMenu()
+{
+	incontextmenu=false;
+	if (contextmenu)
+	{
+		SDL_DestroyRenderer(contextmenurenderer);
+		SDL_DestroyWindow(contextmenu);
+		delete[] contextmenupixels;
+		contextmenupixels=nullptr;
+		contextmenu=nullptr;
+		contextmenurenderer=nullptr;
+		currentcontextmenuitems.clear();
+		contextmenuOwner.reset();
+	}
+}
+
+void EngineData::renderContextMenu()
+{
+	if (contextmenurenderer)
+	{
+		SDL_RenderCopy(contextmenurenderer, contextmenutexture, nullptr, nullptr);
+		SDL_RenderPresent(contextmenurenderer);
+	}
+}
+
+
+
 
 void EngineData::showMouseCursor(SystemState* /*sys*/)
 {
@@ -258,6 +730,17 @@ void EngineData::showMouseCursor(SystemState* /*sys*/)
 void EngineData::hideMouseCursor(SystemState* /*sys*/)
 {
 	SDL_ShowCursor(SDL_DISABLE);
+}
+
+void EngineData::setMouseHandCursor(SystemState* /*sys*/)
+{
+	if (!handCursor)
+		handCursor = SDL_CreateSystemCursor(SDL_SystemCursor::SDL_SYSTEM_CURSOR_HAND);
+	SDL_SetCursor(handCursor);
+}
+void EngineData::resetMouseHandCursor(SystemState* /*sys*/)
+{
+	SDL_SetCursor(SDL_GetDefaultCursor());
 }
 
 void EngineData::setClipboardText(const std::string txt)
@@ -280,42 +763,6 @@ bool EngineData::getGLError(uint32_t &errorCode) const
 	return errorCode!=GL_NO_ERROR;
 }
 
-uint8_t *EngineData::getCurrentPixBuf() const
-{
-#ifndef ENABLE_GLES2
-	return (uint8_t*)currentPixelBufferOffset;
-#else
-	return currentPixelBufPtr;
-#endif
-	
-}
-
-uint8_t *EngineData::switchCurrentPixBuf(uint32_t w, uint32_t h)
-{
-#ifndef ENABLE_GLES2
-	unsigned int nextBuffer = (currentPixelBuffer + 1)%2;
-	exec_glBindBuffer_GL_PIXEL_UNPACK_BUFFER(pixelBuffers[nextBuffer]);
-	uint8_t* buf=(uint8_t*)exec_glMapBuffer_GL_PIXEL_UNPACK_BUFFER_GL_WRITE_ONLY();
-	if(!buf)
-		return NULL;
-	uint8_t* alignedBuf=(uint8_t*)(uintptr_t((buf+15))&(~0xfL));
-
-	currentPixelBufferOffset=alignedBuf-buf;
-	currentPixelBuffer=nextBuffer;
-	return alignedBuf;
-#else
-	//TODO See if a more elegant way of handling the non-PBO case can be found.
-	//for now, each frame is uploaded one at a time synchronously to the server
-	if(!currentPixelBufPtr)
-		if(posix_memalign((void **)&currentPixelBufPtr, 16, w*h*4)) {
-			LOG(LOG_ERROR, "posix_memalign could not allocate memory");
-			return NULL;
-		}
-	return currentPixelBufPtr;
-#endif
-	
-}
-
 tiny_string EngineData::getGLDriverInfo()
 {
 	tiny_string res = "OpenGL Vendor=";
@@ -329,34 +776,35 @@ tiny_string EngineData::getGLDriverInfo()
 	return res;
 }
 
-void EngineData::resizePixelBuffers(uint32_t w, uint32_t h)
+void EngineData::getGlCompressedTextureFormats()
 {
-	if(w<=pixelBufferWidth && h<=pixelBufferHeight)
+	int32_t numformats;
+	glGetIntegerv(GL_NUM_COMPRESSED_TEXTURE_FORMATS,&numformats);
+	if (numformats == 0)
 		return;
-	
-	//Add enough room to realign to 16
-	exec_glBindBuffer_GL_PIXEL_UNPACK_BUFFER(pixelBuffers[0]);
-	exec_glBufferData_GL_PIXEL_UNPACK_BUFFER_GL_STREAM_DRAW(w*h*4+16, 0);
-	exec_glBindBuffer_GL_PIXEL_UNPACK_BUFFER(pixelBuffers[1]);
-	exec_glBufferData_GL_PIXEL_UNPACK_BUFFER_GL_STREAM_DRAW(w*h*4+16, 0);
-	exec_glBindBuffer_GL_PIXEL_UNPACK_BUFFER(0);
-	pixelBufferWidth=w;
-	pixelBufferHeight=h;
-	if (currentPixelBufPtr) {
-		free(currentPixelBufPtr);
-		currentPixelBufPtr = 0;
+	int32_t* formats = new int32_t[numformats];
+	glGetIntegerv(GL_COMPRESSED_TEXTURE_FORMATS,formats);
+	for (int32_t i = 0; i < numformats; i++)
+	{
+		LOG(LOG_INFO,"OpenGL supported compressed texture format:"<<hex<<formats[i]);
+		if (formats[i] == GL_COMPRESSED_RGBA_S3TC_DXT5_EXT)
+			compressed_texture_formats.push_back(TEXTUREFORMAT_COMPRESSED::DXT5);
 	}
+	delete [] formats;
 }
-
-void EngineData::bindCurrentBuffer()
-{
-	exec_glBindBuffer_GL_PIXEL_UNPACK_BUFFER(pixelBuffers[currentPixelBuffer]);
-}
-
 
 void EngineData::exec_glUniform1f(int location,float v0)
 {
 	glUniform1f(location,v0);
+}
+
+void EngineData::exec_glUniform2f(int location,float v0,float v1)
+{
+	glUniform2f(location,v0,v1);
+}
+void EngineData::exec_glUniform4f(int location,float v0,float v1,float v2,float v3)
+{
+	glUniform4f(location,v0,v1,v2,v3);
 }
 
 void EngineData::exec_glBindTexture_GL_TEXTURE_2D(uint32_t id)
@@ -416,12 +864,6 @@ void EngineData::exec_glUniformMatrix4fv(int32_t location,int32_t count, bool tr
 {
 	glUniformMatrix4fv(location, count, transpose, value);
 }
-void EngineData::exec_glBindBuffer_GL_PIXEL_UNPACK_BUFFER(uint32_t buffer)
-{
-#ifndef ENABLE_GLES2
-	glBindBuffer(GL_PIXEL_UNPACK_BUFFER,buffer);
-#endif
-}
 void EngineData::exec_glBindBuffer_GL_ELEMENT_ARRAY_BUFFER(uint32_t buffer)
 {
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,buffer);
@@ -430,23 +872,11 @@ void EngineData::exec_glBindBuffer_GL_ARRAY_BUFFER(uint32_t buffer)
 {
 	glBindBuffer(GL_ARRAY_BUFFER,buffer);
 }
-uint8_t* EngineData::exec_glMapBuffer_GL_PIXEL_UNPACK_BUFFER_GL_WRITE_ONLY()
-{
-#ifndef ENABLE_GLES2
-	return (uint8_t*)glMapBuffer(GL_PIXEL_UNPACK_BUFFER,GL_WRITE_ONLY);
-#else
-	return NULL;
-#endif
-}
-void EngineData::exec_glUnmapBuffer_GL_PIXEL_UNPACK_BUFFER()
-{
-#ifndef ENABLE_GLES2
-	glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
-#endif
-}
 void EngineData::exec_glEnable_GL_TEXTURE_2D()
 {
+#ifndef ENABLE_GLES2
 	glEnable(GL_TEXTURE_2D);
+#endif
 }
 void EngineData::exec_glEnable_GL_BLEND()
 {
@@ -503,7 +933,9 @@ void EngineData::exec_glEnable_GL_STENCIL_TEST()
 
 void EngineData::exec_glDisable_GL_TEXTURE_2D()
 {
+#ifndef ENABLE_GLES2
 	glDisable(GL_TEXTURE_2D);
+#endif
 }
 void EngineData::exec_glFlush()
 {
@@ -583,7 +1015,10 @@ void EngineData::exec_glGetProgramiv_GL_LINK_STATUS(uint32_t program,int32_t* pa
 void EngineData::exec_glBindFramebuffer_GL_FRAMEBUFFER(uint32_t framebuffer)
 {
 	glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);
-	glFrontFace(GL_CW);
+}
+void EngineData::exec_glFrontFace(bool ccw)
+{
+	glFrontFace(ccw ? GL_CCW : GL_CW);
 }
 
 void EngineData::exec_glBindRenderbuffer_GL_RENDERBUFFER(uint32_t renderbuffer)
@@ -767,13 +1202,6 @@ void EngineData::exec_glViewport(int32_t x,int32_t y,int32_t width,int32_t heigh
 		LOG(LOG_ERROR,"invalid framebuffer:"<<hex<<code);
 }
 
-void EngineData::exec_glBufferData_GL_PIXEL_UNPACK_BUFFER_GL_STREAM_DRAW(int32_t size,const void* data)
-{
-#ifndef ENABLE_GLES2
-	glBufferData(GL_PIXEL_UNPACK_BUFFER,size, data,GL_STREAM_DRAW);
-#endif
-}
-
 void EngineData::exec_glBufferData_GL_ELEMENT_ARRAY_BUFFER_GL_STATIC_DRAW(int32_t size,const void* data)
 {
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER,size, data,GL_STATIC_DRAW);
@@ -799,6 +1227,14 @@ void EngineData::exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MAG_FILTER_GL_LIN
 {
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 }
+void EngineData::exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MIN_FILTER_GL_NEAREST()
+{
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+}
+void EngineData::exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MAG_FILTER_GL_NEAREST()
+{
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+}
 void EngineData::exec_glSetTexParameters(int32_t lodbias, uint32_t dimension, uint32_t filter, uint32_t mipmap, uint32_t wrap)
 {
 	switch (mipmap)
@@ -814,8 +1250,8 @@ void EngineData::exec_glSetTexParameters(int32_t lodbias, uint32_t dimension, ui
 			break;
 	}
 	glTexParameteri(dimension ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter ? GL_LINEAR : GL_NEAREST);
-	glTexParameteri(dimension ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-	glTexParameteri(dimension ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+	glTexParameteri(dimension ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap&1 ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+	glTexParameteri(dimension ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap&2 ? GL_REPEAT : GL_CLAMP_TO_EDGE);
 #ifdef ENABLE_GLES2
 	if (lodbias != 0)
 		LOG(LOG_NOT_IMPLEMENTED,"Context3D: GL_TEXTURE_LOD_BIAS not available for OpenGL ES");
@@ -825,13 +1261,65 @@ void EngineData::exec_glSetTexParameters(int32_t lodbias, uint32_t dimension, ui
 }
 
 
-void EngineData::exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_BYTE(int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels)
+void EngineData::exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_BYTE(int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels, bool hasalpha)
 {
-	glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA8, width, height, border, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+	glTexImage2D(GL_TEXTURE_2D, level, hasalpha ? GL_RGBA8 : GL_RGB, width, height, border, hasalpha ? GL_RGBA : GL_RGB, GL_UNSIGNED_BYTE, pixels);
 }
 void EngineData::exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_INT_8_8_8_8_HOST(int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels)
 {
 	glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA8, width, height, border, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_HOST, pixels);
+}
+void EngineData::exec_glTexImage2D_GL_TEXTURE_2D(int32_t level,int32_t width, int32_t height,int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat,uint32_t compressedImageSize)
+{
+	switch (format)
+	{
+		case TEXTUREFORMAT::BGRA:
+			glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA8, width, height, border, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+			break;
+		case TEXTUREFORMAT::BGR:
+#if ENABLE_GLES2
+			for (int i = 0; i < width*height*3; i += 3) {
+				uint8_t t = ((uint8_t*)pixels)[i];
+				((uint8_t*)pixels)[i] = ((uint8_t*)pixels)[i+2];
+				((uint8_t*)pixels)[i+2] = t;
+			}
+			glTexImage2D(GL_TEXTURE_2D, level, GL_RGB, width, height, border, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+#else
+			glTexImage2D(GL_TEXTURE_2D, level, GL_RGB, width, height, border, GL_BGR, GL_UNSIGNED_BYTE, pixels);
+#endif
+			break;
+		case TEXTUREFORMAT::BGRA_PACKED:
+			glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA8, width, height, border, GL_BGRA, GL_UNSIGNED_SHORT_4_4_4_4, pixels);
+			break;
+		case TEXTUREFORMAT::BGR_PACKED:
+#if ENABLE_GLES2
+			LOG(LOG_NOT_IMPLEMENTED,"textureformat BGR_PACKED for opengl es");
+			glTexImage2D(GL_TEXTURE_2D, level, GL_RGB, width, height, border, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, pixels);
+#else
+			glTexImage2D(GL_TEXTURE_2D, level, GL_RGB, width, height, border, GL_BGR, GL_UNSIGNED_SHORT_5_6_5, pixels);
+#endif
+			break;
+		case TEXTUREFORMAT::COMPRESSED:
+		case TEXTUREFORMAT::COMPRESSED_ALPHA:
+		{
+			switch (compressedformat)
+			{
+				case TEXTUREFORMAT_COMPRESSED::DXT5:
+					glCompressedTexImage2D(GL_TEXTURE_2D, level, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, width, height, border, compressedImageSize, pixels);
+					break;
+				default:
+					LOG(LOG_NOT_IMPLEMENTED,"upload texture in compressed format "<<compressedformat);
+					break;
+			}
+			break;
+		}
+		case TEXTUREFORMAT::RGBA_HALF_FLOAT:
+			LOG(LOG_NOT_IMPLEMENTED,"upload texture in format "<<format);
+			break;
+		default:
+			LOG(LOG_ERROR,"invalid format for upload texture:"<<format);
+			break;
+	}
 }
 
 void EngineData::exec_glDrawBuffer_GL_BACK()
@@ -874,102 +1362,127 @@ void EngineData::exec_glDepthMask(bool flag)
 	glDepthMask(flag);
 }
 
-void EngineData::exec_glPixelStorei_GL_UNPACK_ROW_LENGTH(int32_t param)
+void EngineData::exec_glTexSubImage2D_GL_TEXTURE_2D(int32_t level, int32_t xoffset, int32_t yoffset, int32_t width, int32_t height, const void* pixels)
 {
-	glPixelStorei(GL_UNPACK_ROW_LENGTH,param);
-}
-
-void EngineData::exec_glPixelStorei_GL_UNPACK_SKIP_PIXELS(int32_t param)
-{
-	glPixelStorei(GL_UNPACK_SKIP_PIXELS,param);
-}
-
-void EngineData::exec_glPixelStorei_GL_UNPACK_SKIP_ROWS(int32_t param)
-{
-	glPixelStorei(GL_UNPACK_SKIP_ROWS,param);
-}
-
-void EngineData::exec_glTexSubImage2D_GL_TEXTURE_2D(int32_t level, int32_t xoffset, int32_t yoffset, int32_t width, int32_t height, const void* pixels, uint32_t w, uint32_t curX, uint32_t curY)
-{
-#ifndef ENABLE_GLES2
 	glTexSubImage2D(GL_TEXTURE_2D, level, xoffset, yoffset, width, height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_HOST, pixels);
-#else
-	//We need to copy the texture area to a contiguous memory region first,
-	//as GLES2 does not support UNPACK state (skip pixels, skip rows, row_lenght).
-	uint8_t *gdata = new uint8_t[4*width*height];
-	for(int j=0;j<height;j++) {
-		memcpy(gdata+4*j*width, ((uint8_t *)pixels)+4*w*(j+curY)+4*curX, width*4);
-	}
-	glTexSubImage2D(GL_TEXTURE_2D, level, xoffset, yoffset, width, height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_HOST, gdata);
-	delete[] gdata;
-#endif
 }
 void EngineData::exec_glGetIntegerv_GL_MAX_TEXTURE_SIZE(int32_t* data)
 {
 	glGetIntegerv(GL_MAX_TEXTURE_SIZE,data);
 }
+
 void EngineData::exec_glGenerateMipmap_GL_TEXTURE_2D()
 {
 	glGenerateMipmap(GL_TEXTURE_2D);
 }
 
-void mixer_effect_ffmpeg_cb(int chan, void * stream, int len, void * udata)
+void EngineData::exec_glReadPixels(int32_t width, int32_t height, void *buf)
 {
-	AudioStream *s = (AudioStream*)udata;
-	if (!s)
-		return;
-
-	uint32_t readcount = 0;
-	while (readcount < ((uint32_t)len))
-	{
-		uint32_t ret = s->getDecoder()->copyFrame((int16_t *)(((unsigned char*)stream)+readcount), ((uint32_t)len)-readcount);
-		if (!ret)
-			break;
-		readcount += ret;
-	}
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glReadPixels(0,0,width, height, GL_RGB, GL_UNSIGNED_BYTE, buf);
+}
+void EngineData::exec_glBindTexture_GL_TEXTURE_CUBE_MAP(uint32_t id)
+{
+	glBindTexture(GL_TEXTURE_CUBE_MAP, id);
+}
+void EngineData::exec_glTexParameteri_GL_TEXTURE_CUBE_MAP_GL_TEXTURE_MIN_FILTER_GL_LINEAR()
+{
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+}
+void EngineData::exec_glTexParameteri_GL_TEXTURE_CUBE_MAP_GL_TEXTURE_MAG_FILTER_GL_LINEAR()
+{
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+}
+void EngineData::exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(uint32_t side, int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels)
+{
+	glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X+side, level, GL_RGBA8, width, height, border, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
 }
 
+void EngineData::exec_glScissor(int32_t x, int32_t y, int32_t width, int32_t height)
+{
+	glEnable(GL_SCISSOR_TEST);
+	glScissor(x,y,width,height);
+}
+void EngineData::exec_glDisable_GL_SCISSOR_TEST()
+{
+	glDisable(GL_SCISSOR_TEST);
+}
 
+void EngineData::exec_glColorMask(bool red, bool green, bool blue, bool alpha)
+{
+	glColorMask(red,green,blue,alpha);
+}
+
+void EngineData::exec_glStencilFunc_GL_ALWAYS()
+{
+	glStencilFunc(GL_ALWAYS, 0, 0xff);
+}
+
+void audioCallback(void * userdata, uint8_t * stream, int len)
+{
+	AudioManager* manager = (AudioManager*)userdata;
+
+    SDL_memset(stream, 0, len);
+
+	{
+		Locker l(manager->streamMutex);
+		for (auto it = manager->streams.begin(); it != manager->streams.end(); it++)
+		{
+			AudioStream* s = (*it);
+			if (s->ispaused())
+				continue;
+			s->startMixing();
+			const float fmaxvolume = 1.0f / ((float)SDL_MIX_MAXVOLUME);
+			const float fvolume = (float)s->getVolume()*(float)SDL_MIX_MAXVOLUME;
+			uint32_t readcount = 0;
+			uint8_t* buf = new uint8_t[len];
+			while (readcount < ((uint32_t)len))
+			{
+				uint32_t ret = s->getDecoder()->copyFrameF32((float *)(buf+readcount), ((uint32_t)len)-readcount);
+				if (!ret)
+					break;
+				float* src32=(float *)(buf+readcount);
+				float* dst32=(float *)(stream+readcount);
+				readcount += ret;
+
+				float src1, src2;
+				double dst_sample;
+
+				const double max_audioval = 3.402823466e+38F;
+				const double min_audioval = -3.402823466e+38F;
+				int curpanning=0;
+				while (ret)
+				{
+					src1 = *src32 * fvolume * fmaxvolume * s->getPanning()[curpanning];
+					curpanning = 1-curpanning;
+					src2 = *dst32;
+					src32++;
+					dst_sample = ((double)src1) + ((double)src2);
+					if (dst_sample > max_audioval) {
+						dst_sample = max_audioval;
+					} else if (dst_sample < min_audioval) {
+						dst_sample = min_audioval;
+					}
+					*(dst32++) = (float)dst_sample;
+					ret-=4;
+				}
+			}
+			delete[] buf;
+		}
+    }
+}
 
 int EngineData::audio_StreamInit(AudioStream* s)
 {
-	int mixer_channel = -1;
-
-	uint32_t len = LIGHTSPARK_AUDIO_BUFFERSIZE;
-
-	uint8_t *buf = new uint8_t[len];
-	memset(buf,0,len);
-	Mix_Chunk* chunk = Mix_QuickLoad_RAW(buf, len);
-	delete[] buf;
-
-
-	mixer_channel = Mix_PlayChannel(-1, chunk, -1);
-	Mix_RegisterEffect(mixer_channel, mixer_effect_ffmpeg_cb, NULL, s);
-	Mix_Resume(mixer_channel);
-	return mixer_channel;
+	return 0;
 }
 
 void EngineData::audio_StreamPause(int channel, bool dopause)
 {
-	if (channel == -1)
-		return;
-	if(dopause)
-		Mix_Pause(channel);
-	else
-		Mix_Resume(channel);
-}
-
-void EngineData::audio_StreamSetVolume(int channel, double volume)
-{
-	int curvolume = SDL_MIX_MAXVOLUME * volume;
-	if (channel != -1)
-		Mix_Volume(channel, curvolume);
 }
 
 void EngineData::audio_StreamDeinit(int channel)
 {
-	if (channel != -1)
-		Mix_HaltChannel(channel);
 }
 
 bool EngineData::audio_ManagerInit()
@@ -982,14 +1495,30 @@ bool EngineData::audio_ManagerInit()
 	return sdl_available;
 }
 
-void EngineData::audio_ManagerCloseMixer()
+void EngineData::audio_ManagerCloseMixer(AudioManager* manager)
 {
-	Mix_CloseAudio();
+	if (manager->device)
+	{
+		SDL_PauseAudioDevice(manager->device, 1);
+		SDL_CloseAudioDevice(manager->device);
+		manager->device=0;
+	}
 }
 
-bool EngineData::audio_ManagerOpenMixer()
+bool EngineData::audio_ManagerOpenMixer(AudioManager* manager)
 {
-	return Mix_OpenAudio (audio_getSampleRate(), AUDIO_S16, 2, LIGHTSPARK_AUDIO_BUFFERSIZE) >= 0;
+	SDL_AudioSpec spec;
+	spec.freq=audio_getSampleRate();
+	spec.format=AUDIO_F32SYS;
+	spec.channels = 2;
+	spec.samples = LIGHTSPARK_AUDIO_BUFFERSIZE/2;
+	spec.callback = audioCallback;
+	spec.userdata = manager;
+
+	manager->device = SDL_OpenAudioDevice(nullptr, 0, &spec, nullptr, 0);
+	if (manager->device != 0)
+		SDL_PauseAudioDevice(manager->device, 0);
+	return manager->device!=0;
 }
 
 void EngineData::audio_ManagerDeinit()
@@ -998,13 +1527,41 @@ void EngineData::audio_ManagerDeinit()
 	if (!SDL_WasInit(0))
 		SDL_Quit ();
 }
+bool EngineData::audio_useFloatSampleFormat()
+{
+	return true;
+}
 
 int EngineData::audio_getSampleRate()
 {
-	return MIX_DEFAULT_FREQUENCY;
+	return 44100;
+}
+IDrawable *EngineData::getTextRenderDrawable(const TextData &_textData, const MATRIX &_m, int32_t _x, int32_t _y, int32_t _w, int32_t _h, int32_t _rx, int32_t _ry, int32_t _rw, int32_t _rh, float _r, float _xs, float _ys, bool _im, _NR<DisplayObject> _mask, float _s, float _a, const std::vector<IDrawable::MaskData> &_ms, float _redMultiplier, float _greenMultiplier, float _blueMultiplier, float _alphaMultiplier, float _redOffset, float _greenOffset, float _blueOffset, float _alphaOffset, SMOOTH_MODE smoothing)
+{
+	if (hasExternalFontRenderer)
+		return new externalFontRenderer(_textData,this, _x, _y, _w, _h, _rx,_ry,_rw,_rh,_r,_xs,_ys,_im, _mask, _a, _ms,
+										_redMultiplier,_greenMultiplier,_blueMultiplier,_alphaMultiplier,
+										_redOffset,_greenOffset,_blueOffset,_alphaOffset,
+										smoothing,_m);
+	return nullptr;
 }
 
-IDrawable *EngineData::getTextRenderDrawable(const TextData &_textData, const MATRIX &_m, int32_t _x, int32_t _y, int32_t _w, int32_t _h, float _s, float _a, const std::vector<IDrawable::MaskData> &_ms,bool smoothing)
+externalFontRenderer::externalFontRenderer(const TextData &_textData, EngineData *engine, int32_t x, int32_t y, int32_t w, int32_t h, int32_t rx, int32_t ry, int32_t rw, int32_t rh, float r, float xs, float ys, bool im, _NR<DisplayObject> _mask, float a, const std::vector<IDrawable::MaskData> &m,
+										   float _redMultiplier,float _greenMultiplier,float _blueMultiplier,float _alphaMultiplier,
+										   float _redOffset,float _greenOffset,float _blueOffset,float _alphaOffset,
+										   SMOOTH_MODE smoothing, const MATRIX &_m)
+	: IDrawable(w, h, x, y,rw,rh,rx,ry,r,xs,ys, 1, 1, im, _mask, a, m,
+				_redMultiplier,_greenMultiplier,_blueMultiplier,_alphaMultiplier,
+				_redOffset,_greenOffset,_blueOffset,_alphaOffset,smoothing,_m),m_engine(engine)
 {
-	return NULL;
+	externalressource = engine->setupFontRenderer(_textData,a,smoothing);
+}
+
+uint8_t *externalFontRenderer::getPixelBuffer(bool *isBufferOwner, uint32_t* bufsize)
+{
+	if (isBufferOwner)
+		*isBufferOwner = true;
+	if (bufsize)
+		*bufsize=width*height*4;
+	return m_engine->getFontPixelBuffer(externalressource,this->width,this->height);
 }

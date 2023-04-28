@@ -23,12 +23,12 @@
 using namespace std;
 using namespace lightspark;
 
-RegExp::RegExp(Class_base* c):ASObject(c,T_OBJECT,SUBTYPE_REGEXP),dotall(false),global(false),ignoreCase(false),
+RegExp::RegExp(ASWorker* wrk, Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_REGEXP),dotall(false),global(false),ignoreCase(false),
 	extended(false),multiline(false),lastIndex(0)
 {
 }
 
-RegExp::RegExp(Class_base* c, const tiny_string& _re):ASObject(c,T_OBJECT,SUBTYPE_REGEXP),dotall(false),global(false),ignoreCase(false),
+RegExp::RegExp(ASWorker* wrk,Class_base* c, const tiny_string& _re):ASObject(wrk,c,T_OBJECT,SUBTYPE_REGEXP),dotall(false),global(false),ignoreCase(false),
 	extended(false),multiline(false),lastIndex(0),source(_re)
 {
 }
@@ -42,10 +42,10 @@ void RegExp::sinit(Class_base* c)
 	c->setDeclaredMethodByQName("test",AS3,Class<IFunction>::getFunction(c->getSystemState(),test),NORMAL_METHOD,true);
 	c->setDeclaredMethodByQName("toString","",Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
 	c->prototype->setVariableByQName("toString","",Class<IFunction>::getFunction(c->getSystemState(),_toString),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("exec","",Class<IFunction>::getFunction(c->getSystemState(),exec),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("exec",AS3,Class<IFunction>::getFunction(c->getSystemState(),exec),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("test","",Class<IFunction>::getFunction(c->getSystemState(),test),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("test",AS3,Class<IFunction>::getFunction(c->getSystemState(),test),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("exec","",Class<IFunction>::getFunction(c->getSystemState(),exec),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("exec",AS3,Class<IFunction>::getFunction(c->getSystemState(),exec),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("test","",Class<IFunction>::getFunction(c->getSystemState(),test),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("test",AS3,Class<IFunction>::getFunction(c->getSystemState(),test),CONSTANT_TRAIT);
 	REGISTER_GETTER(c,dotall);
 	REGISTER_GETTER(c,global);
 	REGISTER_GETTER(c,ignoreCase);
@@ -61,12 +61,15 @@ void RegExp::buildTraits(ASObject* o)
 
 ASFUNCTIONBODY_ATOM(RegExp,_constructor)
 {
-	RegExp* th=obj.as<RegExp>();
-	if(argslen > 0 && args[0].is<RegExp>())
+	RegExp* th=asAtomHandler::as<RegExp>(obj);
+	if(argslen > 0 && asAtomHandler::is<RegExp>(args[0]))
 	{
-		if(argslen > 1 && !args[1].is<Undefined>())
-			throwError<TypeError>(kRegExpFlagsArgumentError);
-		RegExp *src=args[0].as<RegExp>();
+		if(argslen > 1 && !asAtomHandler::is<Undefined>(args[1]))
+		{
+			createError<TypeError>(wrk,kRegExpFlagsArgumentError);
+			return;
+		}
+		RegExp *src=asAtomHandler::as<RegExp>(args[0]);
 		th->source=src->source;
 		th->dotall=src->dotall;
 		th->global=src->global;
@@ -76,10 +79,10 @@ ASFUNCTIONBODY_ATOM(RegExp,_constructor)
 		return;
 	}
 	else if(argslen > 0)
-		th->source=args[0].toString(sys).raw_buf();
-	if(argslen>1 && !args[1].is<Undefined>())
+		th->source=asAtomHandler::toString(args[0],wrk).raw_buf();
+	if(argslen>1 && !asAtomHandler::is<Undefined>(args[1]))
 	{
-		const tiny_string& flags=args[1].toString(sys);
+		const tiny_string& flags=asAtomHandler::toString(args[1],wrk);
 		for(auto i=flags.begin();i!=flags.end();++i)
 		{
 			switch(*i)
@@ -113,9 +116,9 @@ ASFUNCTIONBODY_ATOM(RegExp,generator)
 {
 	if(argslen == 0)
 	{
-		ret = asAtom::fromObject(Class<RegExp>::getInstanceS(getSys(),""));
+		ret = asAtomHandler::fromObject(Class<RegExp>::getInstanceS(wrk,""));
 	}
-	else if(args[0].is<RegExp>())
+	else if(asAtomHandler::is<RegExp>(args[0]))
 	{
 		ASATOM_INCREF(args[0]);
 		ret = args[0];
@@ -124,33 +127,33 @@ ASFUNCTIONBODY_ATOM(RegExp,generator)
 	{
 		if (argslen > 1)
 			LOG(LOG_NOT_IMPLEMENTED, "RegExp generator: flags argument not implemented");
-		ret = asAtom::fromObject(Class<RegExp>::getInstanceS(sys,args[0].toString(sys)));
+		ret = asAtomHandler::fromObject(Class<RegExp>::getInstanceS(wrk,asAtomHandler::toString(args[0],wrk)));
 	}
 }
 
-ASFUNCTIONBODY_GETTER(RegExp, dotall);
-ASFUNCTIONBODY_GETTER(RegExp, global);
-ASFUNCTIONBODY_GETTER(RegExp, ignoreCase);
-ASFUNCTIONBODY_GETTER(RegExp, extended);
-ASFUNCTIONBODY_GETTER(RegExp, multiline);
-ASFUNCTIONBODY_GETTER_SETTER(RegExp, lastIndex);
-ASFUNCTIONBODY_GETTER(RegExp, source);
+ASFUNCTIONBODY_GETTER(RegExp, dotall)
+ASFUNCTIONBODY_GETTER(RegExp, global)
+ASFUNCTIONBODY_GETTER(RegExp, ignoreCase)
+ASFUNCTIONBODY_GETTER(RegExp, extended)
+ASFUNCTIONBODY_GETTER(RegExp, multiline)
+ASFUNCTIONBODY_GETTER_SETTER(RegExp, lastIndex)
+ASFUNCTIONBODY_GETTER(RegExp, source)
 
 ASFUNCTIONBODY_ATOM(RegExp,exec)
 {
-	RegExp* th=static_cast<RegExp*>(obj.getObject());
+	RegExp* th=static_cast<RegExp*>(asAtomHandler::getObject(obj));
 	assert_and_throw(argslen==1);
-	const tiny_string& arg0=args[0].toString(sys);
-	ret = asAtom::fromObject(th->match(arg0));
+	const tiny_string& arg0=asAtomHandler::toString(args[0],wrk);
+	ret = asAtomHandler::fromObject(th->match(arg0));
 }
 
 ASObject *RegExp::match(const tiny_string& str)
 {
-	pcre* pcreRE = compile();
+	pcre* pcreRE = compile(!str.isSinglebyte());
 	if (!pcreRE)
 		return getSystemState()->getNullRef();
 	int capturingGroups;
-	int infoOk=pcre_fullinfo(pcreRE, NULL, PCRE_INFO_CAPTURECOUNT, &capturingGroups);
+	int infoOk=pcre_fullinfo(pcreRE, nullptr, PCRE_INFO_CAPTURECOUNT, &capturingGroups);
 	if(infoOk!=0)
 	{
 		pcre_free(pcreRE);
@@ -158,7 +161,7 @@ ASObject *RegExp::match(const tiny_string& str)
 	}
 	//Get information about named capturing groups
 	int namedGroups;
-	infoOk=pcre_fullinfo(pcreRE, NULL, PCRE_INFO_NAMECOUNT, &namedGroups);
+	infoOk=pcre_fullinfo(pcreRE, nullptr, PCRE_INFO_NAMECOUNT, &namedGroups);
 	if(infoOk!=0)
 	{
 		pcre_free(pcreRE);
@@ -166,7 +169,7 @@ ASObject *RegExp::match(const tiny_string& str)
 	}
 	//Get information about the size of named entries
 	int namedSize;
-	infoOk=pcre_fullinfo(pcreRE, NULL, PCRE_INFO_NAMEENTRYSIZE, &namedSize);
+	infoOk=pcre_fullinfo(pcreRE, nullptr, PCRE_INFO_NAMEENTRYSIZE, &namedSize);
 	if(infoOk!=0)
 	{
 		pcre_free(pcreRE);
@@ -178,7 +181,7 @@ ASObject *RegExp::match(const tiny_string& str)
 		char name[0];
 	};
 	char* entries;
-	infoOk=pcre_fullinfo(pcreRE, NULL, PCRE_INFO_NAMETABLE, &entries);
+	infoOk=pcre_fullinfo(pcreRE, nullptr, PCRE_INFO_NAMETABLE, &entries);
 	if(infoOk!=0)
 	{
 		pcre_free(pcreRE);
@@ -186,11 +189,18 @@ ASObject *RegExp::match(const tiny_string& str)
 		return getSystemState()->getNullRef();
 	}
 	pcre_extra extra;
-	extra.match_limit_recursion=200;
+	extra.match_limit_recursion=500;
 	extra.flags = PCRE_EXTRA_MATCH_LIMIT_RECURSION;
 	int ovector[(capturingGroups+1)*3];
 	int offset=global?lastIndex:0;
-	int rc=pcre_exec(pcreRE,capturingGroups > 200 ? &extra : NULL, str.raw_buf(), str.numBytes(), offset, 0, ovector, (capturingGroups+1)*3);
+	if(offset<0)
+	{
+		//beyond last match
+		pcre_free(pcreRE);
+		lastIndex=0;
+		return getSystemState()->getNullRef();
+	}
+	int rc=pcre_exec(pcreRE,capturingGroups > 500 ? &extra : nullptr, str.raw_buf(), str.numBytes(), offset, PCRE_NO_UTF8_CHECK, ovector, (capturingGroups+1)*3);
 	if(rc<0)
 	{
 		//No matches or error
@@ -198,22 +208,22 @@ ASObject *RegExp::match(const tiny_string& str)
 		lastIndex=0;
 		return getSystemState()->getNullRef();
 	}
-	Array* a=Class<Array>::getInstanceSNoArgs(getSystemState());
+	Array* a=Class<Array>::getInstanceSNoArgs(getInstanceWorker());
 	//Push the whole result and the captured strings
 	for(int i=0;i<capturingGroups+1;i++)
 	{
 		if(ovector[i*2] >= 0)
-			a->push(asAtom::fromObject(abstract_s(getSystemState(), str.substr_bytes(ovector[i*2],ovector[i*2+1]-ovector[i*2]) )));
+			a->push(asAtomHandler::fromObject(abstract_s(getInstanceWorker(), str.substr_bytes(ovector[i*2],ovector[i*2+1]-ovector[i*2]) )));
 		else
-			a->push(asAtom::fromObject(getSystemState()->getUndefinedRef()));
+			a->push(asAtomHandler::fromObject(getSystemState()->getUndefinedRef()));
 	}
-	a->setVariableByQName("input","",abstract_s(getSystemState(),str),DYNAMIC_TRAIT);
+	a->setVariableByQName("input","",abstract_s(getInstanceWorker(),str),DYNAMIC_TRAIT);
 
 	// pcre_exec returns byte position, so we have to convert it to character position 
 	tiny_string tmp = str.substr_bytes(0, ovector[0]);
 	int index = tmp.numChars();
 
-	a->setVariableByQName("index","",abstract_i(getSystemState(),index),DYNAMIC_TRAIT);
+	a->setVariableAtomByQName("index",nsNameAndKind(),asAtomHandler::fromInt(index),DYNAMIC_TRAIT);
 	for(int i=0;i<namedGroups;i++)
 	{
 		nameEntry* entry=reinterpret_cast<nameEntry*>(entries);
@@ -230,18 +240,20 @@ ASObject *RegExp::match(const tiny_string& str)
 
 ASFUNCTIONBODY_ATOM(RegExp,test)
 {
-	if (!obj.is<RegExp>())
+	if (!asAtomHandler::is<RegExp>(obj))
 	{
-		ret.setBool(true);
+		asAtomHandler::setBool(ret,true);
 		return;
 	}
-	RegExp* th=obj.as<RegExp>();
+	RegExp* th=asAtomHandler::as<RegExp>(obj);
 
-	const tiny_string& arg0 = args[0].toString(sys);
-	pcre* pcreRE = th->compile();
+	const tiny_string& arg0 = asAtomHandler::toString(args[0],wrk);
+	if (wrk->currentCallContext->exceptionthrown)
+		return;
+	pcre* pcreRE = th->compile(!arg0.isSinglebyte());
 	if (!pcreRE)
 	{
-		ret.setNull();
+		asAtomHandler::setNull(ret);
 		return;
 	}
 	int capturingGroups;
@@ -249,7 +261,7 @@ ASFUNCTIONBODY_ATOM(RegExp,test)
 	if(infoOk!=0)
 	{
 		pcre_free(pcreRE);
-		ret.setNull();
+		asAtomHandler::setNull(ret);
 		return;
 	}
 	int ovector[(capturingGroups+1)*3];
@@ -258,23 +270,26 @@ ASFUNCTIONBODY_ATOM(RegExp,test)
 	pcre_extra extra;
 	extra.match_limit_recursion=200;
 	extra.flags = PCRE_EXTRA_MATCH_LIMIT_RECURSION;
-	int rc = pcre_exec(pcreRE, &extra, arg0.raw_buf(), arg0.numBytes(), offset, 0, ovector, (capturingGroups+1)*3);
+	int rc = pcre_exec(pcreRE, &extra, arg0.raw_buf(), arg0.numBytes(), offset, PCRE_NO_UTF8_CHECK, ovector, (capturingGroups+1)*3);
 	bool res = (rc >= 0);
 	pcre_free(pcreRE);
-	ret.setBool(res);
+	asAtomHandler::setBool(ret,res);
 }
 
 ASFUNCTIONBODY_ATOM(RegExp,_toString)
 {
-	if(Class<RegExp>::getClass(sys)->prototype->getObj() == obj.getObject())
+	if(Class<RegExp>::getClass(wrk->getSystemState())->prototype->getObj() == asAtomHandler::getObject(obj))
 	{
-		ret = asAtom::fromString(sys,"/(?:)/");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"/(?:)/");
 		return;
 	}
-	if(!obj.is<RegExp>())
-		throw Class<TypeError>::getInstanceS(sys,"RegExp.toString is not generic");
+	if(!asAtomHandler::is<RegExp>(obj))
+	{
+		createError<TypeError>(wrk,0,"RegExp.toString is not generic");
+		return;
+	}
 
-	RegExp* th=obj.as<RegExp>();
+	RegExp* th=asAtomHandler::as<RegExp>(obj);
 	tiny_string res;
 	res = "/";
 	res += th->source;
@@ -287,12 +302,14 @@ ASFUNCTIONBODY_ATOM(RegExp,_toString)
 		res += "m";
 	if(th->dotall)
 		res += "s";
-	ret = asAtom::fromObject(abstract_s(sys,res));
+	ret = asAtomHandler::fromObject(abstract_s(wrk,res));
 }
 
-pcre* RegExp::compile()
+pcre* RegExp::compile(bool isutf8)
 {
-	int options = PCRE_UTF8|PCRE_NEWLINE_ANY|PCRE_JAVASCRIPT_COMPAT;
+	int options = PCRE_NEWLINE_ANY | PCRE_NO_UTF8_CHECK;
+	if(isutf8)
+		options |= PCRE_UTF8;
 	if(ignoreCase)
 		options |= PCRE_CASELESS;
 	if(extended)
@@ -305,16 +322,16 @@ pcre* RegExp::compile()
 	const char * error;
 	int errorOffset;
 	int errorcode;
-	pcre* pcreRE=pcre_compile2(source.raw_buf(), options,&errorcode,  &error, &errorOffset,NULL);
+	pcre* pcreRE=pcre_compile2(source.raw_buf(), options,&errorcode,  &error, &errorOffset,nullptr);
 	if(error)
 	{
-		if (errorcode == 64) // invalid pattern in javascript compatibility mode (we try again in normal mode to match flash behaviour)
-		{
-			options &= ~PCRE_JAVASCRIPT_COMPAT;
-			pcreRE=pcre_compile2(source.raw_buf(), options,&errorcode,  &error, &errorOffset,NULL);
-		}
+//		if (errorcode == 64) // invalid pattern in javascript compatibility mode (we try again in normal mode to match flash behaviour)
+//		{
+//			options &= ~PCRE_JAVASCRIPT_COMPAT;
+//			pcreRE=pcre_compile2(source.raw_buf(), options,&errorcode,  &error, &errorOffset,NULL);
+//		}
 		if (error)
-			return NULL;
+			return nullptr;
 	}
 	return pcreRE;
 }

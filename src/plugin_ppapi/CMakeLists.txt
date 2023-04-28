@@ -31,14 +31,14 @@ TARGET_LINK_LIBRARIES(pepflashplayer spark)
 
 #With STATICDEPS, all deps are compiled into spark
 IF(NOT STATICDEPS)
-TARGET_LINK_LIBRARIES(pepflashplayer spark ${X11_LIBRARIES} ${GLIBMM_LIBRARIES}) 
+TARGET_LINK_LIBRARIES(pepflashplayer spark)
 ENDIF()
 
 IF(WIN32)
   TARGET_LINK_LIBRARIES(pepflashplayer -lopengl32 spark)
 ENDIF()
 
-PACK_LIBRARY(pepflashplayer)
+PACK_LIBRARY(pepflashplayer $<TARGET_FILE:pepflashplayer>)
 INSTALL(TARGETS pepflashplayer DESTINATION ${PPAPI_PLUGIN_DIRECTORY})
 INSTALL(FILES manifest.json DESTINATION ${PPAPI_PLUGIN_DIRECTORY})
 

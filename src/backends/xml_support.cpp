@@ -28,36 +28,43 @@ using namespace std;
 
 const pugi::xml_node XMLBase::buildFromString(const tiny_string& str,
 										unsigned int xmlparsemode,
-										const tiny_string& default_ns)
+										const tiny_string& default_ns,
+										pugi::xml_parse_result* parseresult)
 {
 	tiny_string buf = quirkEncodeNull(removeWhitespace(str));
 	if (buf.numBytes() > 0 && buf.charAt(0) == '<')
 	{
 		pugi::xml_parse_result res = xmldoc.load_buffer((void*)buf.raw_buf(),buf.numBytes(),xmlparsemode);
+		if (parseresult)
+		{
+			// error handling is done in the caller
+			*parseresult = res;
+			return xmldoc.root();
+		}
 		switch (res.status)
 		{
 			case pugi::status_ok:
 				break;
 			case pugi::status_end_element_mismatch:
-				throwError<TypeError>(kXMLUnterminatedElementTag);
+				createError<TypeError>(getWorker(),kXMLUnterminatedElementTag);
 				break;
 			case pugi::status_unrecognized_tag:
-				throwError<TypeError>(kXMLMalformedElement);
+				createError<TypeError>(getWorker(),kXMLMalformedElement);
 				break;
 			case pugi::status_bad_pi:
-				throwError<TypeError>(kXMLUnterminatedXMLDecl);
+				createError<TypeError>(getWorker(),kXMLUnterminatedXMLDecl);
 				break;
 			case pugi::status_bad_attribute:
-				throwError<TypeError>(kXMLUnterminatedAttribute);
+				createError<TypeError>(getWorker(),kXMLUnterminatedAttribute);
 				break;
 			case pugi::status_bad_cdata:
-				throwError<TypeError>(kXMLUnterminatedCData);
+				createError<TypeError>(getWorker(),kXMLUnterminatedCData);
 				break;
 			case pugi::status_bad_doctype:
-				throwError<TypeError>(kXMLUnterminatedDocTypeDecl);
+				createError<TypeError>(getWorker(),kXMLUnterminatedDocTypeDecl);
 				break;
 			case pugi::status_bad_comment:
-				throwError<TypeError>(kXMLUnterminatedComment);
+				createError<TypeError>(getWorker(),kXMLUnterminatedComment);
 				break;
 			default:
 				LOG(LOG_ERROR,"xml parser error:"<<buf<<" "<<res.status<<" "<<res.description());

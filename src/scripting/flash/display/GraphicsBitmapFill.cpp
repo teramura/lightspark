@@ -26,8 +26,8 @@
 
 using namespace lightspark;
 
-GraphicsBitmapFill::GraphicsBitmapFill(Class_base* c):
-	ASObject(c), repeat(true), smooth(false)
+GraphicsBitmapFill::GraphicsBitmapFill(ASWorker* wrk, Class_base* c):
+	ASObject(wrk,c), repeat(true), smooth(false)
 {
 }
 
@@ -47,22 +47,24 @@ void GraphicsBitmapFill::sinit(Class_base* c)
 
 ASFUNCTIONBODY_ATOM(GraphicsBitmapFill,_constructor)
 {
-	GraphicsBitmapFill* th = obj.as<GraphicsBitmapFill>();
-	ARG_UNPACK_ATOM (th->bitmapData, NullRef) (th->matrix, NullRef) (th->repeat, true) (th->smooth, false);
+	GraphicsBitmapFill* th = asAtomHandler::as<GraphicsBitmapFill>(obj);
+	ARG_CHECK(ARG_UNPACK(th->bitmapData, NullRef) (th->matrix, NullRef) (th->repeat, true) (th->smooth, false));
 }
 
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsBitmapFill, bitmapData);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsBitmapFill, matrix);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsBitmapFill, repeat);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsBitmapFill, smooth);
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsBitmapFill, bitmapData)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsBitmapFill, matrix)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsBitmapFill, repeat)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsBitmapFill, smooth)
 
 FILLSTYLE GraphicsBitmapFill::toFillStyle()
 {
 	return Graphics::createBitmapFill(bitmapData, matrix, repeat, smooth);
 }
 
-void GraphicsBitmapFill::appendToTokens(tokensVector& tokens)
+void GraphicsBitmapFill::appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics)
 {
-
-	tokens.emplace_back(GeomToken(SET_FILL, toFillStyle()));
+	FILLSTYLE style = toFillStyle();
+	FILLSTYLE& styleref = graphics->addFillStyle(style);
+	tokens.emplace_back(GeomToken(SET_FILL).uval);
+	tokens.emplace_back(GeomToken(styleref).uval);
 }

@@ -27,6 +27,11 @@
 #include "scripting/class.h"
 #include "scripting/toplevel/Array.h"
 #include "scripting/toplevel/ASString.h"
+#include "scripting/toplevel/Number.h"
+#include "scripting/toplevel/Boolean.h"
+#include "scripting/toplevel/Integer.h"
+#include "scripting/toplevel/UInteger.h"
+#include "scripting/flash/system/flashsystem.h"
 
 #include "backends/extscriptobject.h"
 
@@ -212,22 +217,22 @@ ExtVariant::ExtVariant(std::map<const ASObject*, std::unique_ptr<ExtObject>>& ob
 			objectValue = new ExtObject();
 			bool allNumericProperties = true;
 
-			objectsMap[other.getPtr()] = move(unique_ptr<ExtObject>(objectValue));
+			objectsMap[other.getPtr()] = unique_ptr<ExtObject>(objectValue);
 
 			unsigned int index = 0;
 			while((index=other->nextNameIndex(index))!=0)
 			{
-				asAtom nextName;
+				asAtom nextName=asAtomHandler::invalidAtom;
 				other->nextName(nextName,index);
-				asAtom nextValue;
+				asAtom nextValue=asAtomHandler::invalidAtom;
 				other->nextValue(nextValue,index);
 
-				if(nextName.type == T_INTEGER)
-					objectValue->setProperty(nextName.toInt(), ExtVariant(objectsMap, _MR(nextValue.toObject(getSys()))));
+				if(asAtomHandler::isInteger(nextName))
+					objectValue->setProperty(asAtomHandler::toInt(nextName), ExtVariant(objectsMap, _MR(asAtomHandler::toObject(nextValue,other->getInstanceWorker()))));
 				else
 				{
 					allNumericProperties = false;
-					objectValue->setProperty(nextName.toString(other->getSystemState()).raw_buf(), ExtVariant(objectsMap, _MR(nextValue.toObject(getSys()))));
+					objectValue->setProperty(asAtomHandler::toString(nextName,other->getInstanceWorker()).raw_buf(), ExtVariant(objectsMap, _MR(asAtomHandler::toObject(nextValue,other->getInstanceWorker()))));
 				}
 			}
 
@@ -248,23 +253,23 @@ ExtVariant::ExtVariant(std::map<const ASObject*, std::unique_ptr<ExtObject>>& ob
 }
 
 // Conversion to ASObject
-ASObject* ExtVariant::getASObject(SystemState *sys, std::map<const lightspark::ExtObject*, lightspark::ASObject*>& objectsMap) const
+ASObject* ExtVariant::getASObject(ASWorker *wrk, std::map<const lightspark::ExtObject*, lightspark::ASObject*>& objectsMap) const
 {
 	//don't create ASObjects from cache, as we are not in the vm thread
 	ASObject* asobj;
 	switch(getType())
 	{
 	case EV_STRING:
-		asobj = Class<ASString>::getInstanceS(sys,getString().c_str());
+		asobj = Class<ASString>::getInstanceS(wrk,getString().c_str());
 		break;
 	case EV_INT32:
-		asobj = Class<Integer>::getInstanceS(sys,getInt());
+		asobj = Class<Integer>::getInstanceS(wrk,getInt());
 		break;
 	case EV_DOUBLE:
-		asobj = Class<Number>::getInstanceS(sys,getDouble());
+		asobj = Class<Number>::getInstanceS(wrk,getDouble());
 		break;
 	case EV_BOOLEAN:
-		asobj = Class<Boolean>::getInstanceS(sys,getBoolean());
+		asobj = Class<Boolean>::getInstanceS(wrk,getBoolean());
 		break;
 	case EV_OBJECT:
 		{
@@ -282,7 +287,7 @@ ASObject* ExtVariant::getASObject(SystemState *sys, std::map<const lightspark::E
 			// We are converting an array, so lets set indexes
 			if(objValue->getType() == ExtObject::EO_ARRAY)
 			{
-				asobj = Class<Array>::getInstanceSNoArgs(sys);
+				asobj = Class<Array>::getInstanceSNoArgs(wrk);
 				objectsMap[objValue] = asobj;
 
 				count = objValue->getLength();
@@ -290,14 +295,14 @@ ASObject* ExtVariant::getASObject(SystemState *sys, std::map<const lightspark::E
 				for(uint32_t i = 0; i < count; i++)
 				{
 					const ExtVariant& property = objValue->getProperty(i);
-					asAtom v = asAtom::fromObject(property.getASObject(sys,objectsMap));
+					asAtom v = asAtomHandler::fromObject(property.getASObject(wrk,objectsMap));
 					static_cast<Array*>(asobj)->set(i, v);
 				}
 			}
 			// We are converting an object, so lets set variables
 			else
 			{
-				asobj = Class<ASObject>::getInstanceS(sys);
+				asobj = Class<ASObject>::getInstanceS(wrk);
 				objectsMap[objValue] = asobj;
 			
 				ExtIdentifier** ids;
@@ -312,19 +317,19 @@ ASObject* ExtVariant::getASObject(SystemState *sys, std::map<const lightspark::E
 						if(ids[i]->getType() == ExtIdentifier::EI_STRING)
 						{
 							asobj->setVariableByQName(ids[i]->getString(), "",
-									property.getASObject(sys,objectsMap), DYNAMIC_TRAIT);
+									property.getASObject(wrk,objectsMap), DYNAMIC_TRAIT);
 						}
 						else
 						{
 							conv.str("");
 							conv << ids[i]->getInt();
-							if(asobj->hasPropertyByMultiname(QName(sys->getUniqueStringId(conv.str()),BUILTIN_STRINGS::EMPTY),true,true))
+							if(asobj->hasPropertyByMultiname(QName(wrk->getSystemState()->getUniqueStringId(conv.str()),BUILTIN_STRINGS::EMPTY),true,true,wrk))
 							{
 								LOG(LOG_NOT_IMPLEMENTED,"ExtVariant::getASObject: duplicate property " << conv.str());
 								continue;
 							}
 							asobj->setVariableByQName(conv.str().c_str(), "",
-									property.getASObject(sys,objectsMap), DYNAMIC_TRAIT);
+									property.getASObject(wrk,objectsMap), DYNAMIC_TRAIT);
 						}
 						delete ids[i];
 					}
@@ -334,18 +339,18 @@ ASObject* ExtVariant::getASObject(SystemState *sys, std::map<const lightspark::E
 		}
 		break;
 	case EV_NULL:
-		asobj = sys->getNullRef();
+		asobj = wrk->getSystemState()->getNullRef();
 		break;
 	case EV_VOID:
 	default:
-		asobj = sys->getUndefinedRef();
+		asobj = wrk->getSystemState()->getUndefinedRef();
 		break;
 	}
 	return asobj;
 }
 
 /* -- ExtASCallback -- */
-ExtASCallback::ExtASCallback(asAtom _func):funcWasCalled(false), func(_func), result(NULL), asArgs(NULL)
+ExtASCallback::ExtASCallback(asAtom _func):funcWasCalled(false), func(_func), result(nullptr), asArgs(nullptr)
 {
 	ASATOM_INCREF(func);
 }
@@ -375,41 +380,41 @@ void ExtASCallback::call(const ExtScriptObject& so, const ExtIdentifier& id,
 	asArgs = new ASObject*[argc];
 	std::map<const ExtObject*, ASObject*> objectsMap;
 	for(uint32_t i = 0; i < argc; i++)
-		asArgs[i] = args[i]->getASObject(func.getObject()->getSystemState(),objectsMap);
+		asArgs[i] = args[i]->getASObject(asAtomHandler::getObject(func)->getInstanceWorker(),objectsMap);
 
 	if(!synchronous)
 	{
 		ASATOM_INCREF(func);
-		funcEvent = _MR(new (func.getObject()->getSystemState()->unaccountedMemory) ExternalCallEvent(func, asArgs, argc, &result, &exceptionThrown, &exception));
+		funcEvent = _MR(new (asAtomHandler::getObject(func)->getSystemState()->unaccountedMemory) ExternalCallEvent(func, asArgs, argc, &result, &exceptionThrown, &exception));
 		// Add the callback function event to the top of the VM event queue
-		funcWasCalled=getVm(func.getObject()->getSystemState())->prependEvent(NullRef,funcEvent);
+		funcWasCalled=getVm(asAtomHandler::getObject(func)->getSystemState())->prependEvent(NullRef,funcEvent);
 		if(!funcWasCalled)
 		{
 			LOG(LOG_ERROR,"funcEvent not called");
 			funcEvent = NullRef;
 		}
 		else
-			func.getObject()->getSystemState()->sendMainSignal();
+			asAtomHandler::getObject(func)->getSystemState()->sendMainSignal();
 	}
 	// The caller indicated the VM is currently suspended, so call synchronously.
 	else
 	{
 		try
 		{
-			asAtom* newArgs=NULL;
+			asAtom* newArgs=nullptr;
 			if (argc > 0)
 			{
 				newArgs=g_newa(asAtom, argc);
 				for (uint32_t i = 0; i < argc; i++)
 				{
-					newArgs[i] = asAtom::fromObject(asArgs[i]);
+					newArgs[i] = asAtomHandler::fromObject(asArgs[i]);
 				}
 			}
 
 			/* TODO: shouldn't we pass some global object instead of Null? */
-			asAtom res;
-			func.callFunction(res,asAtom::nullAtom, newArgs, argc,false);
-			result = res.toObject(func.getObject()->getSystemState());
+			asAtom res=asAtomHandler::invalidAtom;
+			asAtomHandler::callFunction(func,asAtomHandler::getObject(func)->getInstanceWorker(),res,asAtomHandler::nullAtom, newArgs, argc,false);
+			result = asAtomHandler::toObject(res,asAtomHandler::getObject(func)->getInstanceWorker());
 		}
 		// Catch AS exceptions and pass them on
 		catch(ASObject* _exception)
@@ -549,7 +554,7 @@ void ExtScriptObject::doHostCall(ExtScriptObject::HOST_CALL_TYPE type,
 	};
 	// We are in the main thread,
 	// so we can call the method ourselves synchronously straight away
-	if(Thread::self() == mainThread)
+	if(SDL_GetThreadID(nullptr) == mainThreadID)
 	{
 		hostCallHandler(&callData);
 		return;
@@ -663,12 +668,12 @@ bool ExtScriptObject::callExternal(const ExtIdentifier &id, const ExtVariant **a
 
 // ExtScriptObject interface: methods
 ExtScriptObject::ExtScriptObject(SystemState *sys):
-	m_sys(sys),currentCallback(NULL), hostCallData(NULL),
+	m_sys(sys),currentCallback(nullptr), hostCallData(nullptr),
 	shuttingDown(false), marshallExceptions(false)
 {
 	// This object is always created in the main plugin thread, so lets save
 	// so that we can check if we are in the main plugin thread later on.
-	mainThread = Thread::self();
+	mainThreadID = SDL_GetThreadID(nullptr);
 
 	setProperty("$version", Capabilities::EMULATED_VERSION);
 
@@ -709,7 +714,7 @@ void ExtScriptObject::destroy()
 		callStatusses.top()->signal();
 	mutex.unlock();
 	// Wait for all external calls to finish
-	Mutex::Lock l(externalCall);
+	Locker l(externalCall);
 }
 bool ExtScriptObject::doinvoke(const ExtIdentifier& id, const ExtVariant **args, uint32_t argc, const lightspark::ExtVariant* result)
 {

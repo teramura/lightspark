@@ -25,8 +25,8 @@
 
 using namespace lightspark;
 
-GraphicsShaderFill::GraphicsShaderFill(Class_base* c):
-	ASObject(c)
+GraphicsShaderFill::GraphicsShaderFill(ASWorker* wrk, Class_base* c):
+	ASObject(wrk,c)
 {
 }
 
@@ -51,12 +51,12 @@ void GraphicsShaderFill::finalize()
 
 ASFUNCTIONBODY_ATOM(GraphicsShaderFill,_constructor)
 {
-	GraphicsShaderFill* th = obj.as<GraphicsShaderFill>();
-	ARG_UNPACK_ATOM (th->shader, NullRef) (th->matrix, NullRef);
+	GraphicsShaderFill* th = asAtomHandler::as<GraphicsShaderFill>(obj);
+	ARG_CHECK(ARG_UNPACK (th->shader, NullRef) (th->matrix, NullRef));
 }
 
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsShaderFill, matrix);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsShaderFill, shader);
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsShaderFill, matrix)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsShaderFill, shader)
 
 FILLSTYLE GraphicsShaderFill::toFillStyle()
 {
@@ -64,7 +64,7 @@ FILLSTYLE GraphicsShaderFill::toFillStyle()
 	return FILLSTYLE(0xff);
 }
 
-void GraphicsShaderFill::appendToTokens(tokensVector& tokens)
+void GraphicsShaderFill::appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics)
 {
 	LOG(LOG_NOT_IMPLEMENTED, "GraphicsShaderFill::appendToTokens()");
 	return;

@@ -32,9 +32,10 @@ class GraphicsStroke: public ASObject, public IGraphicsStroke, public IGraphicsD
 protected:
 	void validateFill(_NR<ASObject> oldValue);
 public:
-	GraphicsStroke(Class_base* c);
+	GraphicsStroke(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base* c);
-	void finalize();
+	void finalize() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
 	ASFUNCTION_ATOM(_constructor);
 	ASPROPERTY_GETTER_SETTER(tiny_string, caps);
 	ASPROPERTY_GETTER_SETTER(_NR<ASObject>, fill); // really IGraphicsFill
@@ -43,9 +44,9 @@ public:
 	ASPROPERTY_GETTER_SETTER(bool, pixelHinting);
 	ASPROPERTY_GETTER_SETTER(tiny_string, scaleMode);
 	ASPROPERTY_GETTER_SETTER(number_t, thickness);
-	void appendToTokens(tokensVector& tokens);
+	void appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics) override;
 };
 
-};
+}
 
 #endif /* SCRIPTING_FLASH_DISPLAY_GRAPHICSSTROKE_H */

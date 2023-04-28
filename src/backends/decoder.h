@@ -28,7 +28,9 @@ extern "C"
 {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#ifdef HAVE_LIBAVRESAMPLE
+#ifdef HAVE_LIBSWRESAMPLE
+#include <libswresample/swresample.h>
+#elif defined HAVE_LIBAVRESAMPLE
 #include <libavresample/avresample.h>
 #endif
 #include <libavutil/opt.h>
@@ -42,10 +44,16 @@ extern "C"
 #define CODEC_ID_H264 AV_CODEC_ID_H264
 #define CODEC_ID_FLV1 AV_CODEC_ID_FLV1
 #define CODEC_ID_VP6F AV_CODEC_ID_VP6F
+#define CODEC_ID_VP6A AV_CODEC_ID_VP6A
 #define CODEC_ID_AAC AV_CODEC_ID_AAC
 #define CODEC_ID_MP3 AV_CODEC_ID_MP3
+#define CODEC_ID_PCM_S16BE AV_CODEC_ID_PCM_S16BE
 #define CODEC_ID_PCM_S16LE AV_CODEC_ID_PCM_S16LE
+#define CODEC_ID_PCM_F32BE AV_CODEC_ID_PCM_F32BE
+#define CODEC_ID_PCM_F32LE AV_CODEC_ID_PCM_F32LE
 #define CODEC_ID_ADPCM_SWF AV_CODEC_ID_ADPCM_SWF
+#define CODEC_ID_GIF AV_CODEC_ID_GIF
+
 #endif
 #define MAX_AUDIO_FRAME_SIZE AVCODEC_MAX_AUDIO_FRAME_SIZE
 }
@@ -53,14 +61,11 @@ extern "C"
 // Correct size? 192000?
 // TODO: a real plugins system
 #define MAX_AUDIO_FRAME_SIZE 20
+#define AV_INPUT_BUFFER_PADDING_SIZE 0
 #endif
 
 namespace lightspark
 {
-
-enum LS_VIDEO_CODEC { H264=0, H263, VP6 };
-// "Audio coding formats" from Chapter 11 in SWF documentation
-enum LS_AUDIO_CODEC { CODEC_NONE=-1, LINEAR_PCM_PLATFORM_ENDIAN=0, ADPCM=1, MP3=2, LINEAR_PCM_LE=3, AAC=10 };
 
 class AudioFormat
 {
@@ -70,6 +75,8 @@ public:
 	int sampleRate;
 	int channels;
 };
+class NetStream;
+class EngineData;
 
 class Decoder
 {
@@ -88,19 +95,23 @@ public:
 	virtual void setFlushing()=0;
 	void waitFlushed()
 	{
+		if (status != VALID)
+			return;
 		flushed.wait();
 	}
 };
-
+class DefineVideoStreamTag;
 class VideoDecoder: public Decoder, public ITextureUploadable
 {
+protected:
+	uint8_t* decodedframebuffer;
 public:
-	VideoDecoder():frameRate(0),framesdecoded(0),framesdropped(0),frameWidth(0),frameHeight(0),fenceCount(0),resizeGLBuffers(false){}
-	virtual ~VideoDecoder(){}
+	VideoDecoder();
+	virtual ~VideoDecoder();
 	virtual void switchCodec(LS_VIDEO_CODEC codecId, uint8_t* initdata, uint32_t datalen, double frameRateHint)=0;
 	virtual bool decodeData(uint8_t* data, uint32_t datalen, uint32_t time)=0;
 	virtual bool discardFrame()=0;
-	virtual void skipUntil(uint32_t time)=0;
+	virtual uint32_t skipUntil(uint32_t time)=0;
 	virtual void skipAll()=0;
 	uint32_t getWidth()
 	{
@@ -119,12 +130,18 @@ public:
 	void waitForFencing();
 	//ITextureUploadable interface
 	void sizeNeeded(uint32_t& w, uint32_t& h) const;
-	const TextureChunk& getTexture();
+	TextureChunk& getTexture();
 	void uploadFence();
+	void markForDestruction();
+	bool isUploading() { return fenceCount; }
+	void setVideoFrameToDecode(uint32_t frame) { currentframe=frame; }
+	void clearFrameBuffer();
 protected:
 	TextureChunk videoTexture;
 	uint32_t frameWidth;
 	uint32_t frameHeight;
+	uint32_t lastframe;
+	uint32_t currentframe;
 	/*
 		Derived classes must spinwaits on this to become false before deleting
 	*/
@@ -134,6 +151,7 @@ protected:
 	LS_VIDEO_CODEC videoCodec;
 private:
 	bool resizeGLBuffers;
+	bool markedForDeletion;
 };
 
 class NullVideoDecoder: public VideoDecoder
@@ -141,22 +159,23 @@ class NullVideoDecoder: public VideoDecoder
 public:
 	NullVideoDecoder() {status=VALID;}
 	~NullVideoDecoder() { while(fenceCount); }
-	void switchCodec(LS_VIDEO_CODEC codecId, uint8_t* initdata, uint32_t datalen, double frameRateHint){};
-	bool decodeData(uint8_t* data, uint32_t datalen, uint32_t time){return false;}
-	bool discardFrame(){return false;}
-	void skipUntil(uint32_t time){}
-	void skipAll(){}
-	void setFlushing()
+	void switchCodec(LS_VIDEO_CODEC codecId, uint8_t* initdata, uint32_t datalen, double frameRateHint) override {}
+	bool decodeData(uint8_t* data, uint32_t datalen, uint32_t time) override {return false;}
+	bool discardFrame() override {return false;}
+	uint32_t skipUntil(uint32_t time) override { return 0;}
+	void skipAll() override {}
+	void setFlushing() override
 	{
 		flushing=true;
 	}
 	//ITextureUploadable interface
-	void upload(uint8_t* data, uint32_t w, uint32_t h) const
+	uint8_t* upload(bool refresh) override
 	{
+		return nullptr;
 	}
 };
-
 #ifdef ENABLE_LIBAVCODEC
+#define FFMPEGVIDEODECODERBUFFERSIZE 80
 class FFMpegVideoDecoder: public VideoDecoder
 {
 private:
@@ -165,39 +184,63 @@ private:
 	YUVBuffer(const YUVBuffer&); /* no impl */
 	YUVBuffer& operator=(const YUVBuffer&); /* no impl */
 	public:
-		uint8_t* ch[3];
+		uint8_t* ch[4];
 		uint32_t time;
-		YUVBuffer():time(0){ch[0]=NULL;ch[1]=NULL;ch[2]=NULL;}
+		YUVBuffer():time(0){ch[0]=nullptr;ch[1]=nullptr;ch[2]=nullptr;ch[3]=nullptr;}
 		~YUVBuffer()
 		{
+			setDecodedData(nullptr);
+		}
+		void setDecodedData(uint8_t* data)
+		{
 			if(ch[0])
-			{
 				aligned_free(ch[0]);
+			if(ch[1])
 				aligned_free(ch[1]);
+			if(ch[2])
 				aligned_free(ch[2]);
-			}
+			if(ch[3])
+				aligned_free(ch[3]);
+			ch[0]=data;
+			ch[1]=nullptr;
+			ch[2]=nullptr;
+			ch[3]=nullptr;
+		}
+		void init()
+		{
+			ch[0]=nullptr;
+			ch[1]=nullptr;
+			ch[2]=nullptr;
+			ch[3]=nullptr;
+		}
+		void cleanup()
+		{
+			setDecodedData(nullptr);
 		}
 	};
 	class YUVBufferGenerator
 	{
 	private:
 		uint32_t bufferSize;
+		bool hasAlpha;
+		bool hasChannels;
 	public:
-		YUVBufferGenerator(uint32_t b):bufferSize(b){}
+		YUVBufferGenerator(uint32_t b, bool _hasalpha, bool _haschannels):bufferSize(b),hasAlpha(_hasalpha),hasChannels(_haschannels){}
 		void init(YUVBuffer& buf) const;
 	};
 	bool ownedContext;
 	uint32_t curBuffer;
 	AVCodecContext* codecContext;
-	BlockingCircularQueue<YUVBuffer,80> buffers;
-	Mutex mutex;
+	BlockingCircularQueue<YUVBuffer> streamingbuffers;
+	BlockingCircularQueue<YUVBuffer> embeddedbuffers;
 	AVFrame* frameIn;
 	void copyFrameToBuffers(const AVFrame* frameIn, uint32_t time);
 	void setSize(uint32_t w, uint32_t h);
 	bool fillDataAndCheckValidity();
 	uint32_t curBufferOffset;
+	DefineVideoStreamTag* embeddedvideotag;
 public:
-	FFMpegVideoDecoder(LS_VIDEO_CODEC codec, uint8_t* initdata, uint32_t datalen, double frameRateHint);
+	FFMpegVideoDecoder(LS_VIDEO_CODEC codec, uint8_t* initdata, uint32_t datalen, double frameRateHint,DefineVideoStreamTag* tag=nullptr);
 	/*
 	   Specialized constructor used by FFMpegStreamDecoder
 	*/
@@ -211,29 +254,40 @@ public:
 	   Specialized decoding used by FFMpegStreamDecoder
 	*/
 	bool decodePacket(AVPacket* pkt, uint32_t time);
-	void switchCodec(LS_VIDEO_CODEC codecId, uint8_t* initdata, uint32_t datalen, double frameRateHint);
-	bool decodeData(uint8_t* data, uint32_t datalen, uint32_t time);
-	bool discardFrame();
-	void skipUntil(uint32_t time);
-	void skipAll();
-	void setFlushing()
+	void switchCodec(LS_VIDEO_CODEC codecId, uint8_t* initdata, uint32_t datalen, double frameRateHint) override;
+	bool decodeData(uint8_t* data, uint32_t datalen, uint32_t time) override;
+	bool discardFrame() override;
+	uint32_t skipUntil(uint32_t time) override;
+	void skipAll() override;
+	void setFlushing() override
 	{
 		flushing=true;
-		if(buffers.isEmpty())
+		if (embeddedvideotag)
 		{
-			status=FLUSHED;
-			flushed.signal();
+			if(embeddedbuffers.isEmpty())
+			{
+				status=FLUSHED;
+				flushed.signal();
+			}
+		}
+		else
+		{
+			if(streamingbuffers.isEmpty())
+			{
+				status=FLUSHED;
+				flushed.signal();
+			}
 		}
 	}
 	//ITextureUploadable interface
-	void upload(uint8_t* data, uint32_t w, uint32_t h) const;
+	uint8_t* upload(bool refresh) override;
 };
 #endif
 
 class AudioDecoder: public Decoder
 {
 protected:
-	class FrameSamples
+	class FrameSamplesS16
 	{
 	public:
 		int16_t samples[MAX_AUDIO_FRAME_SIZE/2];
@@ -241,37 +295,69 @@ protected:
 		int16_t* current;
 		uint32_t len;
 		uint32_t time;
-		FrameSamples():current(samples),len(0),time(0){}
+		FrameSamplesS16():current(samples),len(0),time(0){}
+		void init()
+		{
+			len=0;
+			time=0;
+		}
+		void cleanup()
+		{
+		}
+		
 	};
-	class FrameSamplesGenerator
+	class FrameSamplesF32
 	{
 	public:
-		void init(FrameSamples& f) const {f.len=0;}
+		float samples[MAX_AUDIO_FRAME_SIZE/2];
+		__attribute__ ((aligned (32)))
+		float* current;
+		uint32_t len;
+		uint32_t time;
+		FrameSamplesF32():current(samples),len(0),time(0){}
+		void init()
+		{
+			len=0;
+			time=0;
+		}
+		void cleanup()
+		{
+		}
+		
 	};
+#ifdef HAVE_LIBSWRESAMPLE
+	SwrContext* resamplecontext;
+#elif defined HAVE_LIBAVRESAMPLE
+	AVAudioResampleContext* resamplecontext;
+#endif
 public:
 	uint32_t sampleRate;
+	EngineData* engine;
 protected:
-	BlockingCircularQueue<FrameSamples,150> samplesBuffer;
+	BlockingCircularQueue<FrameSamplesS16> samplesBufferS16;
+	BlockingCircularQueue<FrameSamplesF32> samplesBufferF32;
+	virtual void samplesconsumed(uint32_t samples) {}
+	bool discardFrameS16();
+	bool discardFrameF32();
 public:
 	/**
 	  	The AudioDecoder contains audio buffers that must be aligned to 16 bytes, so we redefine the allocator
 	*/
-	void* operator new(size_t);
-	void operator delete(void*);
-	AudioDecoder():sampleRate(0),channelCount(0),initialTime(-1){}
-	virtual ~AudioDecoder(){}
+	AudioDecoder(uint32_t size, EngineData* _engine);
+	virtual ~AudioDecoder();
 	virtual void switchCodec(LS_AUDIO_CODEC codecId, uint8_t* initdata, uint32_t datalen)=0;
 	virtual uint32_t decodeData(uint8_t* data, int32_t datalen, uint32_t time)=0;
 	bool hasDecodedFrames() const
 	{
-		return !samplesBuffer.isEmpty();
+		return !samplesBufferS16.isEmpty() || !samplesBufferF32.isEmpty();
 	}
 	uint32_t getFrontTime() const;
 	uint32_t getBytesPerMSec() const
 	{
 		return sampleRate*channelCount*2/1000;
 	}
-	uint32_t copyFrame(int16_t* dest, uint32_t len) DLL_PUBLIC;
+	uint32_t copyFrameS16(int16_t* dest, uint32_t len) DLL_PUBLIC;
+	uint32_t copyFrameF32(float* dest, uint32_t len) DLL_PUBLIC;
 	/**
 	  	Skip samples until the given time
 
@@ -284,10 +370,10 @@ public:
 	*/
 	void skipAll() DLL_PUBLIC;
 	bool discardFrame();
-	void setFlushing()
+	void setFlushing() override
 	{
 		flushing=true;
-		if(samplesBuffer.isEmpty())
+		if(samplesBufferS16.isEmpty() && samplesBufferF32.isEmpty())
 		{
 			status=FLUSHED;
 			flushed.signal();
@@ -296,66 +382,87 @@ public:
 	uint32_t channelCount;
 	//Saves the timestamp of the first decoded frame
 	uint32_t initialTime;
+	// if true, decoder is only used for extracting parts meaning audio data will always be provided as 32bit floats for 2 channels
+	bool forExtraction;
 };
 
 class NullAudioDecoder: public AudioDecoder
 {
 public:
-	NullAudioDecoder()
+	NullAudioDecoder():AudioDecoder(0,nullptr)
 	{
 		status=VALID;
 		sampleRate=44100;
 		channelCount=2;
 	}
-	void switchCodec(LS_AUDIO_CODEC codecId, uint8_t* initdata, uint32_t datalen){};
-	uint32_t decodeData(uint8_t* data, int32_t datalen, uint32_t time){return 0;}
+	void switchCodec(LS_AUDIO_CODEC codecId, uint8_t* initdata, uint32_t datalen) override {}
+	uint32_t decodeData(uint8_t* data, int32_t datalen, uint32_t time) override {return 0;}
 };
 
+class SoundChannel;
+// this is the AudioDecoder for streaming Sounds by SampleDataEvent
+class SampleDataAudioDecoder: public AudioDecoder
+{
+private:
+	ATOMIC_INT32(bufferedsamples);
+	SoundChannel* soundchannel;
+protected:
+	void samplesconsumed(uint32_t samples) override;
+public:
+	SampleDataAudioDecoder(SoundChannel* _soundchannel,uint32_t buffertime,EngineData* engine):AudioDecoder(buffertime,engine),soundchannel(_soundchannel)
+	{
+		sampleRate=44100;
+		channelCount=2;
+		bufferedsamples=0;
+	}
+	void switchCodec(LS_AUDIO_CODEC codecId, uint8_t* initdata, uint32_t datalen) override {}
+	// the data is always expected to be floats
+	uint32_t decodeData(uint8_t* data, int32_t datalen, uint32_t time) override;
+	inline int32_t getBufferedSamples() const { return  bufferedsamples; }
+};
+
+
 #ifdef ENABLE_LIBAVCODEC
-class EngineData;
 class FFMpegAudioDecoder: public AudioDecoder
 {
 private:
-	EngineData* engine;
 	bool ownedContext;
 	AVCodecContext* codecContext;
-#ifdef HAVE_LIBAVRESAMPLE
-	AVAudioResampleContext* resamplecontext;
-#endif
 	std::vector<uint8_t> overflowBuffer;
 	bool fillDataAndCheckValidity();
 	CodecID LSToFFMpegCodec(LS_AUDIO_CODEC lscodec);
-#ifdef HAVE_AVCODEC_DECODE_AUDIO4
+#if defined HAVE_AVCODEC_DECODE_AUDIO4 || (defined HAVE_AVCODEC_SEND_PACKET && defined HAVE_AVCODEC_RECEIVE_FRAME)
 	AVFrame* frameIn;
-	int resampleFrameToS16(FrameSamples& curTail);
+	int resampleFrame(void* samples);
 #endif
 public:
-	FFMpegAudioDecoder(EngineData* eng,LS_AUDIO_CODEC codec, uint8_t* initdata, uint32_t datalen);
-	FFMpegAudioDecoder(EngineData* eng,LS_AUDIO_CODEC codec, int sampleRate, int channels, bool);
+	FFMpegAudioDecoder(EngineData* eng,LS_AUDIO_CODEC codec, uint8_t* initdata, uint32_t datalen, uint32_t buffertime);
+	FFMpegAudioDecoder(EngineData* eng,LS_AUDIO_CODEC codec, int sampleRate, int channels, uint32_t buffertime,bool);
 	/*
 	   Specialized constructor used by FFMpegStreamDecoder
 	*/
 #if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(57, 40, 101)
-	FFMpegAudioDecoder(EngineData* eng,AVCodecParameters* codecPar);
+	FFMpegAudioDecoder(EngineData* eng,AVCodecParameters* codecPar, uint32_t buffertime);
 #else
-	FFMpegAudioDecoder(EngineData* eng,AVCodecContext* codecContext);
+	FFMpegAudioDecoder(EngineData* eng,AVCodecContext* codecContext, uint32_t buffertime);
 #endif
 	~FFMpegAudioDecoder();
 	/*
 	   Specialized decoding used by FFMpegStreamDecoder
 	*/
 	uint32_t decodePacket(AVPacket* pkt, uint32_t time);
-	void switchCodec(LS_AUDIO_CODEC audioCodec, uint8_t* initdata, uint32_t datalen);
-	uint32_t decodeData(uint8_t* data, int32_t datalen, uint32_t time);
+	void switchCodec(LS_AUDIO_CODEC audioCodec, uint8_t* initdata, uint32_t datalen) override;
+	uint32_t decodeData(uint8_t* data, int32_t datalen, uint32_t time) override;
 };
 #endif
 
 class StreamDecoder
 {
 public:
-	StreamDecoder():audioDecoder(NULL),videoDecoder(NULL),valid(false),hasvideo(false){}
+	StreamDecoder():audioDecoder(nullptr),videoDecoder(nullptr),valid(false),hasvideo(false){}
 	virtual ~StreamDecoder();
 	virtual bool decodeNextFrame() = 0;
+	virtual void jumpToPosition(number_t position) = 0;
 	bool isValid() const { return valid; }
 	AudioDecoder* audioDecoder;
 	VideoDecoder* videoDecoder;
@@ -369,6 +476,7 @@ protected:
 class FFMpegStreamDecoder: public StreamDecoder
 {
 private:
+	NetStream* netstream;
 	bool audioFound;
 	bool videoFound;
 	std::istream& stream;
@@ -381,6 +489,7 @@ private:
 	//Helpers for custom I/O of libavformat
 	uint8_t* avioBuffer;
 	static int avioReadPacket(void* t, uint8_t* buf, int buf_size);
+	static int64_t avioSeek(void *opaque, int64_t offset, int whence);
 	//NOTE: this will become AVIOContext in FFMpeg 0.7
 #if LIBAVUTIL_VERSION_MAJOR < 51
 	ByteIOContext* avioContext;
@@ -388,12 +497,15 @@ private:
 	AVIOContext* avioContext;
 #endif
 	int availablestreamlength;
+	int fullstreamlength;
 public:
-	FFMpegStreamDecoder(EngineData* eng,std::istream& s, AudioFormat* format = NULL, int streamsize = -1);
+	FFMpegStreamDecoder(NetStream* ns,EngineData* eng,std::istream& s, uint32_t buffertime, AudioFormat* format = nullptr, int streamsize = -1, bool forExtraction=false);
 	~FFMpegStreamDecoder();
-	bool decodeNextFrame();
+	void jumpToPosition(number_t position) override;
+	bool decodeNextFrame() override;
+	int getAudioSampleRate();
 };
 #endif
 
-};
+}
 #endif /* BACKENDS_DECODER */

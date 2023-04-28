@@ -29,7 +29,6 @@
 #include "backends/decoder.h"
 #include "backends/audio.h"
 #include "NetStreamInfo.h"
-#include "scripting/flash/utils/ByteArray.h"
 
 namespace lightspark
 {
@@ -46,12 +45,13 @@ private:
 	tiny_string getContentTypeHeader() const;
 	void validateHeaderName(const tiny_string& headerName) const;
 	ASPROPERTY_GETTER_SETTER(tiny_string,contentType);
-	ASPROPERTY_GETTER_SETTER(_R<Array>,requestHeaders);
+	ASPROPERTY_GETTER_SETTER(_NR<Array>,requestHeaders);
 public:
-	URLRequest(Class_base* c);
-	void finalize();
+	URLRequest(ASWorker* wrk,Class_base* c, const tiny_string u="", const tiny_string m="GET", _NR<ASObject> d = NullRef);
+	void finalize() override;
+	bool destruct() override;
+	void prepareShutdown() override;
 	static void sinit(Class_base*);
-	static void buildTraits(ASObject* o);
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(_getURL);
 	ASFUNCTION_ATOM(_setURL);
@@ -69,7 +69,7 @@ public:
 class URLRequestMethod: public ASObject
 {
 public:
-	URLRequestMethod(Class_base* c):ASObject(c){}
+	URLRequestMethod(ASWorker* wrk,Class_base* c):ASObject(wrk,c){}
 	static void sinit(Class_base*);
 };
 
@@ -79,10 +79,9 @@ private:
 	void decode(const tiny_string& s);
 	tiny_string toString_priv();
 public:
-	URLVariables(Class_base* c):ASObject(c){}
-	URLVariables(Class_base* c,const tiny_string& s);
+	URLVariables(ASWorker* wrk,Class_base* c):ASObject(wrk,c){}
+	URLVariables(ASWorker* wrk,Class_base* c,const tiny_string& s);
 	static void sinit(Class_base*);
-	static void buildTraits(ASObject* o);
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(decode);
 	ASFUNCTION_ATOM(_toString);
@@ -92,7 +91,7 @@ public:
 class URLLoaderDataFormat: public ASObject
 {
 public:
-	URLLoaderDataFormat(Class_base* c):ASObject(c){}
+	URLLoaderDataFormat(ASWorker* wrk,Class_base* c):ASObject(wrk,c){}
 	static void sinit(Class_base*);
 };
 
@@ -100,16 +99,19 @@ public:
 class SharedObjectFlushStatus: public ASObject
 {
 public:
-	SharedObjectFlushStatus(Class_base* c):ASObject(c){}
+	SharedObjectFlushStatus(ASWorker* wrk,Class_base* c):ASObject(wrk,c){}
 	static void sinit(Class_base*);
 };
 
 class SharedObject: public EventDispatcher
 {
 private:
-	static std::map<tiny_string, ASObject* > sharedobjectmap;
+	tiny_string name;
 public:
-	SharedObject(Class_base* c);
+	SharedObject(ASWorker* wrk,Class_base* c);
+	bool destruct() override;
+	void prepareShutdown() override;
+	bool doFlush(ASWorker* wrk);
 	static void sinit(Class_base*);
 	ASFUNCTION_ATOM(getLocal);
 	ASFUNCTION_ATOM(getRemote);
@@ -118,7 +120,7 @@ public:
 	ASFUNCTION_ATOM(close);
 	ASFUNCTION_ATOM(connect);
 	ASFUNCTION_ATOM(setProperty);
-	ASPROPERTY_GETTER_SETTER(_R<ASObject>,client);
+	ASPROPERTY_GETTER_SETTER(_NR<ASObject>,client);
 	ASPROPERTY_GETTER(_NR<ASObject>,data);
 	ASFUNCTION_ATOM(_getDefaultObjectEncoding);
 	ASFUNCTION_ATOM(_setDefaultObjectEncoding);
@@ -129,12 +131,31 @@ public:
 	ASFUNCTION_ATOM(_getSize);
 };
 
+class IDynamicPropertyWriter
+{
+public:
+	static void linkTraits(Class_base* c);
+};
+class IDynamicPropertyOutput
+{
+public:
+	static void linkTraits(Class_base* c);
+};
+// this is an internal class not described in the specs, but avmplus defines it for dynamic property writing
+class DynamicPropertyOutput:public ASObject
+{
+public:
+	DynamicPropertyOutput(ASWorker* wrk,Class_base* c):ASObject(wrk,c){}
+	static void sinit(Class_base*);
+	ASFUNCTION_ATOM(writeDynamicProperty);
+};
+
 class ObjectEncoding: public ASObject
 {
 public:
-	ObjectEncoding(Class_base* c):ASObject(c){}
-	enum ENCODING { AMF0=0, AMF3=3, DEFAULT=3 };
+	ObjectEncoding(ASWorker* wrk,Class_base* c):ASObject(wrk,c){}
 	static void sinit(Class_base*);
+	ASPROPERTY_GETTER_SETTER(_NR<ASObject>, dynamicPropertyWriter);
 };
 
 class URLLoader;
@@ -143,7 +164,7 @@ class URLLoaderThread : public DownloaderThreadBase
 {
 private:
 	_R<URLLoader> loader;
-	void execute();
+	void execute() override;
 public:
 	URLLoaderThread(_R<URLRequest> _request, _R<URLLoader> _loader);
 };
@@ -153,20 +174,24 @@ class URLLoader: public EventDispatcher, public IDownloaderThreadListener, publi
 private:
 	tiny_string dataFormat;
 	_NR<ASObject> data;
-	Spinlock spinlock;
+	Mutex spinlock;
 	URLLoaderThread *job;
 	uint64_t timestamp_last_progress;
 public:
-	URLLoader(Class_base* c);
-	void finalize();
+	URLLoader(ASWorker* wrk,Class_base* c);
+	void finalize() override;
+	void prepareShutdown() override;
 	static void sinit(Class_base*);
-	static void buildTraits(ASObject* o);
-	void threadFinished(IThreadJob *job);
+	void threadFinished(IThreadJob *job) override;
 	void setData(_NR<ASObject> data);
+	ASObject* getData() const
+	{
+		return data.getPtr();
+	}
 	tiny_string getDataFormat();
 	void setDataFormat(const tiny_string& newFormat);
-	void setBytesTotal(uint32_t b);
-	void setBytesLoaded(uint32_t b);
+	void setBytesTotal(uint32_t b) override;
+	void setBytesLoaded(uint32_t b) override;
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(load);
 	ASFUNCTION_ATOM(close);
@@ -184,9 +209,9 @@ private:
 	asAtom result;
 	asAtom status;
 public:
-	Responder(Class_base* c):ASObject(c){}
+	Responder(ASWorker* wrk,Class_base* c):ASObject(wrk,c),result(asAtomHandler::invalidAtom),status(asAtomHandler::invalidAtom){}
 	static void sinit(Class_base*);
-	void finalize();
+	void finalize() override;
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(onResult);
 };
@@ -203,22 +228,21 @@ private:
 	//Data for remoting support (NetConnection::call)
 	// The message data to be sent asynchronously
 	std::vector<uint8_t> messageData;
-	Spinlock downloaderLock;
+	Mutex downloaderLock;
 	Downloader* downloader;
 	_NR<Responder> responder;
 	uint32_t messageCount;
 	//The connection is to a flash media server
-	ObjectEncoding::ENCODING objectEncoding;
+	OBJECT_ENCODING objectEncoding;
 	PROXY_TYPE proxyType;
 	//IThreadJob interface
-	void execute();
-	void threadAbort();
-	void jobFence();
+	void execute() override;
+	void threadAbort() override;
+	void jobFence() override;
 public:
-	NetConnection(Class_base* c);
-	void finalize();
+	NetConnection(ASWorker* wrk,Class_base* c);
+	void finalize() override;
 	static void sinit(Class_base*);
-	static void buildTraits(ASObject* o);
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(connect);
 	ASFUNCTION_ATOM(call);
@@ -234,12 +258,15 @@ public:
 	ASFUNCTION_ATOM(_getURI);
 	ASFUNCTION_ATOM(close);
 	ASPROPERTY_GETTER_SETTER(NullableRef<ASObject>,client);
+	ASPROPERTY_GETTER_SETTER(uint32_t,maxPeerConnections);
+	ASPROPERTY_GETTER(tiny_string,nearID);
+	void afterExecution(_R<Event> e) override;
 };
 
 class NetStreamAppendBytesAction: public ASObject
 {
 public:
-	NetStreamAppendBytesAction(Class_base* c):ASObject(c){}
+	NetStreamAppendBytesAction(ASWorker* wrk,Class_base* c):ASObject(wrk,c){}
 	static void sinit(Class_base*);
 };
 
@@ -270,12 +297,12 @@ private:
 	Mutex mutex;
 	Mutex countermutex;
 	//IThreadJob interface for long jobs
-	void execute();
-	void threadAbort();
-	void jobFence();
+	void execute() override;
+	void threadAbort() override;
+	void jobFence() override;
 	//ITickJob interface to frame advance
-	void tick();
-	void tickFence();
+	void tick() override;
+	void tickFence() override;
 	bool isReady() const;
 	_NR<ASObject> client;
 
@@ -301,12 +328,12 @@ private:
 	enum DATAGENERATION_EXPECT_TYPE { DATAGENERATION_HEADER=0,DATAGENERATION_PREVTAG,DATAGENERATION_FLVTAG };
 	DATAGENERATION_EXPECT_TYPE datagenerationexpecttype;
 	_NR<ByteArray> datagenerationbuffer;
+	StreamDecoder* streamDecoder;
 public:
-	NetStream(Class_base* c);
+	NetStream(ASWorker* wrk,Class_base* c);
 	~NetStream();
-	void finalize();
+	void finalize() override;
 	static void sinit(Class_base*);
-	static void buildTraits(ASObject* o);
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(play);
 	ASFUNCTION_ATOM(play2);
@@ -327,6 +354,7 @@ public:
 	ASFUNCTION_ATOM(appendBytes);
 	ASFUNCTION_ATOM(appendBytesAction);
 	ASFUNCTION_ATOM(_getInfo);
+	ASFUNCTION_ATOM(publish);
 	ASPROPERTY_GETTER(number_t, backBufferLength);
 	ASPROPERTY_GETTER_SETTER(number_t, backBufferTime);
 	ASPROPERTY_GETTER(number_t, bufferLength);
@@ -398,12 +426,14 @@ public:
 		@pre the object should be locked
 	*/
 	void unlock();
+	
+	void clearFrameBuffer();
 };
 
 class LocalConnection: public EventDispatcher
 {
 public:
-	LocalConnection(Class_base* c);
+	LocalConnection(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base*);
 	ASFUNCTION_ATOM(_constructor);
 	ASPROPERTY_GETTER(bool,isSupported);
@@ -419,7 +449,7 @@ public:
 class NetGroup: public EventDispatcher
 {
 public:
-	NetGroup(Class_base* c);
+	NetGroup(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base*);
 	ASFUNCTION_ATOM(_constructor);
 };
@@ -427,14 +457,16 @@ public:
 class FileReference: public EventDispatcher
 {
 public:
-	FileReference(Class_base* c);
+	FileReference(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base*);
 	ASFUNCTION_ATOM(_constructor);
+	ASPROPERTY_GETTER(number_t,size);
+	
 };
 class FileFilter: public ASObject
 {
 public:
-	FileFilter(Class_base* c);
+	FileFilter(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base*);
 	ASFUNCTION_ATOM(_constructor);
 	ASPROPERTY_GETTER_SETTER(tiny_string,description);
@@ -445,15 +477,15 @@ public:
 class DRMManager: public EventDispatcher
 {
 public:
-	DRMManager(Class_base* c);
+	DRMManager(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base*);
 	ASPROPERTY_GETTER(bool,isSupported);
 };
 
-void navigateToURL(asAtom& ret,SystemState* sys,asAtom& obj,asAtom* args, const unsigned int argslen);
-void sendToURL(asAtom& ret,SystemState* sys,asAtom& obj,asAtom* args, const unsigned int argslen);
-void registerClassAlias(asAtom& ret,SystemState* sys,asAtom& obj,asAtom* args, const unsigned int argslen);
-void getClassByAlias(asAtom& ret,SystemState* sys,asAtom& obj,asAtom* args, const unsigned int argslen);
+void navigateToURL(asAtom& ret,ASWorker* wrk,asAtom& obj,asAtom* args, const unsigned int argslen);
+void sendToURL(asAtom& ret,ASWorker* wrk,asAtom& obj,asAtom* args, const unsigned int argslen);
+void registerClassAlias(asAtom& ret,ASWorker* wrk,asAtom& obj,asAtom* args, const unsigned int argslen);
+void getClassByAlias(asAtom& ret,ASWorker* wrk,asAtom& obj,asAtom* args, const unsigned int argslen);
 
 }
 

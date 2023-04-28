@@ -21,17 +21,20 @@
 #include "version.h"
 #include "backends/security.h"
 #include "backends/streamcache.h"
+#include "backends/config.h"
+#include "backends/rendering.h"
 #include "plugin/plugin.h"
 #include "logger.h"
 #include "compat.h"
 #include <string>
 #include <algorithm>
 #include "backends/urlutils.h"
+#include "abc.h"
 
 #include "plugin/npscriptobject.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
-#ifndef _WIN32
+#ifdef MOZ_X11
 #include <X11/keysym.h>
 #endif
 
@@ -83,8 +86,8 @@ lightspark::Downloader* NPDownloadManager::download(const lightspark::URLInfo& u
 	// typeinfo for FileStreamCache
 	//bool cached = dynamic_cast<FileStreamCache *>(cache.getPtr()) != NULL;
 	bool cached = false;
-	LOG(LOG_INFO, _("NET: PLUGIN: DownloadManager::download '") << url.getParsedURL() << 
-			"'" << (cached ? _(" - cached") : ""));
+	LOG(LOG_INFO, "NET: PLUGIN: DownloadManager::download '" << url.getParsedURL() << 
+			"'" << (cached ? " - cached" : ""));
 	//Register this download
 	NPDownloader* downloader=new NPDownloader(url.getParsedURL(), cache, instance, owner);
 	addDownloader(downloader);
@@ -110,7 +113,7 @@ lightspark::Downloader* NPDownloadManager::downloadWithData(const lightspark::UR
 		return StandaloneDownloadManager::downloadWithData(url, cache, data, headers, owner);
 	}
 
-	LOG(LOG_INFO, _("NET: PLUGIN: DownloadManager::downloadWithData '") << url.getParsedURL());
+	LOG(LOG_INFO, "NET: PLUGIN: DownloadManager::downloadWithData '" << url.getParsedURL());
 	//Register this download
 	NPDownloader* downloader=new NPDownloader(url.getParsedURL(), cache, data, headers, instance, owner);
 	addDownloader(downloader);
@@ -195,7 +198,7 @@ NPDownloader::NPDownloader(const lightspark::tiny_string& _url, _R<StreamCache> 
 void NPDownloader::dlStartCallback(void* t)
 {
 	NPDownloader* th=static_cast<NPDownloader*>(t);
-	LOG(LOG_INFO,_("Start download for ") << th->url);
+	LOG(LOG_INFO,"Start download for " << th->url);
 	NPError e=NPERR_NO_ERROR;
 	if(th->data.empty())
 		e=NPN_GetURLNotify(th->instance, th->url.raw_buf(), NULL, th);
@@ -234,12 +237,7 @@ char* NPP_GetMIMEDescription(void)
 NPError NS_PluginInitialize()
 {
 	LOG_LEVEL log_level = LOG_NOT_IMPLEMENTED;
-	/* setup glib, this is already done on firefox/linux, but needs to be done
-	 * on firefox/windows (because there we statically link to glib) */
-#ifdef HAVE_G_THREAD_INIT
-	if(!g_thread_supported())
-		g_thread_init(NULL);
-#endif
+
 	char *envvar = getenv("LIGHTSPARK_PLUGIN_LOGLEVEL");
 	if (envvar)
 		log_level=(LOG_LEVEL) min(4, max(0, atoi(envvar)));
@@ -303,7 +301,8 @@ void NS_DestroyPluginInstance(nsPluginInstanceBase * aPlugin)
 	LOG(LOG_INFO,"NS_DestroyPluginInstance " << aPlugin);
 	if(aPlugin)
 		delete (nsPluginInstance *)aPlugin;
-	setTLSSys( NULL );
+	setTLSSys( nullptr );
+	setTLSWorker(nullptr);
 }
 
 ////////////////////////////////////////
@@ -312,11 +311,12 @@ void NS_DestroyPluginInstance(nsPluginInstanceBase * aPlugin)
 //
 nsPluginInstance::nsPluginInstance(NPP aInstance, int16_t argc, char** argn, char** argv) : 
 	nsPluginInstanceBase(), mInstance(aInstance),mInitialized(FALSE),mWindow(0),
-	mainDownloaderStreambuf(NULL),mainDownloaderStream(NULL),
-	mainDownloader(NULL),scriptObject(NULL),m_pt(NULL),lastclicktime(0)
+	mainDownloaderStreambuf(nullptr),mainDownloaderStream(nullptr),
+	mainDownloader(nullptr),scriptObject(nullptr),m_pt(nullptr),lastclicktime(0)
 {
 	LOG(LOG_INFO, "Lightspark version " << VERSION << " Copyright 2009-2013 Alessandro Pignotti and others");
-	setTLSSys( NULL );
+	setTLSSys( nullptr );
+	setTLSWorker(nullptr);
 	m_sys=new lightspark::SystemState(0, lightspark::SystemState::FLASH);
 	//Files running in the plugin have REMOTE sandbox
 	m_sys->securityManager->setSandboxType(lightspark::SecurityManager::REMOTE);
@@ -348,6 +348,14 @@ nsPluginInstance::nsPluginInstance(NPP aInstance, int16_t argc, char** argn, cha
 			{
 				m_sys->extScriptObject->setProperty(argn[i],argv[i]);
 			}
+			else if(strcasecmp(argn[i],"allowfullscreen")==0)
+			{
+				m_sys->allowFullscreen= strcasecmp(argv[i],"true") == 0;
+			}
+			else if(strcasecmp(argn[i],"allowfullscreeninteractive")==0)
+			{
+				m_sys->allowFullscreen= strcasecmp(argv[i],"true") == 0;
+			}
 			//The SWF file url should be getted from NewStream
 		}
 		NPN_SetValue(aInstance,NPPVpluginWindowBool,(void*)false);
@@ -360,9 +368,9 @@ nsPluginInstance::nsPluginInstance(NPP aInstance, int16_t argc, char** argn, cha
 	else
 		LOG(LOG_ERROR, "PLUGIN: Browser doesn't support NPRuntime");
 	EngineData::mainthread_running = true;
-//	g_idle_add((GSourceFunc)EngineData::mainloop_from_plugin,m_sys);
 	//The sys var should be NULL in this thread
-	setTLSSys( NULL );
+	setTLSSys( nullptr );
+	setTLSWorker(nullptr);
 }
 
 nsPluginInstance::~nsPluginInstance()
@@ -370,11 +378,16 @@ nsPluginInstance::~nsPluginInstance()
 	LOG(LOG_INFO, "~nsPluginInstance " << this);
 	//Shutdown the system
 	setTLSSys(m_sys);
+	setTLSWorker(m_sys->worker);
 	if(mainDownloader)
 		mainDownloader->stop();
 	if (mainDownloaderStreambuf)
 		delete mainDownloaderStreambuf;
 
+	// stop fullscreen ticker
+	if (m_sys->getEngineData() && m_sys->getEngineData()->widget)
+		SDL_HideWindow(m_sys->getEngineData()->widget);
+	
 	// Kill all stuff relating to NPScriptObject which is still running
 	m_sys->extScriptObject->destroy();
 
@@ -383,12 +396,13 @@ nsPluginInstance::~nsPluginInstance()
 	m_sys->destroy();
 	delete m_sys;
 	delete m_pt;
-	setTLSSys(NULL);
+	setTLSSys(nullptr);
+	setTLSWorker(nullptr);
 }
 
 NPBool nsPluginInstance::init(NPWindow* aWindow)
 {
-  if(aWindow == NULL)
+  if(aWindow == nullptr)
     return FALSE;
   
   if (SetWindow(aWindow) == NPERR_NO_ERROR)
@@ -436,7 +450,7 @@ NPError nsPluginInstance::GetValue(NPPVariable aVariable, void *aValue)
 	return err;
 
 }
-#ifndef _WIN32
+#ifdef MOZ_X11
 SDL_Keycode getSDLKeyCode(unsigned x11Keyval)
 {
 	switch (x11Keyval)
@@ -549,6 +563,29 @@ SDL_Window* PluginEngineData::createWidget(uint32_t w,uint32_t h)
 	return SDL_CreateWindow("Lightspark",SDL_WINDOWPOS_UNDEFINED,SDL_WINDOWPOS_UNDEFINED,w,h,SDL_WINDOW_BORDERLESS|SDL_WINDOW_HIDDEN| SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
 }
 
+void PluginEngineData::setDisplayState(const tiny_string &displaystate, SystemState *sys)
+{
+	if (!this->widget)
+	{
+		LOG(LOG_ERROR,"no widget available for setting displayState");
+		return;
+	}
+	SDL_SetWindowFullscreen(widget, displaystate.startsWith("fullScreen") ? SDL_WINDOW_FULLSCREEN_DESKTOP: 0);
+	if (displaystate == "fullScreen")
+	{
+		SDL_ShowWindow(widget);
+		startSDLEventTicker(sys);
+	}
+	else
+	{
+		SDL_HideWindow(widget);
+		inRendering=false;
+	}
+	int w,h;
+	SDL_GetWindowSize(widget,&w,&h);
+	sys->getRenderThread()->requestResize(w,h,true);
+}
+
 void PluginEngineData::grabFocus()
 {
 }
@@ -643,7 +680,7 @@ string nsPluginInstance::getPageURL() const
 	{
 		if(url.UTF8Characters[i]&0x80)
 		{
-			LOG(LOG_ERROR,_("Cannot handle UTF8 URLs"));
+			LOG(LOG_ERROR,"Cannot handle UTF8 URLs");
 			return "";
 		}
 	}
@@ -654,15 +691,16 @@ string nsPluginInstance::getPageURL() const
 
 void nsPluginInstance::asyncDownloaderDestruction(const char *url, NPDownloader* dl) const
 {
-	LOG(LOG_INFO,_("Async destruction for ") << url);
+	LOG(LOG_INFO,"Async destruction for " << url);
 	m_sys->downloadManager->destroy(dl);
 }
 
 NPError nsPluginInstance::NewStream(NPMIMEType type, NPStream* stream, NPBool seekable, uint16_t* stype)
 {
 	NPDownloader* dl=static_cast<NPDownloader*>(stream->notifyData);
-	LOG(LOG_INFO,_("Newstream for ") << stream->url);
+	LOG(LOG_INFO,"Newstream for " << stream->url);
 	setTLSSys( m_sys );
+	setTLSWorker(m_sys->worker);
 	if(dl)
 	{
 		//Check if async destructin of this downloader has been requested
@@ -688,10 +726,12 @@ NPError nsPluginInstance::NewStream(NPMIMEType type, NPStream* stream, NPBool se
 			dl->parseHeaders(stream->headers, false);
 		}
 	}
-	else if(m_pt==NULL)
+	else if(m_pt==nullptr)
 	{
 		//This is the main file
 		m_sys->mainClip->setOrigin(stream->url);
+		if (m_sys->getEngineData())
+			((PluginEngineData*)m_sys->getEngineData())->setupLocalStorage();
 		m_sys->parseParametersFromURL(m_sys->mainClip->getOrigin());
 		*stype=NP_NORMAL;
 		//Let's get the cookies now, they might be useful
@@ -722,13 +762,14 @@ NPError nsPluginInstance::NewStream(NPMIMEType type, NPStream* stream, NPBool se
 	}
 	//The downloader is set as the private data for this stream
 	stream->pdata=dl;
-	setTLSSys( NULL );
+	setTLSSys( nullptr );
+	setTLSWorker(nullptr);
 	return NPERR_NO_ERROR;
 }
 
 void nsPluginInstance::StreamAsFile(NPStream* stream, const char* fname)
 {
-	assert(stream->notifyData==NULL);
+	assert(stream->notifyData==nullptr);
 	m_sys->setDownloadedPath(lightspark::tiny_string(fname,true));
 }
 
@@ -745,6 +786,7 @@ int32_t nsPluginInstance::Write(NPStream *stream, int32_t offset, int32_t len, v
 	if(stream->pdata)
 	{
 		setTLSSys( m_sys );
+		setTLSWorker(m_sys->worker);
 		NPDownloader* dl=static_cast<NPDownloader*>(stream->pdata);
 
 		//Check if async destructin of this downloader has been requested
@@ -760,7 +802,8 @@ int32_t nsPluginInstance::Write(NPStream *stream, int32_t offset, int32_t len, v
 		if(dl->hasFailed())
 			return -1;
 		dl->append((uint8_t*)buffer,len);
-		setTLSSys( NULL );
+		setTLSSys( nullptr );
+		setTLSWorker(nullptr);
 		return len;
 	}
 	else
@@ -770,12 +813,14 @@ int32_t nsPluginInstance::Write(NPStream *stream, int32_t offset, int32_t len, v
 void nsPluginInstance::downloaderFinished(NPDownloader* dl, const char *url, NPReason reason) const
 {
 	setTLSSys(m_sys);
+	setTLSWorker(m_sys->worker);
 	//Check if async destruction of this downloader has been requested
 	if(dl->state==NPDownloader::ASYNC_DESTROY)
 	{
 		dl->setFailed();
 		asyncDownloaderDestruction(url, dl);
-		setTLSSys(NULL);
+		setTLSSys(nullptr);
+		setTLSWorker(nullptr);
 		return;
 	}
 	dl->state=NPDownloader::STREAM_DESTROYED;
@@ -784,19 +829,20 @@ void nsPluginInstance::downloaderFinished(NPDownloader* dl, const char *url, NPR
 	switch(reason)
 	{
 		case NPRES_DONE:
-			LOG(LOG_INFO,_("Download complete ") << url);
+			LOG(LOG_INFO,"Download complete " << url);
 			dl->setFinished();
 			break;
 		case NPRES_USER_BREAK:
-			LOG(LOG_ERROR,_("Download stopped ") << url);
+			LOG(LOG_ERROR,"Download stopped " << url);
 			dl->setFailed();
 			break;
 		case NPRES_NETWORK_ERR:
-			LOG(LOG_ERROR,_("Download error ") << url);
+			LOG(LOG_ERROR,"Download error " << url);
 			dl->setFailed();
 			break;
 	}
-	setTLSSys(NULL);
+	setTLSSys(nullptr);
+	setTLSWorker(nullptr);
 	return;
 }
 
@@ -828,6 +874,8 @@ void nsPluginInstance::URLNotify(const char* url, NPReason reason, void* notifyD
 
 uint16_t nsPluginInstance::HandleEvent(void *event)
 {
+	if (m_sys && m_sys->getEngineData() && m_sys->getEngineData()->inFullScreenMode())
+		return 0;
 	EngineData::mainloop_from_plugin(m_sys);
 #if defined(MOZ_X11)
 	XEvent* nsEvent = (XEvent*)event;
@@ -847,7 +895,7 @@ uint16_t nsPluginInstance::HandleEvent(void *event)
 		}
 		case KeyPress:
 		case KeyRelease:
-			if (m_sys->getEngineData() && m_sys->getEngineData()->widget)
+			if (m_sys->getEngineData() && m_sys->getEngineData()->widget && m_sys->currentVm && m_sys->currentVm->hasEverStarted())
 			{
 				SDL_Event ev;
 				ev.type = nsEvent->type == KeyPress ? SDL_KEYDOWN : SDL_KEYUP;
@@ -864,7 +912,7 @@ uint16_t nsPluginInstance::HandleEvent(void *event)
 			}
 			break;
 		case MotionNotify: 
-			if (m_sys->getEngineData() && m_sys->getEngineData()->widget)
+			if (m_sys->getEngineData() && m_sys->getEngineData()->widget && m_sys->currentVm && m_sys->currentVm->hasEverStarted())
 			{
 				XMotionEvent* event = &nsEvent->xmotion;
 				SDL_Event ev;
@@ -878,7 +926,7 @@ uint16_t nsPluginInstance::HandleEvent(void *event)
 			break;
 		case ButtonPress:
 		case ButtonRelease: 
-			if (m_sys->getEngineData() && m_sys->getEngineData()->widget)
+			if (m_sys->getEngineData() && m_sys->getEngineData()->widget && m_sys->currentVm && m_sys->currentVm->hasEverStarted())
 			{
 				SDL_Event ev;
 				XButtonEvent* event = &nsEvent->xbutton;
@@ -889,7 +937,7 @@ uint16_t nsPluginInstance::HandleEvent(void *event)
 						ev.button.button = SDL_BUTTON_LEFT;
 						ev.button.state = event->state & Button1Mask ? SDL_PRESSED : SDL_RELEASED;
 						break;
-					case 2:
+					case 3:
 						ev.button.button = SDL_BUTTON_RIGHT;
 						ev.button.state = event->state & Button2Mask ? SDL_PRESSED : SDL_RELEASED;
 						break;
@@ -911,6 +959,15 @@ uint16_t nsPluginInstance::HandleEvent(void *event)
 				}
 
 				ev.button.windowID = SDL_GetWindowID(m_sys->getEngineData()->widget);
+				return EngineData::mainloop_handleevent(&ev,m_sys);
+			}
+			break;
+		case FocusOut:
+			if (m_sys->getEngineData() && m_sys->getEngineData()->widget && m_sys->currentVm && m_sys->currentVm->hasEverStarted())
+			{
+				SDL_Event ev;
+				ev.type = SDL_WINDOWEVENT_FOCUS_LOST;
+				ev.window.windowID = SDL_GetWindowID(m_sys->getEngineData()->widget);
 				return EngineData::mainloop_handleevent(&ev,m_sys);
 			}
 			break;
@@ -941,6 +998,35 @@ uint16_t nsPluginInstance::HandleEvent(void *event)
 	}
 #endif
 	return 0;
+}
+
+PluginEngineData::PluginEngineData(nsPluginInstance *i, uint32_t w, uint32_t h, SystemState *_sys) : instance(i),inputHandlerId(0),sizeHandlerId(0),sys(_sys)
+{
+	width = w;
+	height = h;
+	mPixels = nullptr;
+	inRendering = false;
+	winposx=0;
+	winposy=0;
+	if (sys->mainClip->getOrigin().isValid())
+		setupLocalStorage();
+}
+
+void PluginEngineData::setupLocalStorage()
+{
+	std::string filename = sys->mainClip->getOrigin().getPathDirectory();
+	std::replace(filename.begin(),filename.end(),'/',G_DIR_SEPARATOR);
+	filename+= G_DIR_SEPARATOR;
+	filename += sys->mainClip->getOrigin().getPathFile();
+	std::string filedatapath = sys->mainClip->getOrigin().getHostname() + G_DIR_SEPARATOR_S;
+	filedatapath += filename;
+	std::replace(filedatapath.begin(),filedatapath.end(),':','_');
+	std::replace(filedatapath.begin(),filedatapath.end(),'.','_');
+	sharedObjectDatapath = Config::getConfig()->getCacheDirectory();
+	sharedObjectDatapath += G_DIR_SEPARATOR;
+	sharedObjectDatapath += "data";
+	sharedObjectDatapath += G_DIR_SEPARATOR;
+	sharedObjectDatapath += filedatapath;
 }
 
 void PluginEngineData::stopMainDownload()
@@ -978,7 +1064,7 @@ void nsPluginInstance::asyncOpenPage(void *data)
 
 	NPError e = NPN_GetURL(page->instance, page->url.raw_buf(), page->window.raw_buf());
 	if (e != NPERR_NO_ERROR)
-		LOG(LOG_ERROR, _("Failed to open a page in the browser"));
+		LOG(LOG_ERROR, "Failed to open a page in the browser");
 	
 	delete page;
 }
@@ -1005,6 +1091,13 @@ void PluginEngineData::runInMainThread(SystemState* sys, void (*func) (SystemSta
 	NPN_PluginThreadAsyncCall(instance->mInstance,pluginCallHandler,sys);
 }
 
+void PluginEngineData::openContextMenu()
+{
+	EngineData::openContextMenu();
+	if (!inFullScreenMode())
+		startSDLEventTicker(sys);
+}
+
 void PluginEngineData::DoSwapBuffers()
 {
 	if (inRendering)
@@ -1019,6 +1112,7 @@ void PluginEngineData::DoSwapBuffers()
 			mPixels = new unsigned char[width*height*4]; // 4 bytes for BGRA
 		char* buf = g_newa(char, width*height*4);
 
+		glPixelStorei(GL_PACK_ALIGNMENT, 1);
 		glReadPixels(0,0,width, height, GL_BGRA, GL_UNSIGNED_BYTE, buf);
 		// received image is upside down, so flip it vertically
 		for (uint32_t i= 0; i < height; i++)

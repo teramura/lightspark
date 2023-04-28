@@ -24,8 +24,8 @@
 
 using namespace lightspark;
 
-GraphicsSolidFill::GraphicsSolidFill(Class_base* c):
-	ASObject(c), alpha(1.0), color(0)
+GraphicsSolidFill::GraphicsSolidFill(ASWorker* wrk, Class_base* c):
+	ASObject(wrk,c), alpha(1.0), color(0)
 {
 }
 
@@ -43,19 +43,22 @@ void GraphicsSolidFill::sinit(Class_base* c)
 
 ASFUNCTIONBODY_ATOM(GraphicsSolidFill,_constructor)
 {
-	GraphicsSolidFill* th = obj.as<GraphicsSolidFill>();
-	ARG_UNPACK_ATOM (th->color, 0) (th->alpha, 1.0);
+	GraphicsSolidFill* th = asAtomHandler::as<GraphicsSolidFill>(obj);
+	ARG_CHECK(ARG_UNPACK (th->color, 0) (th->alpha, 1.0));
 }
 
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsSolidFill, alpha);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsSolidFill, color);
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsSolidFill, alpha)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsSolidFill, color)
 
 FILLSTYLE GraphicsSolidFill::toFillStyle()
 {
 	return Graphics::createSolidFill(color, static_cast<uint8_t>(255*alpha));
 }
 
-void GraphicsSolidFill::appendToTokens(tokensVector& tokens)
+void GraphicsSolidFill::appendToTokens(std::vector<uint64_t>& tokens, Graphics* graphics)
 {
-	tokens.emplace_back(GeomToken(SET_FILL, toFillStyle()));
+	FILLSTYLE style = toFillStyle();
+	FILLSTYLE& styleref = graphics->addFillStyle(style);
+	tokens.emplace_back(GeomToken(SET_FILL).uval);
+	tokens.emplace_back(GeomToken(styleref).uval);
 }

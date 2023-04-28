@@ -41,12 +41,12 @@ FLV_HEADER::FLV_HEADER(std::istream& in):dataOffset(0),_hasAudio(false),_hasVide
 	
 	if(Signature[0]=='F' && Signature[1]=='L' && Signature[2]=='V')
 	{
-		LOG(LOG_INFO, _("PARSING: FLV file: Version ") << (int)Version);
+		LOG(LOG_INFO, "PARSING: FLV file: Version " << (int)Version);
 		valid=true;
 	}
 	else
 	{
-		LOG(LOG_INFO,_("PARSING: No FLV file signature found"));
+		LOG(LOG_INFO,"PARSING: No FLV file signature found");
 		valid=false;
 		return;
 	}
@@ -96,11 +96,11 @@ ScriptDataTag::ScriptDataTag(istream& s):VideoTag(s)
 
 	if (dataSize > 0)
 	{
-		_R<ByteArray> b = _NR<ByteArray>(Class<ByteArray>::getInstanceS(getSys()));
+		_R<ByteArray> b = _NR<ByteArray>(Class<ByteArray>::getInstanceS(getWorker()));
 		uint8_t* data =b->getBuffer(dataSize,true);
 		s.read((char*)data,dataSize);
-		b->setObjectEncoding(ObjectEncoding::AMF0);
-		b->setCurrentObjectEncoding(ObjectEncoding::AMF0);
+		b->setObjectEncoding(OBJECT_ENCODING::AMF0);
+		b->setCurrentObjectEncoding(OBJECT_ENCODING::AMF0);
 		b->setPosition(0);
 		uint8_t tagtype;
 		if (!b->readByte(tagtype))
@@ -121,7 +121,7 @@ ScriptDataTag::ScriptDataTag(istream& s):VideoTag(s)
 }
 
 
-VideoDataTag::VideoDataTag(istream& s):VideoTag(s),_isHeader(false),packetData(NULL)
+VideoDataTag::VideoDataTag(istream& s):VideoTag(s),_isHeader(false),packetData(nullptr)
 {
 	unsigned int start=s.tellg();
 	UI8 typeAndCodec;
@@ -204,7 +204,7 @@ VideoDataTag::~VideoDataTag()
 	aligned_free(packetData);
 }
 
-AudioDataTag::AudioDataTag(std::istream& s):VideoTag(s),_isHeader(false),packetData(NULL),packetLen(0)
+AudioDataTag::AudioDataTag(std::istream& s):VideoTag(s),_isHeader(false),packetData(nullptr),packetLen(0)
 {
 	unsigned int start=s.tellg();
 	BitStream bs(s);

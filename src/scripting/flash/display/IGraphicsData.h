@@ -27,16 +27,17 @@ namespace lightspark
 {
 
 class Class_base;
+class Graphics;
 
 class IGraphicsData
 {
 protected:
 	virtual ~IGraphicsData() {}
 public:
-	static void linkTraits(Class_base* c) {};
+	static void linkTraits(Class_base* c) {}
 	// Appends GeomTokens for drawing this object into tokens
-	virtual void appendToTokens(tokensVector& tokens) = 0;
+	virtual void appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics) = 0;
 };
 
-};
+}
 #endif /* SCRIPTING_FLASH_DISPLAY_IGRAPHICSDATA_H */

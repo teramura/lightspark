@@ -20,6 +20,7 @@
 #include "swf.h"
 #include "backends/audio.h"
 #include "backends/config.h"
+#include "platforms/engineutils.h"
 #include <iostream>
 #include "logger.h"
 #include <sys/time.h>
@@ -32,19 +33,41 @@ uint32_t AudioStream::getPlayedTime()
 {
 	uint32_t ret;
 	struct timeval now;
-	gettimeofday(&now, NULL);
+	gettimeofday(&now, nullptr);
+	if (!mixingStarted)
+		return playedtime;
 
 	ret = playedtime + (now.tv_sec * 1000 + now.tv_usec / 1000) - (starttime.tv_sec * 1000 + starttime.tv_usec / 1000);
 	return ret;
 }
-bool AudioStream::init()
+bool AudioStream::init(double volume)
 {
-	unmutevolume = curvolume = 1.0;
-	playedtime = 0;
-	gettimeofday(&starttime, NULL);
+	unmutevolume = curvolume = volume;
 	mixer_channel = manager->engineData->audio_StreamInit(this);
-	isPaused = false;
-	return true;
+	if (mixer_channel >= 0)
+	{
+		isPaused = false;
+		return true;
+	}
+	return false;
+}
+
+void AudioStream::deinit()
+{
+	if (!isdone)
+		manager->engineData->audio_StreamDeinit(mixer_channel);
+	mixer_channel=-1;
+	if (audiobuffer)
+		delete[] audiobuffer;
+	audiobuffer=nullptr;
+}
+
+void AudioStream::startMixing()
+{
+	if(mixingStarted)
+		return;
+	mixingStarted=true;
+	gettimeofday(&starttime, nullptr);
 }
 
 void AudioStream::SetPause(bool pause_on)
@@ -56,7 +79,7 @@ void AudioStream::SetPause(bool pause_on)
 	}
 	else
 	{
-		gettimeofday(&starttime, NULL);
+		mixingStarted=false;
 		isPaused = false;
 	}
 	manager->engineData->audio_StreamPause(mixer_channel,pause_on);
@@ -64,7 +87,7 @@ void AudioStream::SetPause(bool pause_on)
 
 bool AudioStream::ispaused()
 {
-	return 	isPaused;
+	return isPaused;
 }
 
 void AudioStream::mute()
@@ -78,17 +101,32 @@ void AudioStream::unmute()
 }
 void AudioStream::setVolume(double volume)
 {
-	manager->engineData->audio_StreamSetVolume(mixer_channel, volume);
 	curvolume = volume;
+}
+
+void AudioStream::setPanning(uint16_t left, uint16_t right)
+{
+	panning[0]=(float)left/32768.0f;
+	panning[1]=(float)right/32768.0f;
+	curvolume=1.0;
+}
+
+void AudioStream::setIsDone()
+{
+	RELEASE_WRITE(isdone,true);
+	decoder->skipAll();
+}
+
+bool AudioStream::getIsDone() const
+{
+	return ACQUIRE_READ(isdone);
 }
 
 AudioStream::~AudioStream()
 {
-	manager->engineData->audio_StreamDeinit(mixer_channel);
-	manager->removeStream(this);
 }
 
-AudioManager::AudioManager(EngineData *engine):muteAllStreams(false),audio_available(false),mixeropened(0),engineData(engine)
+AudioManager::AudioManager(EngineData *engine):muteAllStreams(false),audio_available(false),mixeropened(0),engineData(engine),device(0)
 {
 	audio_available = engine->audio_ManagerInit();
 	mixeropened = 0;
@@ -97,7 +135,7 @@ void AudioManager::muteAll()
 {
 	Locker l(streamMutex);
 	muteAllStreams = true;
-	for ( stream_iterator it = streams.begin();it != streams.end(); ++it )
+	for (auto it = streams.begin();it != streams.end(); ++it )
 	{
 		(*it)->mute();
 	}
@@ -106,7 +144,7 @@ void AudioManager::unmuteAll()
 {
 	Locker l(streamMutex);
 	muteAllStreams = false;
-	for ( stream_iterator it = streams.begin();it != streams.end(); ++it )
+	for (auto it = streams.begin();it != streams.end(); ++it )
 	{
 		(*it)->unmute();
 	}
@@ -114,37 +152,65 @@ void AudioManager::unmuteAll()
 
 void AudioManager::removeStream(AudioStream *s)
 {
-	Locker l(streamMutex);
+	streamMutex.lock();
 	streams.remove(s);
+	s->deinit();
+	delete s;
 	if (streams.empty())
 	{
-		engineData->audio_ManagerCloseMixer();
+		streamMutex.unlock();
+		managerMutex.lock();
+		if (mixeropened)
+			engineData->audio_ManagerCloseMixer(this);
 		mixeropened = false;
+		managerMutex.unlock();
+	}
+	else
+		streamMutex.unlock();
+		
+}
+
+void AudioManager::stopAllSounds()
+{
+	// use temporary list of producers to avoid deadlock, as threadAbort() leads to removeStream();
+	list<IThreadJob*> producers;
+	{
+		Locker l(streamMutex);
+		for (auto it = streams.begin();it != streams.end(); ++it )
+		{
+			if ((*it)->producer)
+				producers.push_back((*it)->producer);
+		}
+	}
+	for (auto it = producers.begin();it != producers.end(); ++it )
+	{
+		(*it)->threadAbort();
 	}
 }
 
-AudioStream* AudioManager::createStream(AudioDecoder* decoder, bool startpaused)
+AudioStream* AudioManager::createStream(AudioDecoder* decoder, bool startpaused, IThreadJob* producer, int grouptag, uint32_t playedTime, double volume)
 {
-	Locker l(streamMutex);
 	if (!audio_available)
-		return NULL;
+		return nullptr;
+	managerMutex.lock();
 	if (!mixeropened)
 	{
-		if (!engineData->audio_ManagerOpenMixer())
+		if (!engineData->audio_ManagerOpenMixer(this))
 		{
 			LOG(LOG_ERROR,"Couldn't open mixer");
 			audio_available = 0;
-			return NULL;
+			return nullptr;
 		}
 		mixeropened = 1;
 	}
-
-	AudioStream *stream = new AudioStream(this);
+	managerMutex.unlock();
+	Locker l(streamMutex);
+	AudioStream *stream = new AudioStream(this,producer,grouptag,playedTime);
 	stream->decoder = decoder;
-	if (!stream->init())
+	if (!stream->init(volume))
 	{
 		delete stream;
-		return NULL;
+		return nullptr;
 	}
 	if (startpaused)
 		stream->pause();
@@ -158,16 +224,14 @@ AudioStream* AudioManager::createStream(AudioDecoder* decoder, bool startpaused)
 
 AudioManager::~AudioManager()
 {
-	Locker l(streamMutex);
-	for (stream_iterator it = streams.begin(); it != streams.end(); ++it) {
-		delete *it;
-	}
+	managerMutex.lock();
 	if (mixeropened)
 	{
-		engineData->audio_ManagerCloseMixer();
+		engineData->audio_ManagerCloseMixer(this);
 	}
 	if (audio_available)
 	{
 		engineData->audio_ManagerDeinit();
 	}
+	managerMutex.unlock();
 }

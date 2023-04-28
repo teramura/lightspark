@@ -29,24 +29,31 @@ namespace lightspark
 
 class Number : public ASObject
 {
-friend ASObject* abstract_d(SystemState* sys,number_t i);
-friend ASObject* abstract_di(SystemState* sys,int32_t i);
+friend ASObject* abstract_d(ASWorker* worker,number_t i);
+friend ASObject* abstract_d_constant(ASWorker* worker,number_t i);
+friend ASObject* abstract_di(ASWorker* worker,int32_t i);
 friend class ABCContext;
 friend class ABCVm;
 private:
-	static void purgeTrailingZeroes(char* buf);
 	static tiny_string purgeExponentLeadingZeros(const tiny_string& exponentialForm);
 	static int32_t countSignificantDigits(double v);
+	enum DTOSTRMODE { DTOSTR_NORMAL, DTOSTR_FIXED, DTOSTR_PRECISION, DTOSTR_EXPONENTIAL };
+	static tiny_string toString(number_t value, DTOSTRMODE mode, int32_t precision);
 public:
-	Number(Class_base* c, double v=Number::NaN):ASObject(c,T_NUMBER),dval(v),isfloat(true){}
+	Number(ASWorker* worker,Class_base* c, double v=Number::NaN):ASObject(worker,c,T_NUMBER),dval(v),isfloat(true){}
 	static const number_t NaN;
 	union {
 		number_t dval;
 		int64_t ival;
 	};
 	bool isfloat:1;
-	inline number_t toNumber() { return isfloat ? dval : ival; }
-	inline bool destruct() { dval=Number::NaN; isfloat = true; return ASObject::destruct(); }
+	inline void setNumber(number_t v)
+	{
+		isfloat = true;
+		dval=v;
+	}
+	inline number_t toNumber() override { return isfloat ? dval : ival; }
+	inline bool destruct() override { dval=Number::NaN; isfloat = true; return destructIntern(); }
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(_toString);
 	ASFUNCTION_ATOM(_toLocaleString);
@@ -54,8 +61,8 @@ public:
 	ASFUNCTION_ATOM(toPrecision);
 	ASFUNCTION_ATOM(toFixed);
 	ASFUNCTION_ATOM(_valueOf);
-	tiny_string toString();
-	static tiny_string toString(number_t val);
+	tiny_string toString() const;
+	static tiny_string toString(number_t val) { return toString(val,DTOSTR_NORMAL,15);}
 	static tiny_string toStringRadix(number_t val, int radix);
 	static tiny_string toExponentialString(double v, int32_t fractionDigits);
 	static tiny_string toFixedString(double v, int32_t fractionDigits);
@@ -64,11 +71,11 @@ public:
 	{
 		return trunc(val) == val;
 	}
-	unsigned int toUInt()
+	unsigned int toUInt() override
 	{
-		return isfloat ? (unsigned int)(dval) : ival;
+		return (unsigned int)toInt();
 	}
-	int64_t toInt64()
+	int64_t toInt64() override
 	{
 		if (!isfloat) return ival;
 		if(std::isnan(dval) || std::isinf(dval))
@@ -77,7 +84,7 @@ public:
 	}
 
 	/* ECMA-262 9.5 ToInt32 */
-	int32_t toInt()
+	int32_t toInt() override
 	{
 		if (!isfloat) return ival;
 		return toInt(dval);
@@ -104,19 +111,18 @@ public:
 		}
 		return (int32_t)(val < 0.0 ? -posInt : posInt);
 	}
-	TRISTATE isLess(ASObject* o);
-	bool isEqual(ASObject* o);
-	static void buildTraits(ASObject* o){}
+	TRISTATE isLess(ASObject* o) override;
+	bool isEqual(ASObject* o) override;
 	static void sinit(Class_base* c);
 	ASFUNCTION_ATOM(generator);
-	std::string toDebugString() { return toString()+(isfloat ? "d" : "di"); }
+	std::string toDebugString() const override;
 	//Serialization interface
 	void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap);
+				std::map<const Class_base*, uint32_t>& traitsMap, ASWorker* wrk) override;
 };
 
 
-};
+}
 
 #endif /* SCRIPTING_TOPLEVEL_NUMBER_H */

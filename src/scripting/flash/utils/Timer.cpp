@@ -25,6 +25,8 @@
 #include "scripting/argconv.h"
 #include "scripting/flash/errors/flasherrors.h"
 #include "scripting/flash/utils/Timer.h"
+#include "scripting/toplevel/Integer.h"
+#include "scripting/toplevel/Number.h"
 
 using namespace std;
 using namespace lightspark;
@@ -34,15 +36,15 @@ void Timer::tick()
 	//This will be executed once if repeatCount was originally 1
 	//Otherwise it's executed until stopMe is set to true
 	this->incRef();
-	getVm(getSystemState())->addEvent(_MR(this),_MR(Class<TimerEvent>::getInstanceS(getSystemState(),"timer")));
+	getVm(getSystemState())->addEvent(_MR(this),_MR(Class<TimerEvent>::getInstanceS(getInstanceWorker(),"timer")));
 
 	currentCount++;
 	if(repeatCount!=0)
 	{
-		if(currentCount==repeatCount)
+		if(currentCount>=repeatCount)
 		{
 			this->incRef();
-			getVm(getSystemState())->addEvent(_MR(this),_MR(Class<TimerEvent>::getInstanceS(getSystemState(),"timerComplete")));
+			getVm(getSystemState())->addEvent(_MR(this),_MR(Class<TimerEvent>::getInstanceS(getInstanceWorker(),"timerComplete")));
 			stopMe=true;
 			running=false;
 		}
@@ -58,11 +60,11 @@ void Timer::tickFence()
 void Timer::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, EventDispatcher, _constructor, CLASS_SEALED);
-	c->setDeclaredMethodByQName("currentCount","",Class<IFunction>::getFunction(c->getSystemState(),_getCurrentCount),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("repeatCount","",Class<IFunction>::getFunction(c->getSystemState(),_getRepeatCount),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("currentCount","",Class<IFunction>::getFunction(c->getSystemState(),_getCurrentCount,0,Class<Integer>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("repeatCount","",Class<IFunction>::getFunction(c->getSystemState(),_getRepeatCount,0,Class<Integer>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
 	c->setDeclaredMethodByQName("repeatCount","",Class<IFunction>::getFunction(c->getSystemState(),_setRepeatCount),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("running","",Class<IFunction>::getFunction(c->getSystemState(),_getRunning),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("delay","",Class<IFunction>::getFunction(c->getSystemState(),_getDelay),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("running","",Class<IFunction>::getFunction(c->getSystemState(),_getRunning,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("delay","",Class<IFunction>::getFunction(c->getSystemState(),_getDelay,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
 	c->setDeclaredMethodByQName("delay","",Class<IFunction>::getFunction(c->getSystemState(),_setDelay),SETTER_METHOD,true);
 	c->setDeclaredMethodByQName("start","",Class<IFunction>::getFunction(c->getSystemState(),start),NORMAL_METHOD,true);
 	c->setDeclaredMethodByQName("reset","",Class<IFunction>::getFunction(c->getSystemState(),reset),NORMAL_METHOD,true);
@@ -71,31 +73,31 @@ void Timer::sinit(Class_base* c)
 
 ASFUNCTIONBODY_ATOM(Timer,_constructor)
 {
-	EventDispatcher::_constructor(ret,sys,obj,NULL,0);
-	Timer* th=obj.as<Timer>();
+	EventDispatcher::_constructor(ret,wrk,obj,nullptr,0);
+	Timer* th=asAtomHandler::as<Timer>(obj);
 
-	th->delay=args[0].toInt();
+	th->delay=asAtomHandler::toInt(args[0]);
 	if(argslen>=2)
-		th->repeatCount=args[1].toInt();
+		th->repeatCount=asAtomHandler::toInt(args[1]);
 }
 
 ASFUNCTIONBODY_ATOM(Timer,_getCurrentCount)
 {
-	Timer* th=obj.as<Timer>();
-	ret.setUInt(th->currentCount);
+	Timer* th=asAtomHandler::as<Timer>(obj);
+	asAtomHandler::setInt(ret,wrk,th->currentCount);
 }
 
 ASFUNCTIONBODY_ATOM(Timer,_getRepeatCount)
 {
-	Timer* th=obj.as<Timer>();
-	ret.setUInt(th->repeatCount);
+	Timer* th=asAtomHandler::as<Timer>(obj);
+	asAtomHandler::setInt(ret,wrk,th->repeatCount);
 }
 
 ASFUNCTIONBODY_ATOM(Timer,_setRepeatCount)
 {
 	assert_and_throw(argslen==1);
-	int32_t count=args[0].toInt();
-	Timer* th=obj.as<Timer>();
+	int32_t count=asAtomHandler::toInt(args[0]);
+	Timer* th=asAtomHandler::as<Timer>(obj);
 	th->repeatCount=count;
 	if(th->repeatCount>0 && th->repeatCount<=th->currentCount)
 	{
@@ -107,30 +109,33 @@ ASFUNCTIONBODY_ATOM(Timer,_setRepeatCount)
 
 ASFUNCTIONBODY_ATOM(Timer,_getRunning)
 {
-	Timer* th=obj.as<Timer>();
-	ret.setBool(th->running);
+	Timer* th=asAtomHandler::as<Timer>(obj);
+	asAtomHandler::setBool(ret,th->running);
 }
 
 ASFUNCTIONBODY_ATOM(Timer,_getDelay)
 {
-	Timer* th=obj.as<Timer>();
-	ret.setUInt(th->delay);
+	Timer* th=asAtomHandler::as<Timer>(obj);
+	asAtomHandler::setNumber(ret,wrk,th->delay);
 }
 
 ASFUNCTIONBODY_ATOM(Timer,_setDelay)
 {
 	assert_and_throw(argslen==1);
-	int32_t newdelay = args[0].toInt();
-	if (newdelay<=0)
-		throw Class<RangeError>::getInstanceS(sys,"delay must be positive", 2066);
+	int32_t newdelay = asAtomHandler::toInt(args[0]);
+	if (newdelay<0)
+	{
+		createError<RangeError>(wrk,2066,"delay must be positive");
+		return;
+	}
 
-	Timer* th=obj.as<Timer>();
+	Timer* th=asAtomHandler::as<Timer>(obj);
 	th->delay=newdelay;
 }
 
 ASFUNCTIONBODY_ATOM(Timer,start)
 {
-	Timer* th=obj.as<Timer>();
+	Timer* th=asAtomHandler::as<Timer>(obj);
 	if(th->running)
 		return;
 	th->running=true;
@@ -139,18 +144,18 @@ ASFUNCTIONBODY_ATOM(Timer,start)
 	th->tickJobInstance = _MNR(th);
 	// according to spec Adobe handles timers 60 times per second, so minimum delay is 17 ms
 	if(th->repeatCount==1)
-		sys->addWait(th->delay < 17 ? 17 : th->delay,th);
+		wrk->getSystemState()->addWait(th->delay < 17 ? 17 : th->delay,th);
 	else
-		sys->addTick(th->delay < 17 ? 17 : th->delay,th);
+		wrk->getSystemState()->addTick(th->delay < 17 ? 17 : th->delay,th);
 }
 
 ASFUNCTIONBODY_ATOM(Timer,reset)
 {
-	Timer* th=obj.as<Timer>();
+	Timer* th=asAtomHandler::as<Timer>(obj);
 	if(th->running)
 	{
 		//This spin waits if the timer is running right now
-		sys->removeJob(th);
+		wrk->getSystemState()->removeJob(th);
 		//NOTE: although no new events will be sent now there might be old events in the queue.
 		//Is this behaviour right?
 		//This is not anymore used by the timer, so it can die
@@ -162,11 +167,11 @@ ASFUNCTIONBODY_ATOM(Timer,reset)
 
 ASFUNCTIONBODY_ATOM(Timer,stop)
 {
-	Timer* th=obj.as<Timer>();
+	Timer* th=asAtomHandler::as<Timer>(obj);
 	if(th->running)
 	{
 		//This spin waits if the timer is running right now
-		sys->removeJob(th);
+		wrk->getSystemState()->removeJob(th);
 		//NOTE: although no new events will be sent now there might be old events in the queue.
 		//Is this behaviour right?
 

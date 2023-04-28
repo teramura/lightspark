@@ -26,11 +26,9 @@
 #include <list>
 /* for utf8 handling */
 #include <glib.h>
-#include <glibmm/ustring.h>
 #include "compat.h"
 
 /* forward declare for tiny_string conversion */
-namespace Glib { class ustring; }
 typedef unsigned char xmlChar;
 
 namespace lightspark
@@ -43,6 +41,7 @@ friend class tiny_string;
 private:
 	char* buf_ptr;
 public:
+	CharIterator() : buf_ptr(nullptr) {}
 	CharIterator(char* buf) : buf_ptr(buf) {}
 	/* Return the utf8-character value */
 	uint32_t operator*() const
@@ -77,6 +76,8 @@ public:
 	{
 		return g_unichar_digit_value(g_utf8_get_char(buf_ptr));
 	}
+	bool isValid() const { return buf_ptr; }
+	inline char* ptr() const { return buf_ptr; }
 };
 
 /*
@@ -123,22 +124,18 @@ public:
 	tiny_string(const char* s,bool copy=false);
 	tiny_string(const tiny_string& r);
 	tiny_string(const std::string& r);
-	tiny_string(const Glib::ustring& r);
 	tiny_string(std::istream& in, int len);
 	~tiny_string();
 	tiny_string& operator=(const tiny_string& s);
 	tiny_string& operator=(const std::string& s);
 	tiny_string& operator=(const char* s);
-	tiny_string& operator=(const Glib::ustring& s);
 	tiny_string& operator+=(const char* s);
 	tiny_string& operator+=(const tiny_string& r);
 	tiny_string& operator+=(const std::string& s);
-	tiny_string& operator+=(const Glib::ustring& s);
 	tiny_string& operator+=(uint32_t c);
 	const tiny_string operator+(const tiny_string& r) const;
 	const tiny_string operator+(const char* s) const;
 	const tiny_string operator+(const std::string& r) const;
-	const tiny_string operator+(const Glib::ustring& r) const;
 	bool operator<(const tiny_string& r) const;
 	bool operator>(const tiny_string& r) const;
 	bool operator==(const tiny_string& r) const;
@@ -148,8 +145,6 @@ public:
 	bool operator==(const char* r) const;
 	bool operator==(const xmlChar* r) const;
 	bool operator!=(const char* r) const;
-	bool operator==(const Glib::ustring&) const;
-	bool operator!=(const Glib::ustring&) const;
 	inline const char* raw_buf() const
 	{
 		return buf;
@@ -176,20 +171,80 @@ public:
 	{
 		return numchars;
 	}
+	inline bool isSinglebyte() const
+	{
+		return isASCII;
+	}
+	inline bool hasNullEntries() const
+	{
+		return hasNull;
+	}
+	inline void checkValidUTF()
+	{
+		if (!isASCII && !g_utf8_validate(buf,numBytes(),nullptr))
+		{
+			// string is not valid UTF8, we treat it as ascii
+			isASCII = true;
+			numchars = stringSize-1;
+		}
+	}
 	
 	/* start and len are indices of utf8-characters */
 	tiny_string substr(uint32_t start, uint32_t len) const;
 	tiny_string substr(uint32_t start, const CharIterator& end) const;
 	/* start and len are indices of bytes */
-	tiny_string substr_bytes(uint32_t start, uint32_t len) const;
+	tiny_string substr_bytes(uint32_t start, uint32_t len, bool resultisascii=false) const;
 	/* finds the first occurence of char in the utf-8 string
 	 * Return NULL if not found, else ptr to beginning of first occurence of c */
 	char* strchr(char c) const;
 	char* strchrr(char c) const;
 	/*explicit*/ operator std::string() const;
-	operator Glib::ustring() const;
+
+	FORCE_INLINE void setValue(const char* s,int _numbytes, int _numchars, bool _isASCII, bool _hasNull, bool copy)
+	{
+		if(copy)
+		{
+			resetToStatic();
+			stringSize=_numbytes+1;
+			if(stringSize > STATIC_SIZE)
+				createBuffer(stringSize);
+			memcpy(buf,s,_numbytes);
+			buf[_numbytes]=0;
+		}
+		else
+		{
+			if(type==DYNAMIC)
+			{
+				reportMemoryChange(-stringSize);
+				delete[] buf;
+			}
+			type=READONLY;
+			stringSize=_numbytes+1;
+			buf=(char*)s;
+		}
+		numchars=_numchars;
+		isASCII=_isASCII;
+		hasNull=_hasNull;
+	}
+	FORCE_INLINE void setChar(uint32_t c)
+	{
+		if (type != STATIC)
+			resetToStatic();
+		isASCII = c<0x80;
+		if (isASCII)
+		{
+			buf[0] = c&0xff;
+			stringSize = 2;
+		}
+		else
+			stringSize =  g_unichar_to_utf8(c,buf) + 1;
+		buf[stringSize-1] = '\0';
+		hasNull = c == 0;
+		numchars = 1;
+	}
+	
 	bool startsWith(const char* o) const;
-        bool endsWith(const char* o) const;
+	bool endsWith(const char* o) const;
 	/* idx is an index of utf-8 characters */
 	uint32_t charAt(uint32_t idx) const
 	{
@@ -217,7 +272,8 @@ public:
 	CharIterator end();
 	CharIterator end() const;
 	int compare(const tiny_string& r) const;
+	tiny_string toQuotedString() const;
 };
 
-};
+}
 #endif /* TINY_STRING_H */

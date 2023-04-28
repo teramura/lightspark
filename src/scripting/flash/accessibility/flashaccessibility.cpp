@@ -23,8 +23,8 @@
 
 using namespace lightspark;
 
-AccessibilityProperties::AccessibilityProperties(Class_base* c):
-	ASObject(c), forceSimple(false), noAutoLabeling(false), silent(false)
+AccessibilityProperties::AccessibilityProperties(ASWorker* wrk, Class_base* c):
+	ASObject(wrk,c), forceSimple(false), noAutoLabeling(false), silent(false)
 {
 }
 
@@ -43,12 +43,12 @@ ASFUNCTIONBODY_ATOM(AccessibilityProperties,_constructor)
 {
 }
 
-ASFUNCTIONBODY_GETTER_SETTER(AccessibilityProperties, description);
-ASFUNCTIONBODY_GETTER_SETTER(AccessibilityProperties, forceSimple);
-ASFUNCTIONBODY_GETTER_SETTER(AccessibilityProperties, name);
-ASFUNCTIONBODY_GETTER_SETTER(AccessibilityProperties, noAutoLabeling);
-ASFUNCTIONBODY_GETTER_SETTER(AccessibilityProperties, shortcut);
-ASFUNCTIONBODY_GETTER_SETTER(AccessibilityProperties, silent);
+ASFUNCTIONBODY_GETTER_SETTER(AccessibilityProperties, description)
+ASFUNCTIONBODY_GETTER_SETTER(AccessibilityProperties, forceSimple)
+ASFUNCTIONBODY_GETTER_SETTER(AccessibilityProperties, name)
+ASFUNCTIONBODY_GETTER_SETTER(AccessibilityProperties, noAutoLabeling)
+ASFUNCTIONBODY_GETTER_SETTER(AccessibilityProperties, shortcut)
+ASFUNCTIONBODY_GETTER_SETTER(AccessibilityProperties, silent)
 
 void AccessibilityImplementation::sinit(Class_base* c)
 {
@@ -57,7 +57,7 @@ void AccessibilityImplementation::sinit(Class_base* c)
 
 ASFUNCTIONBODY_ATOM(AccessibilityImplementation,_constructor)
 {
-	LOG(LOG_NOT_IMPLEMENTED, _("AccessibilityImplementation class is unimplemented."));
+	LOG(LOG_NOT_IMPLEMENTED, "AccessibilityImplementation class is unimplemented.");
 }
 
 
@@ -69,7 +69,7 @@ void Accessibility::sinit(Class_base* c)
 
 ASFUNCTIONBODY_ATOM(Accessibility,updateProperties)
 {
-	Accessibility* th=obj.as<Accessibility>();
+	Accessibility* th=asAtomHandler::as<Accessibility>(obj);
 	LOG(LOG_NOT_IMPLEMENTED, "Accessibility is not supported.");
-	ARG_UNPACK_ATOM (th->properties);
+	ARG_CHECK(ARG_UNPACK(th->properties));
 }

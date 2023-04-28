@@ -28,6 +28,7 @@
 
 #include "asobject.h"
 #include "compat.h"
+#include "threading.h"
 
 namespace lightspark
 {
@@ -147,7 +148,7 @@ public:
 	 * ExtObject instances are always owned by the objectMaps
 	 */
 	ExtObject* getObject() const { return objectValue; }
-	ASObject* getASObject(SystemState* sys,std::map<const lightspark::ExtObject*, lightspark::ASObject*>& objectsMap) const;
+	ASObject* getASObject(ASWorker* wrk, std::map<const lightspark::ExtObject*, lightspark::ASObject*>& objectsMap) const;
 protected:
 	std::string strValue;
 	ExtObject* objectValue;
@@ -193,7 +194,7 @@ class DLL_PUBLIC ExtASCallback : public ExtCallback
 {
 private:
 	bool funcWasCalled;
-	asAtom func;
+	asAtom func=asAtomHandler::invalidAtom;
 	_NR<ExternalCallEvent> funcEvent;
 	ASObject* result;
         ASObject** asArgs;
@@ -260,7 +261,7 @@ public:
 
 	SystemState* getSystemState() const { return m_sys; }
 	
-	void assertThread() { assert(Thread::self() == mainThread); }
+	void assertThread() { assert( SDL_GetThreadID(nullptr) == mainThreadID); }
 
 	// Methods
 	bool hasMethod(const lightspark::ExtIdentifier& id) const
@@ -364,7 +365,7 @@ protected:
 	SystemState* m_sys;
 private:
 	// Used to determine if a method is called in the main plugin thread
-	Thread* mainThread;
+	SDL_threadID mainThreadID;
 
 	// Provides mutual exclusion for external calls
 	Mutex mutex;

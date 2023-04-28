@@ -35,9 +35,9 @@ class GraphicsPath: public ASObject, public IGraphicsPath, public IGraphicsData
 private:
 	void ensureValid();
 public:
-	GraphicsPath(Class_base* c);
+	GraphicsPath(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base* c);
-	void finalize();
+	void finalize() override;
 	ASFUNCTION_ATOM(_constructor);
 	ASPROPERTY_GETTER_SETTER(_NR<Vector>, commands);
 	ASPROPERTY_GETTER_SETTER(_NR<Vector>, data);
@@ -47,7 +47,7 @@ public:
 	ASFUNCTION_ATOM(moveTo);
 	ASFUNCTION_ATOM(wideLineTo);
 	ASFUNCTION_ATOM(wideMoveTo);
-	void appendToTokens(tokensVector& tokens);
+	void appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics) override;
 };
 
 }

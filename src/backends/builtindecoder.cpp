@@ -25,8 +25,8 @@
 
 using namespace lightspark;
 
-BuiltinStreamDecoder::BuiltinStreamDecoder(std::istream& _s, NetStream* _ns):
-	stream(_s),prevSize(0),decodedAudioBytes(0),decodedVideoFrames(0),decodedTime(0),frameRate(0.0),netstream(_ns)
+BuiltinStreamDecoder::BuiltinStreamDecoder(std::istream& _s, NetStream* _ns, uint32_t _buffertime):
+	stream(_s),prevSize(0),decodedAudioBytes(0),decodedVideoFrames(0),decodedTime(0),frameRate(0.0),netstream(_ns),headerbuf(nullptr),headerLen(0),buffertime(_buffertime)
 {
 	STREAM_TYPE t=classifyStream(stream);
 	if(t==FLV_STREAM)
@@ -37,6 +37,15 @@ BuiltinStreamDecoder::BuiltinStreamDecoder(std::istream& _s, NetStream* _ns):
 	}
 	else
 		valid=false;
+}
+
+BuiltinStreamDecoder::~BuiltinStreamDecoder()
+{
+	if (headerLen)
+	{
+		delete headerbuf;
+		headerLen = 0;
+	}
 }
 
 BuiltinStreamDecoder::STREAM_TYPE BuiltinStreamDecoder::classifyStream(std::istream& s)
@@ -71,16 +80,25 @@ bool BuiltinStreamDecoder::decodeNextFrame()
 			prevSize=tag.getTotalLen();
 			if (tag.packetLen == 0)
 				return false;
-
-			if(audioDecoder==NULL)
+			if (tag.isHeader() && tag.SoundFormat == AAC)
+			{
+				if (audioDecoder)
+					break;
+				if (headerLen)
+					delete headerbuf;
+				// store the aac header, don't pass it as initData to the FFMpegAudioDecoder constructor
+				headerbuf = new uint8_t[tag.packetLen];
+				memcpy(headerbuf,tag.packetData,tag.packetLen);
+				headerLen = tag.packetLen;
+			}
+			if(audioDecoder==nullptr)
 			{
 				audioCodec=tag.SoundFormat;
 				switch(tag.SoundFormat)
 				{
 					case AAC:
-						assert_and_throw(tag.isHeader())
 #ifdef ENABLE_LIBAVCODEC
-						audioDecoder=new FFMpegAudioDecoder(netstream->getSystemState()->getEngineData(), tag.SoundFormat, tag.packetData, tag.packetLen);
+						audioDecoder=new FFMpegAudioDecoder(netstream->getSystemState()->getEngineData(), tag.SoundFormat,nullptr,0,buffertime);// tag.packetData, tag.packetLen);
 #else
 						audioDecoder=new NullAudioDecoder();
 #endif
@@ -88,13 +106,14 @@ bool BuiltinStreamDecoder::decodeNextFrame()
 						break;
 					case MP3:
 #ifdef ENABLE_LIBAVCODEC
-						audioDecoder=new FFMpegAudioDecoder(netstream->getSystemState()->getEngineData(), tag.SoundFormat,NULL,0);
+						audioDecoder=new FFMpegAudioDecoder(netstream->getSystemState()->getEngineData(), tag.SoundFormat,nullptr,0,buffertime);
 #else
 						audioDecoder=new NullAudioDecoder();
 #endif
 						decodedAudioBytes+=audioDecoder->decodeData(tag.packetData,tag.packetLen,decodedTime);
 						//Adjust timing
-						decodedTime=decodedAudioBytes/audioDecoder->getBytesPerMSec();
+						if (audioDecoder->getBytesPerMSec())
+							decodedTime=decodedAudioBytes/audioDecoder->getBytesPerMSec();
 						break;
 					default:
 						throw RunTimeException("Unsupported SoundFormat");
@@ -102,20 +121,23 @@ bool BuiltinStreamDecoder::decodeNextFrame()
 			}
 			else
 			{
-			/*
-				if(tag.isHeader())
+				assert_and_throw(audioCodec==tag.SoundFormat);
+				if (headerLen)
 				{
-					//The tag is the header, initialize decoding
-					audioDecoder->switchCodec(tag.SoundFormat, tag.packetData, tag.packetLen);
-					tag.releaseBuffer();
+					// add aac header to this packet
+					uint8_t buf[headerLen+tag.packetLen];
+					memcpy(buf,headerbuf,headerLen);
+					memcpy(buf+headerLen,tag.packetData,tag.packetLen);
+					
+					decodedAudioBytes+=audioDecoder->decodeData(buf,tag.packetLen+headerLen,decodedTime);
+					delete headerbuf;
+					headerLen = 0;
 				}
-				else*/
-				{
-					assert_and_throw(audioCodec==tag.SoundFormat);
+				else
 					decodedAudioBytes+=audioDecoder->decodeData(tag.packetData,tag.packetLen,decodedTime);
-					//Adjust timing
+				//Adjust timing
+				if (audioDecoder->getBytesPerMSec())
 					decodedTime=decodedAudioBytes/audioDecoder->getBytesPerMSec();
-				}
 			}
 			break;
 		}
@@ -126,7 +148,7 @@ bool BuiltinStreamDecoder::decodeNextFrame()
 			//If the framerate is known give the right timing, otherwise use decodedTime from audio
 			uint32_t frameTime=(frameRate!=0.0)?(decodedVideoFrames*1000/frameRate):decodedTime;
 
-			if(videoDecoder==NULL)
+			if(videoDecoder==nullptr)
 			{
 				//If the isHeader flag is on then the decoder becomes the owner of the data
 				if(tag.isHeader())
@@ -143,7 +165,7 @@ bool BuiltinStreamDecoder::decodeNextFrame()
 				{
 					//First packet but no special handling
 #ifdef ENABLE_LIBAVCODEC
-					videoDecoder=new FFMpegVideoDecoder(tag.codec,NULL,0,frameRate);
+					videoDecoder=new FFMpegVideoDecoder(tag.codec,nullptr,0,frameRate);
 #else
 					videoDecoder=new NullVideoDecoder();
 #endif
@@ -177,12 +199,41 @@ bool BuiltinStreamDecoder::decodeNextFrame()
 		{
 			ScriptDataTag tag(stream);
 			prevSize=tag.getTotalLen();
+			if (tag.methodName == "onMetaData")
+			{
+				// set framerate from metadata, if available
+				multiname m(nullptr);
+				m.name_type=multiname::NAME_STRING;
+				m.name_s_id=getSys()->getUniqueStringId("framerate");
+				m.ns.emplace_back(getSys(),BUILTIN_STRINGS::EMPTY,NAMESPACE);
+				m.isAttribute = false;
+				auto it = tag.dataobjectlist.begin();
+				while (it != tag.dataobjectlist.end())
+				{
+					ASObject* o = asAtomHandler::getObject((*it));
+					if(o && o->hasPropertyByMultiname(m,true,false,o->getInstanceWorker()))
+					{
+						asAtom v=asAtomHandler::invalidAtom;
+						o->getVariableByMultiname(v,m,GET_VARIABLE_OPTION::NONE,o->getInstanceWorker());
+						frameRate = asAtomHandler::toNumber(v);
+						break;
+					}
+					it++;
+				}
+			}
+			
 			netstream->sendClientNotification(tag.methodName,tag.dataobjectlist);
 			break;
 		}
 		default:
-			LOG(LOG_ERROR,_("Unexpected tag type ") << (int)TagType << _(" in FLV"));
+			LOG(LOG_ERROR,"Unexpected tag type " << (int)TagType << " in FLV");
 			return false;
 	}
 	return true;
+}
+
+void BuiltinStreamDecoder::jumpToPosition(number_t position)
+{
+	if (position != 0)
+		LOG(LOG_NOT_IMPLEMENTED,"jumpToPosition for BuiltinStreamDecoder");
 }

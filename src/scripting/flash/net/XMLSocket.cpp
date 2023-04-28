@@ -26,6 +26,17 @@
 #include "swf.h"
 #include "flash/errors/flasherrors.h"
 
+#ifdef _WIN32
+#ifndef _WIN32_WINNT
+#	define _WIN32_WINNT 0x0501
+#endif
+#	include <winsock2.h>
+#	include <ws2tcpip.h>
+#	include <fcntl.h>
+#else
+#include <unistd.h>
+#endif
+
 const char SOCKET_COMMAND_SEND = '*';
 const char SOCKET_COMMAND_CLOSE = '-';
 
@@ -54,30 +65,30 @@ void XMLSocket::finalize()
 {
 	EventDispatcher::finalize();
 
-	SpinlockLocker l(joblock);
+	Locker l(joblock);
 	if (job)
 	{
 		job->threadAborting = true;
 		job->requestClose();
 		job->threadAbort();
-		job = NULL;
+		job = nullptr;
 	}
 	timeout = 20000;
 }
 
-ASFUNCTIONBODY_GETTER_SETTER(XMLSocket, timeout);
+ASFUNCTIONBODY_GETTER_SETTER(XMLSocket, timeout)
 
 ASFUNCTIONBODY_ATOM(XMLSocket,_constructor)
 {
 	tiny_string host;
 	bool host_is_null;
 	int port;
-	ARG_UNPACK_ATOM (host, "") (port, 0);
+	ARG_CHECK(ARG_UNPACK (host, "") (port, 0));
 
-	EventDispatcher::_constructor(ret,sys,obj,NULL,0);
+	EventDispatcher::_constructor(ret,wrk,obj,NULL,0);
 
-	XMLSocket* th=obj.as<XMLSocket>();
-	host_is_null = argslen > 0 && args[0].is<Null>();
+	XMLSocket* th=asAtomHandler::as<XMLSocket>(obj);
+	host_is_null = argslen > 0 && asAtomHandler::is<Null>(args[0]);
 	if (port != 0)
 	{
 		if (host_is_null)
@@ -89,8 +100,8 @@ ASFUNCTIONBODY_ATOM(XMLSocket,_constructor)
 
 ASFUNCTIONBODY_ATOM(XMLSocket, _close)
 {
-	XMLSocket* th=obj.as<XMLSocket>();
-	SpinlockLocker l(th->joblock);
+	XMLSocket* th=asAtomHandler::as<XMLSocket>(obj);
+	Locker l(th->joblock);
 
 	if (th->job)
 	{
@@ -101,17 +112,23 @@ ASFUNCTIONBODY_ATOM(XMLSocket, _close)
 void XMLSocket::connect(tiny_string host, int port)
 {
 	if (port <= 0 || port > 65535)
-		throw Class<SecurityError>::getInstanceS(getSystemState(),"Invalid port");
+	{
+		createError<SecurityError>(getInstanceWorker(),0,"Invalid port");
+		return;
+	}
 
 	if (host.empty())
 		host = getSys()->mainClip->getOrigin().getHostname();
 
 	if (isConnected())
-		throw Class<IOError>::getInstanceS(getSystemState(),"Already connected");
+	{
+		createError<IOError>(getInstanceWorker(),0,"Already connected");
+		return;
+	}
 
 	// Host shouldn't contain scheme or port
-	if (host.strchr(':') != NULL)
-		throw Class<SecurityError>::getInstanceS(getSystemState(),"Invalid hostname");
+	if (host.strchr(':') != nullptr)
+		createError<SecurityError>(getInstanceWorker(),0,"Invalid hostname");
 
 	// Check sandbox and policy file
 	size_t buflen = host.numBytes() + 22;
@@ -129,7 +146,7 @@ void XMLSocket::connect(tiny_string host, int port)
 	if(evaluationResult != SecurityManager::ALLOWED)
 	{
 		incRef();
-		getVm(getSystemState())->addEvent(_MR(this), _MR(Class<SecurityErrorEvent>::getInstanceS(getSystemState(),"No policy file allows socket connection")));
+		getVm(getSystemState())->addEvent(_MR(this), _MR(Class<SecurityErrorEvent>::getInstanceS(getInstanceWorker(),"No policy file allows socket connection")));
 		return;
 	}
 
@@ -141,12 +158,12 @@ void XMLSocket::connect(tiny_string host, int port)
 
 ASFUNCTIONBODY_ATOM(XMLSocket, _connect)
 {
-	XMLSocket* th=obj.as<XMLSocket>();
+	XMLSocket* th=asAtomHandler::as<XMLSocket>(obj);
 	tiny_string host;
 	bool host_is_null;
 	int port;
-	ARG_UNPACK_ATOM (host) (port);
-	host_is_null = argslen > 0 && args[0].is<Null>();
+	ARG_CHECK(ARG_UNPACK (host) (port));
+	host_is_null = argslen > 0 && asAtomHandler::is<Null>(args[0]);
 
 	if (host_is_null)
 		th->connect("", port);
@@ -156,37 +173,94 @@ ASFUNCTIONBODY_ATOM(XMLSocket, _connect)
 
 ASFUNCTIONBODY_ATOM(XMLSocket, _send)
 {
-	XMLSocket* th=obj.as<XMLSocket>();
+	XMLSocket* th=asAtomHandler::as<XMLSocket>(obj);
 	tiny_string data;
-	ARG_UNPACK_ATOM (data);
+	ARG_CHECK(ARG_UNPACK (data));
 
-	SpinlockLocker l(th->joblock);
+	Locker l(th->joblock);
 	if (th->job)
 	{
 		th->job->sendData(data);
 	}
 	else
 	{
-		throw Class<IOError>::getInstanceS(sys,"Socket is not connected");
+		createError<IOError>(wrk,0,"Socket is not connected");
 	}
 }
 
 bool XMLSocket::isConnected()
 {
-	SpinlockLocker l(joblock);
+	Locker l(joblock);
 	return job && job->isConnected();
 }
 
 ASFUNCTIONBODY_ATOM(XMLSocket, _connected)
 {
-	XMLSocket* th=obj.as<XMLSocket>();
-	ret.setBool(th->isConnected());
+	XMLSocket* th=asAtomHandler::as<XMLSocket>(obj);
+	asAtomHandler::setBool(ret,th->isConnected());
 }
 
 void XMLSocket::threadFinished()
 {
-	SpinlockLocker l(joblock);
-	job = NULL;
+	Locker l(joblock);
+	job = nullptr;
+}
+void XMLSocket::AVM1HandleEvent(EventDispatcher *dispatcher, Event* e)
+{
+	if (dispatcher == this)
+	{
+		ASWorker* wrk = getInstanceWorker();
+		if (e->type == "connect")
+		{
+			asAtom func=asAtomHandler::invalidAtom;
+			multiname m(nullptr);
+			m.name_type=multiname::NAME_STRING;
+			m.isAttribute = false;
+			m.name_s_id=BUILTIN_STRINGS::STRING_ONCONNECT;
+			getVariableByMultiname(func,m,GET_VARIABLE_OPTION::NONE,wrk);
+			if (asAtomHandler::is<AVM1Function>(func))
+			{
+				asAtom ret=asAtomHandler::invalidAtom;
+				asAtom obj = asAtomHandler::fromObject(this);
+				asAtom arg0 = asAtomHandler::fromBool(this->isConnected());
+				asAtomHandler::as<AVM1Function>(func)->call(&ret,&obj,&arg0,1);
+				asAtomHandler::as<AVM1Function>(func)->decRef();
+			}
+		}
+		else if (e->type == "data")
+		{
+			asAtom func=asAtomHandler::invalidAtom;
+			multiname m(nullptr);
+			m.name_type=multiname::NAME_STRING;
+			m.isAttribute = false;
+			m.name_s_id=BUILTIN_STRINGS::STRING_ONDATA;
+			getVariableByMultiname(func,m,GET_VARIABLE_OPTION::NONE,wrk);
+			if (asAtomHandler::is<AVM1Function>(func))
+			{
+				asAtom ret=asAtomHandler::invalidAtom;
+				asAtom obj = asAtomHandler::fromObject(this);
+				asAtom arg0 = asAtomHandler::fromString(getSystemState(),e->as<DataEvent>()->data);
+				asAtomHandler::as<AVM1Function>(func)->call(&ret,&obj,&arg0,1);
+				asAtomHandler::as<AVM1Function>(func)->decRef();
+			}
+		}
+		else if (e->type == "close")
+		{
+			asAtom func=asAtomHandler::invalidAtom;
+			multiname m(nullptr);
+			m.name_type=multiname::NAME_STRING;
+			m.isAttribute = false;
+			m.name_s_id=BUILTIN_STRINGS::STRING_ONCLOSE;
+			getVariableByMultiname(func,m,GET_VARIABLE_OPTION::NONE,wrk);
+			if (asAtomHandler::is<AVM1Function>(func))
+			{
+				asAtom ret=asAtomHandler::invalidAtom;
+				asAtom obj = asAtomHandler::fromObject(this);
+				asAtomHandler::as<AVM1Function>(func)->call(&ret,&obj,nullptr,0);
+				asAtomHandler::as<AVM1Function>(func)->decRef();
+			}
+		}
+	}
 }
 
 XMLSocketThread::XMLSocketThread(_R<XMLSocket> _owner, const tiny_string& _hostname, int _port, int _timeout)
@@ -225,7 +299,7 @@ XMLSocketThread::~XMLSocketThread()
 		::close(signalEmitter);
 
 	void *data;
-	while ((data = g_async_queue_try_pop(sendQueue)) != NULL)
+	while ((data = g_async_queue_try_pop(sendQueue)) != nullptr)
 	{
 		tiny_string *s = (tiny_string *)data;
 		delete s;
@@ -238,17 +312,20 @@ void XMLSocketThread::execute()
 	if (!sock.connect(hostname, port))
 	{
 		owner->incRef();
-		getVm(owner->getSystemState())->addEvent(owner, _MR(Class<IOErrorEvent>::getInstanceS(owner->getSystemState())));
+		if (owner->getSystemState()->mainClip->needsActionScript3())
+			getVm(owner->getSystemState())->addEvent(owner, _MR(Class<IOErrorEvent>::getInstanceS(owner->getInstanceWorker())));
+		else
+			getVm(owner->getSystemState())->addEvent(owner, _MR(Class<Event>::getInstanceS(owner->getInstanceWorker(),"connect")));
 		return;
 	}
 
 	owner->incRef();
-	getVm(owner->getSystemState())->addEvent(owner, _MR(Class<Event>::getInstanceS(owner->getSystemState(),"connect")));
+	getVm(owner->getSystemState())->addEvent(owner, _MR(Class<Event>::getInstanceS(owner->getInstanceWorker(),"connect")));
 
 	struct timeval timeout;
 	int maxfd;
 	fd_set readfds;
-	       
+	
 	while (!threadAborting)
 	{
 		FD_ZERO(&readfds);
@@ -260,11 +337,11 @@ void XMLSocketThread::execute()
 		timeout.tv_sec = 10;
 		timeout.tv_usec = 0;
 
-		int status = select(maxfd+1, &readfds, NULL, NULL, &timeout);
+		int status = select(maxfd+1, &readfds, nullptr, nullptr, &timeout);
 		if (status  < 0)
 		{
 			owner->incRef();
-			getVm(owner->getSystemState())->addEvent(owner, _MR(Class<IOErrorEvent>::getInstanceS(owner->getSystemState())));
+			getVm(owner->getSystemState())->addEvent(owner, _MR(Class<IOErrorEvent>::getInstanceS(owner->getInstanceWorker())));
 			return;
 		}
 
@@ -276,7 +353,7 @@ void XMLSocketThread::execute()
 			if (nbytes < 0)
 			{
 				owner->incRef();
-				getVm(owner->getSystemState())->addEvent(owner, _MR(Class<IOErrorEvent>::getInstanceS(owner->getSystemState())));
+				getVm(owner->getSystemState())->addEvent(owner, _MR(Class<IOErrorEvent>::getInstanceS(owner->getInstanceWorker())));
 				return;
 			}
 			else if (nbytes == 0)
@@ -308,20 +385,20 @@ void XMLSocketThread::readSocket(const SocketIO& sock)
 		buf[nbytes] = '\0';
 		tiny_string data(buf, true);
 		owner->incRef();
-		getVm(owner->getSystemState())->addEvent(owner, _MR(Class<DataEvent>::getInstanceS(owner->getSystemState(),data)));
+		getVm(owner->getSystemState())->addEvent(owner, _MR(Class<DataEvent>::getInstanceS(owner->getInstanceWorker(),data)));
 	}
 	else if (nbytes == 0)
 	{
 		// The server has closed the socket
 		owner->incRef();
-		getVm(owner->getSystemState())->addEvent(owner, _MR(Class<Event>::getInstanceS(owner->getSystemState(),"close")));
+		getVm(owner->getSystemState())->addEvent(owner, _MR(Class<Event>::getInstanceS(owner->getInstanceWorker(),"close")));
 		threadAborting = true;
 	}
 	else
 	{
 		// Error
 		owner->incRef();
-		getVm(owner->getSystemState())->addEvent(owner, _MR(Class<IOErrorEvent>::getInstanceS(owner->getSystemState())));
+		getVm(owner->getSystemState())->addEvent(owner, _MR(Class<IOErrorEvent>::getInstanceS(owner->getInstanceWorker())));
 		threadAborting = true;
 	}
 }
@@ -333,11 +410,15 @@ void XMLSocketThread::executeCommand(char cmd, SocketIO& sock)
 		case SOCKET_COMMAND_SEND:
 		{
 			void *data;
-			while ((data = g_async_queue_try_pop(sendQueue)) != NULL)
+			while ((data = g_async_queue_try_pop(sendQueue)) != nullptr)
 			{
 				tiny_string *s = (tiny_string *)data;
 				sock.sendAll(s->raw_buf(), s->numBytes());
 				delete s;
+				// according to specs every message is terminated by a null byte
+				char buf=0;
+				sock.sendAll(&buf, 1);
+				
 			}
 			break;
 		}

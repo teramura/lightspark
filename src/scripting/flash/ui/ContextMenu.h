@@ -22,6 +22,7 @@
 #include "scripting/flash/events/flashevents.h"
 #include "scripting/flash/ui/ContextMenuBuiltInItems.h"
 #include "scripting/toplevel/Array.h"
+#include "scripting/flash/display/NativeMenuItem.h"
 
 namespace lightspark
 {
@@ -30,12 +31,20 @@ class Array;
 class ContextMenu : public EventDispatcher
 {
 public:
-	ContextMenu(Class_base* c);
+	ContextMenu(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base* c);
+	bool destruct() override;
+	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(hideBuiltInItems);
+	ASFUNCTION_ATOM(clone);
+	ASPROPERTY_GETTER(bool,isSupported);
 	ASPROPERTY_GETTER_SETTER(_NR<Array>,customItems);
 	ASPROPERTY_GETTER_SETTER(_NR<ContextMenuBuiltInItems>,builtInItems);
+	void getCurrentContextMenuItems(std::vector<_R<NativeMenuItem>>& items);
+	InteractiveObject* owner;
+	static void getVisibleBuiltinContextMenuItems(ContextMenu* m, std::vector<Ref<NativeMenuItem> > &items, ASWorker* worker);
 };
 
 }

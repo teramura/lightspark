@@ -29,6 +29,7 @@ namespace lightspark
 
 enum VertexAttrib { VERTEX_ATTRIB=0, COLOR_ATTRIB, TEXCOORD_ATTRIB};
 
+class Rectangle;
 /*
  * The RenderContext contains all (public) functions that are needed by DisplayObjects to draw themselves.
  */
@@ -45,12 +46,14 @@ public:
 	enum CONTEXT_TYPE { CAIRO=0, GL };
 	RenderContext(CONTEXT_TYPE t);
 	CONTEXT_TYPE contextType;
+	const DisplayObject* currentMask;
 
 	/* Modelview matrix manipulation */
 	void lsglLoadIdentity();
 	void lsglLoadMatrixf(const float *m);
 	void lsglScalef(float scaleX, float scaleY, float scaleZ);
 	void lsglTranslatef(float translateX, float translateY, float translateZ);
+	void lsglRotatef(float angle);
 
 	enum COLOR_MODE { RGB_MODE=0, YUV_MODE };
 	enum MASK_MODE { NO_MASK = 0, ENABLE_MASK };
@@ -58,13 +61,15 @@ public:
 	/**
 		Render a quad of given size using the given chunk
 	*/
-	virtual void renderTextured(const TextureChunk& chunk, int32_t x, int32_t y, uint32_t w, uint32_t h,
-			float alpha, COLOR_MODE colorMode)=0;
+	virtual void renderTextured(const TextureChunk& chunk, float alpha, COLOR_MODE colorMode,
+			float redMultiplier, float greenMultiplier, float blueMultiplier, float alphaMultiplier,
+			float redOffset, float greenOffset, float blueOffset, float alphaOffset,
+			bool isMask, bool hasMask, float directMode, RGB directColor,SMOOTH_MODE smooth, const MATRIX& matrix,
+			Rectangle* scalingGrid=nullptr, AS_BLENDMODE blendmode=BLENDMODE_NORMAL)=0;
 	/**
 	 * Get the right CachedSurface from an object
 	 */
 	virtual const CachedSurface& getCachedSurface(const DisplayObject* obj) const=0;
-	virtual void setProperties(AS_BLENDMODE blendmode) = 0;
 };
 
 class GLRenderContext: public RenderContext
@@ -78,6 +83,13 @@ protected:
 
 	int yuvUniform;
 	int alphaUniform;
+	int maskUniform;
+	int colortransMultiplyUniform;
+	int colortransAddUniform;
+	int directUniform;
+	int directColorUniform;
+	uint32_t maskframebuffer;
+	uint32_t maskTextureID;
 
 	/* Textures */
 	Mutex mutexLargeTexture;
@@ -93,27 +105,29 @@ protected:
 	std::vector<LargeTexture> largeTextures;
 
 	~GLRenderContext(){}
-
+	void renderpart(const MATRIX& matrix, const TextureChunk& chunk, float cropleft, float croptop, float cropwidth, float cropheight, float tx, float ty);
 public:
 	enum LSGL_MATRIX {LSGL_PROJECTION=0, LSGL_MODELVIEW};
 	/*
 	 * Uploads the current matrix as the specified type.
 	 */
 	void setMatrixUniform(LSGL_MATRIX m) const;
-	GLRenderContext() : RenderContext(GL),engineData(NULL), largeTextureSize(0)
+	GLRenderContext() : RenderContext(GL),engineData(nullptr), largeTextureSize(0)
 	{
 	}
 	void SetEngineData(EngineData* data) { engineData = data;}
 	void lsglOrtho(float l, float r, float b, float t, float n, float f);
 
-	void renderTextured(const TextureChunk& chunk, int32_t x, int32_t y, uint32_t w, uint32_t h,
-			float alpha, COLOR_MODE colorMode);
+	void renderTextured(const TextureChunk& chunk, float alpha, COLOR_MODE colorMode,
+			float redMultiplier, float greenMultiplier, float blueMultiplier, float alphaMultiplier,
+			float redOffset, float greenOffset, float blueOffset, float alphaOffset,
+			bool isMask, bool hasMask, float directMode, RGB directColor, SMOOTH_MODE smooth, const MATRIX& matrix,
+			Rectangle* scalingGrid=nullptr, AS_BLENDMODE blendmode=BLENDMODE_NORMAL) override;
 	/**
 	 * Get the right CachedSurface from an object
 	 * In the OpenGL case we just get the CachedSurface inside the object itself
 	 */
-	const CachedSurface& getCachedSurface(const DisplayObject* obj) const;
-	void setProperties(AS_BLENDMODE blendmode);
+	const CachedSurface& getCachedSurface(const DisplayObject* obj) const override;
 
 	/* Utility */
 	bool handleGLErrors() const;
@@ -124,7 +138,8 @@ class CairoRenderContext: public RenderContext
 private:
 	std::map<const DisplayObject*, CachedSurface> customSurfaces;
 	cairo_t* cr;
-	static cairo_surface_t* getCairoSurfaceForData(uint8_t* buf, uint32_t width, uint32_t height);
+	std::list<std::pair<cairo_surface_t*,MATRIX>> masksurfaces;
+	static cairo_surface_t* getCairoSurfaceForData(uint8_t* buf, uint32_t width, uint32_t height, uint32_t stride);
 	/*
 	 * An invalid surface to be returned for objects with no content
 	 */
@@ -132,20 +147,22 @@ private:
 public:
 	CairoRenderContext(uint8_t* buf, uint32_t width, uint32_t height,bool smoothing);
 	virtual ~CairoRenderContext();
-	void renderTextured(const TextureChunk& chunk, int32_t x, int32_t y, uint32_t w, uint32_t h,
-			float alpha, COLOR_MODE colorMode);
+	void renderTextured(const TextureChunk& chunk, float alpha, COLOR_MODE colorMode,
+			float redMultiplier, float greenMultiplier, float blueMultiplier, float alphaMultiplier,
+			float redOffset, float greenOffset, float blueOffset, float alphaOffset,
+			bool isMask, bool hasMask, float directMode, RGB directColor, SMOOTH_MODE smooth, const MATRIX& matrix,
+			Rectangle* scalingGrid=nullptr, AS_BLENDMODE blendmode=BLENDMODE_NORMAL) override;
 	/**
 	 * Get the right CachedSurface from an object
 	 * In the Cairo case we get the right CachedSurface out of the map
 	 */
-	const CachedSurface& getCachedSurface(const DisplayObject* obj) const;
-	void setProperties(AS_BLENDMODE blendmode);
+	const CachedSurface& getCachedSurface(const DisplayObject* obj) const override;
 
 	/**
 	 * The CairoRenderContext acquires the ownership of the buffer
 	 * it will be freed on destruction
 	 */
-	CachedSurface& allocateCustomSurface(const DisplayObject* d, uint8_t* texBuf);
+	CachedSurface& allocateCustomSurface(const DisplayObject* d, uint8_t* texBuf, bool isBufferOwner);
 	/**
 	 * Do a fast non filtered, non scaled blit of ARGB data
 	 */

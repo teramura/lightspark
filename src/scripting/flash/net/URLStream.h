@@ -25,12 +25,12 @@
 #include "scripting/flash/events/flashevents.h"
 #include "thread_pool.h"
 #include "backends/netutils.h"
+#include "scripting/flash/utils/flashutils.h"
 
 namespace lightspark
 {
 
 class URLStream;
-class ByteArray;
 
 class URLStreamThread : public DownloaderThreadBase, public ILoadable
 {
@@ -40,11 +40,11 @@ private:
 	std::streambuf *streambuffer;
 	uint64_t timestamp_last_progress;
 	uint32_t bytes_total;
-	void execute();
+	void execute() override;
 public:
 	URLStreamThread(_R<URLRequest> request, _R<URLStream> ldr, _R<ByteArray> bytes);
-	void setBytesTotal(uint32_t b);
-	void setBytesLoaded(uint32_t b);
+	void setBytesTotal(uint32_t b) override;
+	void setBytesLoaded(uint32_t b) override;
 };
 
 class URLStream: public EventDispatcher, public IDataInput, public IDownloaderThreadListener
@@ -53,8 +53,8 @@ private:
 	URLInfo url;
 	_NR<ByteArray> data;
 	URLStreamThread *job;
-	Spinlock spinlock;
-	void finalize();
+	Mutex spinlock;
+	void finalize() override;
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(_getEndian);
 	ASFUNCTION_ATOM(_setEndian);
@@ -79,10 +79,10 @@ private:
 	ASFUNCTION_ATOM(readUTFBytes);
 	ASPROPERTY_GETTER(bool,connected);
 public:
-	URLStream(Class_base* c);
+	URLStream(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base*);
 	static void buildTraits(ASObject* o);
-	void threadFinished(IThreadJob *job);
+	void threadFinished(IThreadJob *job) override;
 };
 
 }

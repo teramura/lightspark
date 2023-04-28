@@ -23,6 +23,7 @@
 #include <vector>
 #include "asobject.h"
 #include "backends/geometry.h"
+#include "threading.h"
 
 namespace lightspark
 {
@@ -37,8 +38,11 @@ class Vector;
 class Graphics: public ASObject
 {
 private:
-	TokenContainer *const owner;
-	void checkAndSetScaling();
+	Mutex drawMutex;
+	TokenContainer *owner;
+	// we use two lists of styles as the previous styles may still be used after calling clear()
+	std::list<FILLSTYLE> fillStyles[2];
+	std::list<LINESTYLE2> lineStyles[2];
 	static void solveVertexMapping(double x1, double y1,
 				       double x2, double y2,
 				       double x3, double y3,
@@ -46,16 +50,29 @@ private:
 				       double c[3]);
 	int movex;
 	int movey;
+	int currentstyles;
 	bool inFilling;
+	bool hasChanged;
+	bool needsRefresh;
+	bool wascleared;
+	tokensVector tokens;
+	void dorender(bool closepath);
+	void updateTokenBounds(int x, int y);
 public:
-	Graphics(Class_base* c):ASObject(c),owner(NULL)
+	Graphics(ASWorker* wrk, Class_base* c):ASObject(wrk,c),owner(nullptr),movex(0),movey(0),currentstyles(0),inFilling(false),hasChanged(false),needsRefresh(true),wascleared(false)
 	{
 //		throw RunTimeException("Cannot instantiate a Graphics object");
 	}
-	Graphics(Class_base* c, TokenContainer* _o)
-		: ASObject(c),owner(_o),movex(0),movey(0),inFilling(false) {}
+	Graphics(ASWorker* wrk, Class_base* c, TokenContainer* _o)
+		: ASObject(wrk,c),owner(_o),movex(0),movey(0),currentstyles(0),inFilling(false),hasChanged(false),needsRefresh(true),wascleared(false) {}
+	void startDrawJob();
+	void endDrawJob();
+	bool destruct() override;
+	void refreshTokens();
+	bool shouldRenderToGL();
 	static void sinit(Class_base* c);
-	static void buildTraits(ASObject* o);
+	FILLSTYLE& addFillStyle(FILLSTYLE& fs) { fillStyles[currentstyles].push_back(fs); return fillStyles[currentstyles].back();}
+	LINESTYLE2& addLineStyle(LINESTYLE2& ls) { lineStyles[currentstyles].push_back(ls); return lineStyles[currentstyles].back();}
 	static FILLSTYLE createGradientFill(const tiny_string& type,
 					    _NR<Array> colors,
 					    _NR<Array> alphas,
@@ -72,12 +89,12 @@ public:
 	static void pathToTokens(_NR<Vector> commands,
 				 _NR<Vector> data,
 				 tiny_string windings,
-				 tokensVector &tokens);
+				 std::vector<uint64_t> &tokens);
 	static void drawTrianglesToTokens(_NR<Vector> vertices,
 					  _NR<Vector> indices,
 					  _NR<Vector> uvtData,
 					  tiny_string culling,
-					  tokensVector &tokens);
+					  std::vector<uint64_t> &tokens);
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(lineBitmapStyle);
 	ASFUNCTION_ATOM(lineGradientStyle);
@@ -102,6 +119,6 @@ public:
 	ASFUNCTION_ATOM(copyFrom);
 };
 
-};
+}
 
 #endif /* SCRIPTING_FLASH_DISPLAY_GRAPHICS_H */

@@ -26,8 +26,8 @@
 
 using namespace lightspark;
 
-GraphicsStroke::GraphicsStroke(Class_base* c):
-	ASObject(c), caps("none"), joints("round"), miterLimit(3.0),
+GraphicsStroke::GraphicsStroke(ASWorker* wrk, Class_base* c):
+	ASObject(wrk,c), caps("none"), joints("round"), miterLimit(3.0),
 	pixelHinting(false), scaleMode("normal"),
 	thickness(std::numeric_limits<double>::quiet_NaN())
 {
@@ -56,27 +56,37 @@ void GraphicsStroke::finalize()
 	fill.reset();
 }
 
+bool GraphicsStroke::countCylicMemberReferences(garbagecollectorstate& gcstate)
+{
+	if (gcstate.checkAncestors(this))
+		return false;
+	bool ret = ASObject::countCylicMemberReferences(gcstate);
+	if (fill)
+		ret = fill->countAllCylicMemberReferences(gcstate) || ret;
+	return ret;
+}
+
 ASFUNCTIONBODY_ATOM(GraphicsStroke,_constructor)
 {
-	GraphicsStroke* th = obj.as<GraphicsStroke>();
+	GraphicsStroke* th = asAtomHandler::as<GraphicsStroke>(obj);
 	_NR<ASObject> fill;
-	ARG_UNPACK_ATOM (th->thickness, std::numeric_limits<double>::quiet_NaN())
+	ARG_CHECK(ARG_UNPACK (th->thickness, std::numeric_limits<double>::quiet_NaN())
 		(th->pixelHinting, false)
 		(th->scaleMode, "normal")
 		(th->caps, "none")
 		(th->joints, "rounds")
 		(th->miterLimit, 3.0)
-		(th->fill, NullRef);
+		(th->fill, NullRef));
 	th->validateFill(NullRef);
 }
 
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsStroke, caps);
-ASFUNCTIONBODY_GETTER_SETTER_CB(GraphicsStroke, fill, validateFill);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsStroke, joints);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsStroke, miterLimit);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsStroke, pixelHinting);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsStroke, scaleMode);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsStroke, thickness);
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsStroke, caps)
+ASFUNCTIONBODY_GETTER_SETTER_CB(GraphicsStroke, fill, validateFill)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsStroke, joints)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsStroke, miterLimit)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsStroke, pixelHinting)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsStroke, scaleMode)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsStroke, thickness)
 
 void GraphicsStroke::validateFill(_NR<ASObject> oldValue)
 {
@@ -84,11 +94,11 @@ void GraphicsStroke::validateFill(_NR<ASObject> oldValue)
 	{
 		tiny_string wrongClass = fill->getClassName();
 		fill = oldValue;
-		throwError<TypeError>(kCheckTypeFailedError, wrongClass, "IGraphicsFill");
+		createError<TypeError>(getInstanceWorker(),kCheckTypeFailedError, wrongClass, "IGraphicsFill");
 	}
 }
 
-void GraphicsStroke::appendToTokens(tokensVector& tokens)
+void GraphicsStroke::appendToTokens(std::vector<uint64_t>& tokens, Graphics* graphics)
 {
 	LINESTYLE2 style(0xff);
 	style.Width = thickness;
@@ -103,5 +113,6 @@ void GraphicsStroke::appendToTokens(tokensVector& tokens)
 		style.FillType = gfill->toFillStyle();
 	}
 
-	tokens.emplace_back(GeomToken(SET_STROKE, style));
+	tokens.emplace_back(GeomToken(SET_STROKE).uval);
+	tokens.emplace_back(GeomToken(graphics->addLineStyle(style)).uval);
 }

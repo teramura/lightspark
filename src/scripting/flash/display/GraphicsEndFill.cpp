@@ -22,8 +22,8 @@
 
 using namespace lightspark;
 
-GraphicsEndFill::GraphicsEndFill(Class_base* c):
-	ASObject(c)
+GraphicsEndFill::GraphicsEndFill(ASWorker* wrk, Class_base* c):
+	ASObject(wrk,c)
 {
 }
 
@@ -41,7 +41,7 @@ FILLSTYLE GraphicsEndFill::toFillStyle()
 	return FILLSTYLE(0xff);
 }
 
-void GraphicsEndFill::appendToTokens(tokensVector& tokens)
+void GraphicsEndFill::appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics)
 {
-	tokens.emplace_back(CLEAR_FILL);
+	tokens.emplace_back(GeomToken(CLEAR_FILL).uval);
 }

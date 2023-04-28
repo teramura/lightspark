@@ -35,7 +35,7 @@ class XMLSocket : public EventDispatcher
 {
 protected:
 	XMLSocketThread *job;
-	Spinlock joblock; // protect access to job
+	Mutex joblock; // protect access to job
 
 	ASPROPERTY_GETTER_SETTER(int,timeout);
 	ASFUNCTION_ATOM(_constructor);
@@ -47,12 +47,13 @@ protected:
 	void connect(tiny_string host, int port);
 	bool isConnected();
 public:
-	XMLSocket(Class_base* c) : EventDispatcher(c), job(NULL), timeout(20000) {}
+	XMLSocket(ASWorker* wrk,Class_base* c) : EventDispatcher(wrk,c), job(nullptr), timeout(20000) {}
 	~XMLSocket();
 	static void sinit(Class_base*);
 	static void buildTraits(ASObject* o);
-	void finalize();
+	void finalize() override;
 	void threadFinished();
+	void AVM1HandleEvent(EventDispatcher* dispatcher, Event* e) override;
 };
 
 class XMLSocketThread : public IThreadJob

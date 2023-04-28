@@ -16,14 +16,15 @@
 **************************************************************************/
 
 #include "ContextMenuItem.h"
+#include "ContextMenuBuiltInItems.h"
 #include "scripting/class.h"
 #include "scripting/argconv.h"
 
 using namespace std;
 using namespace lightspark;
 
-ContextMenuBuiltInItems::ContextMenuBuiltInItems(Class_base* c):ASObject(c,T_OBJECT,SUBTYPE_CONTEXTMENUBUILTINITEMS),
-	forwardAndBack(false),loop(false),play(false),print(false),quality(false),rewind(false),save(false),zoom(false)
+ContextMenuBuiltInItems::ContextMenuBuiltInItems(ASWorker* wrk, Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_CONTEXTMENUBUILTINITEMS),
+	forwardAndBack(true),loop(true),play(true),print(true),quality(true),rewind(true),save(true),zoom(true)
 {
 }
 
@@ -40,14 +41,14 @@ void ContextMenuBuiltInItems::sinit(Class_base* c)
 	REGISTER_GETTER_SETTER(c,zoom);
 }
 
-ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,forwardAndBack);
-ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,loop);
-ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,play);
-ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,print);
-ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,quality);
-ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,rewind);
-ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,save);
-ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,zoom);
+ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,forwardAndBack)
+ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,loop)
+ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,play)
+ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,print)
+ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,quality)
+ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,rewind)
+ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,save)
+ASFUNCTIONBODY_GETTER_SETTER(ContextMenuBuiltInItems,zoom)
 
 ASFUNCTIONBODY_ATOM(ContextMenuBuiltInItems,_constructor)
 {

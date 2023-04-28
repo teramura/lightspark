@@ -21,7 +21,7 @@
 #define SCRIPTING_TOPLEVEL_REGEXP_H 1
 #include "compat.h"
 #include "asobject.h"
-#include <pcre.h>
+#include "3rdparty/avmplus/pcre/pcre.h"
 
 namespace lightspark
 {
@@ -29,9 +29,9 @@ namespace lightspark
 class RegExp: public ASObject
 {
 public:
-	RegExp(Class_base* c);
-	RegExp(Class_base* c, const tiny_string& _re);
-	pcre* compile();
+	RegExp(ASWorker* wrk,Class_base* c);
+	RegExp(ASWorker* wrk, Class_base* c, const tiny_string& _re);
+	pcre* compile(bool isutf8);
 	static void sinit(Class_base* c);
 	static void buildTraits(ASObject* o);
 	ASObject *match(const tiny_string& str);

@@ -23,21 +23,19 @@
 #include "compat.h"
 #include "logger.h"
 #include "swf.h"
+#include "scripting/flash/system/flashsystem.h"
 
 using namespace lightspark;
 
-ThreadPool::ThreadPool(SystemState* s):num_jobs(0),stopFlag(false)
+ThreadPool::ThreadPool(SystemState* s):num_jobs(0),stopFlag(false),runcount(0)
 {
 	m_sys=s;
 	for(uint32_t i=0;i<NUM_THREADS;i++)
 	{
-		curJobs[i]=NULL;
-#ifdef HAVE_NEW_GLIBMM_THREAD_API
-		threads[i] = Thread::create(sigc::bind(&job_worker,this,i));
-#else
-		threads[i] = Thread::create(sigc::bind(&job_worker,this,i),true);
-#endif
-		
+		curJobs[i]=nullptr;
+		data[i].index=i;
+		data[i].pool = this;
+		threads[i] = SDL_CreateThread(job_worker,"ThreadPool",&data[i]);
 	}
 }
 
@@ -70,7 +68,7 @@ void ThreadPool::forceStop()
 
 		for(int i=0;i<NUM_THREADS;i++)
 		{
-			threads[i]->join();
+			SDL_WaitThread(threads[i],nullptr);
 		}
 	}
 }
@@ -80,33 +78,36 @@ ThreadPool::~ThreadPool()
 	forceStop();
 }
 
-void ThreadPool::job_worker(ThreadPool* th, uint32_t index)
+int ThreadPool::job_worker(void *d)
 {
-	setTLSSys(th->m_sys);
+	ThreadPoolData* data = (ThreadPoolData*)d;
+	setTLSSys(data->pool->m_sys);
 
-	ThreadProfile* profile=th->m_sys->allocateProfiler(RGB(200,200,0));
+	ThreadProfile* profile=data->pool->m_sys->allocateProfiler(RGB(200,200,0));
 	char buf[16];
-	snprintf(buf,16,"Thread %u",index);
+	snprintf(buf,16,"Thread %u",data->index);
 	profile->setTag(buf);
 
 	Chronometer chronometer;
 	while(1)
 	{
-		th->num_jobs.wait();
-		if(th->stopFlag)
-			return;
-		Locker l(th->mutex);
-		IThreadJob* myJob=th->jobs.front();
-		th->jobs.pop_front();
-		th->curJobs[index]=myJob;
+		data->pool->num_jobs.wait();
+		if(data->pool->stopFlag)
+			return 0;
+		Locker l(data->pool->mutex);
+		IThreadJob* myJob=data->pool->jobs.front();
+		data->pool->jobs.pop_front();
+		data->pool->curJobs[data->index]=myJob;
+		data->pool->runcount++;
 		l.release();
 
+		setTLSWorker(myJob->fromWorker);
 		chronometer.checkpoint();
 		try
 		{
 			// it's possible that a job was added and will be executed while forcestop() has been called
-			if(th->stopFlag)
-				return;
+			if(data->pool->stopFlag)
+				return 0;
 			myJob->execute();
 		}
 		catch(JobTerminationException& ex)
@@ -115,36 +116,79 @@ void ThreadPool::job_worker(ThreadPool* th, uint32_t index)
 		}
 		catch(LightsparkException& e)
 		{
-			LOG(LOG_ERROR,_("Exception in ThreadPool ") << e.what());
-			th->m_sys->setError(e.cause);
+			LOG(LOG_ERROR,"Exception in ThreadPool " << e.what());
+			data->pool->m_sys->setError(e.cause);
 		}
 		catch(std::exception& e)
 		{
 			LOG(LOG_ERROR,"std Exception in ThreadPool:"<<myJob<<" "<<e.what());
-			th->m_sys->setError(e.what());
+			data->pool->m_sys->setError(e.what());
 		}
 		
 		profile->accountTime(chronometer.checkpoint());
 
 		l.acquire();
-		th->curJobs[index]=NULL;
+		data->pool->curJobs[data->index]=nullptr;
+		data->pool->runcount--;
 		l.release();
 
 		//jobFencing is allowed to happen outside the mutex
 		myJob->jobFence();
 	}
+	return 0;
 }
 
 void ThreadPool::addJob(IThreadJob* j)
 {
 	Locker l(mutex);
+	j->setWorker(getWorker());
 	if(stopFlag)
 	{
 		j->jobFence();
 		return;
 	}
 	assert(j);
-	jobs.push_back(j);
-	num_jobs.signal();
+	if (runcount == NUM_THREADS)
+	{
+		// no slot available, we create an additional thread
+		runAdditionalThread(j);
+	}
+	else
+	{
+		jobs.push_back(j);
+		num_jobs.signal();
+	}
+}
+void ThreadPool::runAdditionalThread(IThreadJob* j)
+{
+	SDL_Thread* t = SDL_CreateThread(additional_job_worker,"additionalThread",j);
+	SDL_DetachThread(t);
 }
 
+int ThreadPool::additional_job_worker(void* d)
+{
+	IThreadJob* myJob=(IThreadJob*)d;
+
+	setTLSSys(myJob->fromWorker->getSystemState());
+	setTLSWorker(myJob->fromWorker);
+	try
+	{
+		myJob->execute();
+	}
+	catch(JobTerminationException& ex)
+	{
+		LOG(LOG_NOT_IMPLEMENTED,"Job terminated");
+	}
+	catch(LightsparkException& e)
+	{
+		LOG(LOG_ERROR,"Exception in AdditionalThread " << e.what());
+		myJob->fromWorker->getSystemState()->setError(e.cause);
+	}
+	catch(std::exception& e)
+	{
+		LOG(LOG_ERROR,"std Exception in AdditionalThread:"<<myJob<<" "<<e.what());
+		myJob->fromWorker->getSystemState()->setError(e.what());
+	}
+	myJob->jobFence();
+	return 0;
+}

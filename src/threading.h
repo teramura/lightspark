@@ -24,58 +24,102 @@
 #include <cstdlib>
 #include <cassert>
 #include <vector>
-
-#ifdef HAVE_NEW_GLIBMM_THREAD_API
-#include <glibmm/threads.h>
-#else
-#include <glibmm/thread.h>
-#endif
+#include <SDL2/SDL_mutex.h>
+#include <SDL2/SDL_thread.h>
 
 namespace lightspark
 {
+class Mutex
+{
+friend class Cond;
+friend class Locker;
+	SDL_mutex* m;
+public:
+	Mutex()
+	{
+		m = SDL_CreateMutex();
+	}
+	~Mutex()
+	{
+		SDL_DestroyMutex(m);
+	}
+	inline void lock()
+	{
+		SDL_LockMutex(m);
+	}
+	inline void unlock()
+	{
+		SDL_UnlockMutex(m);
+	}
+	inline bool trylock()
+	{
+		return SDL_TryLockMutex(m)==0;
+	}
+};
 
-/* Be aware that on win32, both Mutex and RecMutex are recursive! */
-#ifdef HAVE_NEW_GLIBMM_THREAD_API
-using Glib::Threads::Mutex;
-using Glib::Threads::RecMutex;
-using Glib::Threads::Cond;
-using Glib::Threads::Thread;
-typedef Mutex StaticMutex; // GLib::Threads::Mutex can be static
-typedef RecMutex StaticRecMutex; // GLib::Threads::RecMutex can be static
-#else
-using Glib::Mutex;
-using Glib::RecMutex;
-using Glib::StaticMutex;
-using Glib::StaticRecMutex;
-using Glib::Cond;
-using Glib::Thread;
-#endif
+class Locker
+{
+	SDL_mutex* m;
+public:
+	Locker(Mutex& mutex):m(mutex.m)
+	{
+		SDL_LockMutex(m);
+	}
+	~Locker()
+	{
+		SDL_UnlockMutex(m);
+	}
+	inline void acquire()
+	{
+		SDL_LockMutex(m);
+	}
+	inline void release()
+	{
+		SDL_UnlockMutex(m);
+	}
+};
+class Cond
+{
+	SDL_cond* c;
+public:
+	Cond()
+	{
+		c= SDL_CreateCond();
+	}
+	~Cond()
+	{
+		SDL_DestroyCond(c);
+	}
+	inline void broadcast()
+	{
+		SDL_CondBroadcast(c);
+	}
+	inline void wait(Mutex& mutex)
+	{
+		SDL_CondWait(c,mutex.m);
+	}
+	inline void signal()
+	{
+		SDL_CondSignal(c);
+	}
+	inline bool wait_until(Mutex& mutex,uint32_t ms)
+	{
+		return SDL_CondWaitTimeout(c,mutex.m,ms)==0;
+	}
+};
 
-typedef Mutex::Lock Locker;
-typedef Mutex Spinlock;
-typedef Mutex::Lock SpinlockLocker;
-
-#if GLIB_CHECK_VERSION(2, 31, 0)
-#define DEFINE_AND_INITIALIZE_TLS(name) static GPrivate (name)
-void tls_set(GPrivate *key, gpointer value);
-gpointer tls_get(GPrivate *key);
-#else
-#define DEFINE_AND_INITIALIZE_TLS(name) static GStaticPrivate (name) = G_STATIC_PRIVATE_INIT
-void tls_set(GStaticPrivate *key, gpointer value);
-gpointer tls_get(GStaticPrivate *key);
-#endif
+#define DEFINE_AND_INITIALIZE_TLS(name) static SDL_TLSID name = SDL_TLSCreate()
+void tls_set(SDL_TLSID key, void* value);
+void* tls_get(SDL_TLSID key);
 
 class DLL_PUBLIC Semaphore
 {
 private:
-	Mutex mutex;
-	Cond cond;
-	uint32_t value;
+	SDL_sem * sem;
 public:
 	Semaphore(uint32_t init);
 	~Semaphore();
 	void signal();
-	//void signal_all();
 	void wait();
 	bool try_wait();
 };
@@ -99,10 +143,13 @@ public:
 		lighted=true;
 	}
 };
+class ASWorker;
 
 class IThreadJob
 {
 friend class ThreadPool;
+private:
+	ASWorker* fromWorker;
 public:
 	/*
 	 * Set to true by the ThreadPool just before threadAbort()
@@ -122,7 +169,7 @@ public:
 	 * 'aborting' is set to true before calling
 	 * this function.
 	 */
-	virtual void threadAbort() {};
+	virtual void threadAbort() {}
 	/*
 	 * Called after the job has finished execute()'ing or
 	 * if the ThreadPool aborts and the job did not have
@@ -133,30 +180,35 @@ public:
 	 * 'delete this'.
 	 */
 	virtual void jobFence()=0;
-	IThreadJob() : threadAborting(false) {}
+	IThreadJob() : fromWorker(nullptr),threadAborting(false) {}
 	virtual ~IThreadJob() {}
+	void setWorker(ASWorker* w) { fromWorker = w;}
 };
 
-template<class T, uint32_t size>
+template<class T>
 class BlockingCircularQueue
 {
 private:
-	T queue[size];
+	T* queue;
 	//Counting semaphores for the queue
 	Semaphore freeBuffers;
 	Semaphore usedBuffers;
 	uint32_t bufferHead;
 	uint32_t bufferTail;
-	bool empty;
+	uint32_t size;
+	ACQUIRE_RELEASE_FLAG(empty);
 public:
-	BlockingCircularQueue():freeBuffers(size),usedBuffers(0),bufferHead(0),bufferTail(0),empty(true)
+	BlockingCircularQueue(uint32_t _size):freeBuffers(_size),usedBuffers(0),bufferHead(0),bufferTail(0),size(_size),empty(true)
 	{
+		aligned_malloc((void**)&queue,16,size*sizeof(T));
+		for(uint32_t i=0;i<size;i++)
+			queue[i].init();
 	}
-	template<class GENERATOR>
-	BlockingCircularQueue(const GENERATOR& g):freeBuffers(size),usedBuffers(0),bufferHead(0),bufferTail(0),empty(true)
+	~BlockingCircularQueue()
 	{
 		for(uint32_t i=0;i<size;i++)
-			g.init(queue[i]);
+			queue[i].cleanup();
+		aligned_free(queue);
 	}
 	bool isEmpty() const { return empty; }
 	T& front()
@@ -210,23 +262,18 @@ public:
 };
 
 // This class represents the end time when waiting on a conditional
-// variable. It encapsulates the differences between new and old
-// glibmm API.
+// variable.
 class CondTime {
 private:
-#ifdef HAVE_NEW_GLIBMM_THREAD_API
 	gint64 timepoint;
-#else
-        Glib::TimeVal timepoint;
-#endif
 public:
 	CondTime(long milliseconds);
 	bool operator<(CondTime& c) const;
 	bool operator>(CondTime& c) const;
 	bool isInTheFuture() const;
 	void addMilliseconds(long ms);
-	bool wait(Mutex& mutex, Cond& cond);
+	bool wait(Mutex &mutex, Cond& cond);
 };
-};
+}
 
 #endif /* THREADING_H */

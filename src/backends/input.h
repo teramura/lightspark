@@ -26,6 +26,7 @@
 #include "platforms/engineutils.h"
 #include "swftypes.h"
 #include "smartrefs.h"
+#include "scripting/flash/ui/keycodes.h"
 #include <vector>
 
 namespace lightspark
@@ -39,12 +40,11 @@ class MouseEvent;
 
 class InputThread
 {
+friend class Stage;
 private:
 	SystemState* m_sys;
 	EngineData* engineData;
-	Thread* t;
 	bool terminated;
-	bool threaded;
 	// this is called from mainloopthread
 	bool worker(SDL_Event *event);
 
@@ -55,6 +55,12 @@ private:
 	_NR<Sprite> curDragged;
 	_NR<InteractiveObject> currentMouseOver;
 	_NR<InteractiveObject> lastMouseDownTarget;
+	_NR<InteractiveObject> lastMouseUpTarget;
+	_NR<InteractiveObject> lastRolledOver;
+	SDL_Keymod lastKeymod;
+	set<AS3KeyCode> keyDownSet;
+	SDL_Keycode lastKeyDown;
+	SDL_Keycode lastKeyUp;
 	const RECT* dragLimit;
 	Vector2f dragOffset;
 	class MaskData
@@ -67,7 +73,7 @@ private:
 	_NR<InteractiveObject> getMouseTarget(uint32_t x, uint32_t y, DisplayObject::HIT_TYPE type);
 	void handleMouseDown(uint32_t x, uint32_t y, SDL_Keymod buttonState,bool pressed);
 	void handleMouseDoubleClick(uint32_t x, uint32_t y, SDL_Keymod buttonState,bool pressed);
-	void handleMouseUp(uint32_t x, uint32_t y, SDL_Keymod buttonState,bool pressed);
+	void handleMouseUp(uint32_t x, uint32_t y, SDL_Keymod buttonState, bool pressed, uint8_t button);
 	void handleMouseMove(uint32_t x, uint32_t y, SDL_Keymod buttonState,bool pressed);
 	void handleScrollEvent(uint32_t x, uint32_t y, uint32_t direction, SDL_Keymod buttonState,bool pressed);
 	void handleMouseLeave();
@@ -75,28 +81,45 @@ private:
 	bool handleKeyboardShortcuts(const SDL_KeyboardEvent *keyevent);
 	void sendKeyEvent(const SDL_KeyboardEvent *keyevent);
 
-	Spinlock inputDataSpinlock;
+	bool handleContextMenuEvent(SDL_Event* event);
+	Mutex inputDataSpinlock;
 	Vector2 mousePos;
+	bool button1pressed;
 public:
 	InputThread(SystemState* s);
 	~InputThread();
 	void wait();
 	void start(EngineData* data);
-	void addListener(InteractiveObject* ob);
-	void removeListener(InteractiveObject* ob);
 	void startDrag(_R<Sprite> s, const RECT* limit, Vector2f dragOffset);
 	void stopDrag(Sprite* s);
 
 	Vector2 getMousePos()
 	{
-		SpinlockLocker locker(inputDataSpinlock);
+		Locker locker(inputDataSpinlock);
 		return mousePos;
+	}
+	bool getLeftButtonPressed()
+	{
+		Locker locker(mutexListeners);
+		if (button1pressed)
+		{
+			button1pressed=false;
+			return true;
+		}
+		return false;
 	}
 	bool handleEvent(SDL_Event *event)
 	{
 		return worker(event);
 	}
+	AS3KeyCode getLastKeyDown();
+	AS3KeyCode getLastKeyUp();
+	SDL_Keycode getLastKeyCode();
+	SDL_Keymod getLastKeyMod();
+	bool isKeyDown(AS3KeyCode key);
+	void setLastKeyDown(KeyboardEvent* e);
+	void setLastKeyUp(KeyboardEvent* e);
 };
 
-};
+}
 #endif /* BACKENDS_INPUT_H */

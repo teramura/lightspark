@@ -1,5 +1,91 @@
 lightspark: An open source flash player implementation
 
+Version NEXT:
+
+	* implement DefineScalingGrid tag
+	* switch to 32bit float audio sampling for standalone player and remove SDL2_mixer dependency
+	* improved support for AVM1 swf files
+	* implement "erase" blendmode
+	* use nanoVG for bitmaps in fillstyles
+	* improved support for morphshapes
+
+Version 0.8.6.1:
+
+	* Hotfix to get sound working on Windows, no changes for Linux
+
+Version 0.8.6:
+
+	* implement support for GIF images (single image GIFs only)
+	* add commandline parameter (--fullscreen) to start lightspark in fullscreen mode
+	* add commandline parameter (--scale <factor>) to start lightspark with a scaled window (useful for 4k screens)
+	* embed nanovg for faster rendering of large vector graphics
+	* less memory usage
+	* partial support for loading AIR extensions by command line parameter
+	* improved support for Stage3D
+	* remove dependency on gettext (we don't have any strings that need translation anyway)
+	* partially implement some Adobe AIR classes in flash.filesystem
+	* implement DefineButtonSound tag
+	* always enable local storage when running standalone executable
+	* local storage files (*.sol) are saved in same format as adobe, so saved data from adobe can be used in lightspark (and vice versa)
+	  this means that saved data from older versions of lightspark is not compatible with this version!
+	* improved support for background workers
+	* implement streaming of dynamically created audio samples
+	* add environment variable LIGHTSPARK_RANDOM_SEED to seed random number generator with constant value (useful for debugging)
+	* implement all filters except ShaderFilter
+	* full support for MorphShapes
+	* implement wordwrap support for textfields
+	* implement sound panning
+	* embed pcre implementation from avmplus/tamarin (removes pcre dependency and ensures 100% compatibility with adobe for regular expressions)
+
+Version 0.8.5:
+
+	* improved text rendering
+	* better support for embedded video
+	* lightspark now runs directly on wayland (with SDL_VIDEODRIVER=wayland)
+	* better support for obfuscated AVM1 files
+	* significantly faster rendering of bitmaps
+
+Version 0.8.4.1:
+
+	* Hotfix for crash on Windows, no changes for Linux
+
+Version 0.8.4:
+
+	* improved handling of mixed AVM1/AVM2 files
+	* implement streaming of videos embedded in the swf file
+	* implement class inheritance for AVM1
+	* added settings dialog, currently only used to enable/disable local storage
+	* support for local storage added
+	* use SDL threading methods, remove glibmm dependency
+
+Version 0.8.3:
+
+	* fix support for sound in PPAPI plugin
+	* better handling of obfuscated code
+	* new command line argument to ignore unhandled exceptions
+	* support for context menus added
+	* partial support for CubeTextures and compressed Textures in Stage3d
+	* ability to create screenshot added
+	* boost dependency removed
+	* fullscreen mode implemented
+	* better sound handling, especially for AVM1
+	* better support of older (AVM1) swf files
+	* support for xml in AVM1
+	* support for video streaming in AVM1
+
+Version 0.8.2:
+
+	* implement support for text input
+	* implement support for sound streaming (SoundStreamHead/SoundStreamHeadBlock tags)
+	* direct support for older swf, no need for gnash any more (fallback to gnash ist still available by setting environment variable LIGHTSPARK_USE_GNASH=1)
+	* PPAPI plugin works again
+	* make llvm dependency optional (disabled by default)
+	* implement flash.system.Worker/WorkerDomain
+	* use libswresample instead of libavresample, if available
+	* reduce memory usage
+	* several performance improvements
+	* add partial support for rtmfp protocol
+
 Version 0.8.1:
 
 	* make plugins work with newer versions of firefox and chromium

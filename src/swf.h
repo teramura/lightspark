@@ -25,15 +25,12 @@
 #include <list>
 #include <queue>
 #include <map>
-#include <boost/bimap.hpp>
+#include <unordered_set>
 #include <string>
 #include "swftypes.h"
 #include "scripting/flash/display/flashdisplay.h"
-#include "scripting/flash/net/flashnet.h"
-#include "scripting/flash/utils/IntervalManager.h"
 #include "timer.h"
 #include "memory_support.h"
-#include "platforms/engineutils.h"
 
 class uncompressing_filter;
 
@@ -47,17 +44,26 @@ class ControlTag;
 class DownloadManager;
 class DisplayListTag;
 class DictionaryTag;
+class DefineScalingGridTag;
 class ExtScriptObject;
 class InputThread;
+class IntervalManager;
 class ParseThread;
 class PluginManager;
 class RenderThread;
 class SecurityManager;
+class LocaleManager;
+class CurrencyManager;
 class Tag;
 class ApplicationDomain;
+class ASWorker;
+class WorkerDomain;
 class SecurityDomain;
 class Class_inherit;
-class DefineFont3Tag;
+class FontTag;
+class SoundTransform;
+class ASFile;
+class EngineData;
 
 class RootMovieClip: public MovieClip
 {
@@ -66,12 +72,15 @@ protected:
 	URLInfo origin;
 private:
 	bool parsingIsFailed;
+	bool waitingforparser;
 	RGB Background;
-	Spinlock dictSpinlock;
-	std::list < DictionaryTag* > dictionary;
-	std::list< std::pair<tiny_string, DictionaryTag*> > classesToBeBound;
-	std::map < tiny_string,DefineFont3Tag* > embeddedfonts;
-	std::map < uint32_t,DefineFont3Tag* > embeddedfontsByID;
+	Mutex dictSpinlock;
+	std::unordered_map < uint32_t, DictionaryTag* > dictionary;
+	Mutex scalinggridsmutex;
+	std::unordered_map < uint32_t, RECT > scalinggrids;
+	std::map < QName, DictionaryTag* > classesToBeBound;
+	std::map < tiny_string,FontTag* > embeddedfonts;
+	std::map < uint32_t,FontTag* > embeddedfontsByID;
 
 	//frameSize and frameRate are valid only after the header has been parsed
 	RECT frameSize;
@@ -80,16 +89,31 @@ private:
 	/* those are private because you shouldn't call mainClip->*,
 	 * but mainClip->getStage()->* instead.
 	 */
-	void initFrame();
-	void advanceFrame();
+	void initFrame() override;
+	void advanceFrame(bool implicit) override;
+	void executeFrameScript() override;
 	ACQUIRE_RELEASE_FLAG(finishedLoading);
+	
+	unordered_map<uint32_t,_NR<IFunction>> avm1ClassConstructors;
+	unordered_map<uint32_t,AVM1InitActionTag*> avm1InitActionTags;
 public:
-	RootMovieClip(_NR<LoaderInfo> li, _NR<ApplicationDomain> appDomain, _NR<SecurityDomain> secDomain, Class_base* c);
+	RootMovieClip(ASWorker* wrk,_NR<LoaderInfo> li, _NR<ApplicationDomain> appDomain, _NR<SecurityDomain> secDomain, Class_base* c);
 	~RootMovieClip();
-	bool destruct();
-	bool hasFinishedLoading() { return ACQUIRE_READ(finishedLoading); }
+	void destroyTags();
+	bool destruct() override;
+	void finalize() override;
+	void prepareShutdown() override;
+	bool hasFinishedLoading() override { return ACQUIRE_READ(finishedLoading); }
+	bool isWaitingForParser() { return waitingforparser; }
+	void constructionComplete() override;
+	void afterConstruction() override;
+	bool needsActionScript3() const override { return this->usesActionScript3;}
+	ParseThread* parsethread;
 	uint32_t version;
 	uint32_t fileLength;
+	bool hasSymbolClass;
+	bool hasMainClass;
+	bool usesActionScript3;
 	RGB getBackground();
 	void setBackground(const RGB& bg);
 	void setFrameSize(const RECT& f);
@@ -98,20 +122,20 @@ public:
 	void setFrameRate(float f);
 	void addToDictionary(DictionaryTag* r);
 	DictionaryTag* dictionaryLookup(int id);
+	DictionaryTag* dictionaryLookupByName(uint32_t nameID);
+	void addToScalingGrids(const DefineScalingGridTag* r);
+	RECT* ScalingGridsLookup(int id);
+	void resizeCompleted();
 	void labelCurrentFrame(const STRING& name);
 	void commitFrame(bool another);
 	void revertFrame();
 	void parsingFailed();
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) const;
+	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override;
 	void DLL_PUBLIC setOrigin(const tiny_string& u, const tiny_string& filename="");
 	URLInfo& getOrigin() { return origin; }
 	void DLL_PUBLIC setBaseURL(const tiny_string& url);
 	const URLInfo& getBaseURL();
-/*	ASObject* getVariableByQName(const tiny_string& name, const tiny_string& ns);
-	void setVariableByQName(const tiny_string& name, const tiny_string& ns, ASObject* o);
-	void setVariableByMultiname(multiname& name, asAtom o);
-	void setVariableByString(const std::string& s, ASObject* o);*/
-	static RootMovieClip* getInstance(_NR<LoaderInfo> li, _R<ApplicationDomain> appDomain, _R<SecurityDomain> secDomain);
+	static RootMovieClip* getInstance(ASWorker* wrk, _NR<LoaderInfo> li, _R<ApplicationDomain> appDomain, _R<SecurityDomain> secDomain);
 	/*
 	 * The application domain for this clip
 	 */
@@ -120,14 +144,30 @@ public:
 	 * The security domain for this clip
 	 */
 	_NR<SecurityDomain> securityDomain;
+	//map of all classed defined in the swf. They own one reference to each class/template
+	//key is the stringID of the class name (without namespace)
+	std::multimap<uint32_t, Class_base*> customClasses;
+	/*
+	 * Support for class aliases in AMF3 serialization
+	 */
+	std::map<tiny_string, _R<Class_base> > aliasMap;
+	std::map<QName,std::unordered_set<uint32_t>*> customclassoverriddenmethods;
+	std::map<QName, Template_base*> templates;
 	//DisplayObject interface
-	_NR<RootMovieClip> getRoot();
+	_NR<RootMovieClip> getRoot() override;
+	_NR<Stage> getStage() override;
 	void addBinding(const tiny_string& name, DictionaryTag *tag);
 	void bindClass(const QName &classname, Class_inherit* cls);
 	void checkBinding(DictionaryTag* tag);
-	void registerEmbeddedFont(const tiny_string fontname,DefineFont3Tag* tag);
-	DefineFont3Tag* getEmbeddedFont(const tiny_string fontname) const;
-	DefineFont3Tag* getEmbeddedFontByID(uint32_t fontID) const;
+	void registerEmbeddedFont(const tiny_string fontname, FontTag *tag);
+	FontTag* getEmbeddedFont(const tiny_string fontname) const;
+	FontTag* getEmbeddedFontByID(uint32_t fontID) const;
+	void setupAVM1RootMovie();
+	// map AVM1 class constructors to named tags
+	bool AVM1registerTagClass(const tiny_string& name, _NR<IFunction> theClassConstructor);
+	AVM1Function* AVM1getClassConstructor(uint32_t spriteID);
+	void AVM1registerInitActionTag(uint32_t spriteID, AVM1InitActionTag* tag);
+	void AVM1checkInitActions(MovieClip *sprite);
 };
 
 class ThreadProfile
@@ -169,16 +209,18 @@ private:
 	};
 	friend class SystemState::EngineCreator;
 	ThreadPool* threadPool;
+	ThreadPool* downloadThreadPool;
 	TimerThread* timerThread;
 	TimerThread* frameTimerThread;
 	Semaphore terminated;
 	float renderRate;
 	bool error;
 	bool shutdown;
+	bool firsttick;
+	bool localstorageallowed;
 	RenderThread* renderThread;
 	InputThread* inputThread;
 	EngineData* engineData;
-	Thread* mainThread;
 	void startRenderTicks();
 	Mutex rootMutex;
 	/**
@@ -211,10 +253,10 @@ private:
 #endif
 
 	//shared null, undefined, true and false instances
-	_NR<Null> null;
-	_NR<Undefined> undefined;
-	_NR<Boolean> trueRef;
-	_NR<Boolean> falseRef;
+	Null* null;
+	Undefined* undefined;
+	Boolean* trueRef;
+	Boolean* falseRef;
 	Class_base* objClassRef;
 
 	//Parameters/FlashVars
@@ -230,10 +272,10 @@ private:
 	char* cookiesFileName;
 
 	URLInfo url;
-	Spinlock profileDataSpinlock;
+	Mutex profileDataSpinlock;
 
 	Mutex mutexFrameListeners;
-	std::set<_R<DisplayObject>> frameListeners;
+	std::set<DisplayObject*> frameListeners;
 	/*
 	   The head of the invalidate queue
 	*/
@@ -245,7 +287,11 @@ private:
 	/*
 	   The lock for the invalidate queue
 	*/
-	Spinlock invalidateQueueLock;
+	Mutex invalidateQueueLock;
+	
+	Mutex drawjobLock;
+	std::unordered_set<AsyncDrawJob*> drawJobsNew;
+	std::unordered_set<AsyncDrawJob*> drawJobsPending;
 #ifdef PROFILING_SUPPORT
 	/*
 	   Output file for the profiling data
@@ -260,25 +306,36 @@ private:
 	 * Pooling support
 	 */
 	mutable Mutex poolMutex;
-	boost::bimap<tiny_string, uint32_t> uniqueStringMap;
+	map<tiny_string, uint32_t> uniqueStringMap;
+	vector<tiny_string> uniqueStringIDMap;
 	uint32_t lastUsedStringId;
-	boost::bimap<nsNameAndKindImpl, uint32_t> uniqueNamespaceMap;
+	map<nsNameAndKindImpl, uint32_t> uniqueNamespaceImplMap;
+	unordered_map<uint32_t,nsNameAndKindImpl> uniqueNamespaceIDMap;
 	//This needs to be atomic because it's decremented without the mutex held
 	ATOMIC_INT32(lastUsedNamespaceId);
 	
 	Mutex mainsignalMutex;
 	Cond mainsignalCond;
 	void systemFinalize();
+	std::map<tiny_string, Class_base *> classnamemap;
+	unordered_set<DisplayObject*> listResetParent;
 public:
 	void setURL(const tiny_string& url) DLL_PUBLIC;
+	tiny_string getDumpedSWFPath() const { return dumpedSWFPath;}
 
 	//Interative analysis flags
 	bool showProfilingData;
 	bool standalone;
+	bool allowFullscreen;
+	bool allowFullscreenInteractive;
 	//Flash for execution mode
 	enum FLASH_MODE { FLASH=0, AIR, AVMPLUS };
 	const FLASH_MODE flashMode;
-	
+	uint32_t swffilesize;
+	asAtom nanAtom;
+	// the global object for AVM1
+	Global* avm1global;
+	void setupAVM1();
 	// Error types used to decide when to exit, extend as a bitmap
 	enum ERROR_TYPE { ERROR_NONE    = 0x0000,
 			  ERROR_PARSING = 0x0001,
@@ -292,8 +349,12 @@ public:
 	bool isShuttingDown() const DLL_PUBLIC;
 	bool isOnError() const DLL_PUBLIC;
 	void setShutdownFlag() DLL_PUBLIC;
-	void tick();
-	void tickFence();
+	void signalTerminated();
+	std::map<tiny_string, _R<SharedObject> > sharedobjectmap;
+	bool localStorageAllowed() const { return localstorageallowed; }
+	void setLocalStorageAllowed(bool allowed);
+	void tick() override;
+	void tickFence() override;
 	RenderThread* getRenderThread() const { return renderThread; }
 	InputThread* getInputThread() const { return inputThread; }
 	void setParamsAndEngine(EngineData* e, bool s) DLL_PUBLIC;
@@ -322,22 +383,22 @@ public:
 	
 	inline Null* getNullRef() const
 	{
-		return null.getPtr();
+		return null;
 	}
 	
 	inline Undefined* getUndefinedRef() const
 	{
-		return undefined.getPtr();
+		return undefined;
 	}
 	
 	inline Boolean* getTrueRef() const
 	{
-		return trueRef.getPtr();
+		return trueRef;
 	}
 	
 	inline Boolean* getFalseRef() const
 	{
-		return falseRef.getPtr();
+		return falseRef;
 	}
 
 	inline Class_base* getObjectClassRef() const
@@ -354,16 +415,14 @@ public:
 	//Application starting time in milliseconds
 	uint64_t startTime;
 
-	//Classes set. They own one reference to each class/template
-	std::set<Class_base*> customClasses;
 	//This is an array of fixed size, we can avoid using std::vector
 	Class_base** builtinClasses;
-	std::map<QName, Template_base*> templates;
 
 	//Flags for command line options
 	bool useInterpreter;
 	bool useFastInterpreter;
 	bool useJit;
+	bool ignoreUnhandledExceptions;
 	ERROR_TYPE exitOnError;
 
 	//Parameters/FlashVars
@@ -379,6 +438,9 @@ public:
 
 	//Interfaces to the internal thread pool and timer thread
 	void addJob(IThreadJob* j) DLL_PUBLIC;
+	// downloaders may be executed from inside a job from the main threadpool,
+	// so we use a second threadpool for them, to avoid deadlocks
+	void addDownloadJob(IThreadJob* j) DLL_PUBLIC;
 	void addTick(uint32_t tickTime, ITickJob* job);
 	void addFrameTick(uint32_t tickTime, ITickJob* job);
 	void addWait(uint32_t waitTime, ITickJob* job);
@@ -390,7 +452,15 @@ public:
 	/*
 	 * The application domain for the system
 	 */
-	_NR<ApplicationDomain> systemDomain;
+	ApplicationDomain* systemDomain;
+
+	ASWorker* worker;
+	WorkerDomain* workerDomain;
+	bool singleworker;
+	Mutex workerMutex;
+	void addWorker(ASWorker* w);
+	void removeWorker(ASWorker* w);
+	void addEventToBackgroundWorkers(_NR<EventDispatcher> obj, _R<Event> ev);
 
 	//Stuff to be done once for process and not for plugin instance
 	static void staticInit() DLL_PUBLIC;
@@ -399,6 +469,8 @@ public:
 	DownloadManager* downloadManager;
 	IntervalManager* intervalManager;
 	SecurityManager* securityManager;
+	LocaleManager* localeManager;
+	CurrencyManager* currencyManager;
 	ExtScriptObject* extScriptObject;
 
 	enum SCALE_MODE { EXACT_FIT=0, NO_BORDER=1, NO_SCALE=2, SHOW_ALL=3 };
@@ -408,29 +480,25 @@ public:
 	//TODO: Those should be different for each security domain
 	//NAMING: static$CLASSNAME$$PROPERTYNAME$
 	//	NetConnection
-	ObjectEncoding::ENCODING staticNetConnectionDefaultObjectEncoding;
-	ObjectEncoding::ENCODING staticByteArrayDefaultObjectEncoding;
-	ObjectEncoding::ENCODING staticSharedObjectDefaultObjectEncoding;
+	OBJECT_ENCODING staticNetConnectionDefaultObjectEncoding;
+	OBJECT_ENCODING staticByteArrayDefaultObjectEncoding;
+	OBJECT_ENCODING staticSharedObjectDefaultObjectEncoding;
 	bool staticSharedObjectPreventBackup;
 	
-	//enterFrame event management
-	void registerFrameListener(_R<DisplayObject> clip);
-	void unregisterFrameListener(_R<DisplayObject> clip);
-
-	//tags management
-	void registerTag(Tag* t);
+	//broadcast event management
+	void registerFrameListener(DisplayObject* clip);
+	void unregisterFrameListener(DisplayObject* clip);
+	void addBroadcastEvent(const tiny_string& event);
 
 	//Invalidation queue management
-	void addToInvalidateQueue(_R<DisplayObject> d);
+	void addToInvalidateQueue(_R<DisplayObject> d) override;
 	void flushInvalidationQueue();
+	void AsyncDrawJobCompleted(AsyncDrawJob* j);
+	void swapAsyncDrawJobQueue();
 
 	//Resize support
 	void resizeCompleted();
 
-	/*
-	 * Support for class aliases in AMF3 serialization
-	 */
-	std::map<tiny_string, _R<Class_base> > aliasMap;
 #ifdef PROFILING_SUPPORT
 	void setProfilingOutput(const tiny_string& t) DLL_PUBLIC;
 	const tiny_string& getProfilingOutput() const;
@@ -441,6 +509,11 @@ public:
 	MemoryAccount* unaccountedMemory;
 	MemoryAccount* tagsMemory;
 	MemoryAccount* stringMemory;
+	MemoryAccount* textTokenMemory;
+	MemoryAccount* shapeTokenMemory;
+	MemoryAccount* morphShapeTokenMemory;
+	MemoryAccount* bitmapTokenMemory;
+	MemoryAccount* spriteTokenMemory;
 #ifdef MEMORY_USAGE_PROFILING
 	void saveMemoryUsageInformation(std::ofstream& out, int snapshotCount) const;
 #endif
@@ -467,6 +540,7 @@ public:
 	void openPageInBrowser(const tiny_string& url, const tiny_string& window);
 
 	void showMouseCursor(bool visible);
+	void setMouseHandCursor(bool sethand);
 	void waitRendering() DLL_PUBLIC;
 	EngineData* getEngineData() { return engineData;}
 	uint32_t getSwfVersion();
@@ -478,7 +552,65 @@ public:
 	void waitMainSignal() DLL_PUBLIC;
 	void sendMainSignal() DLL_PUBLIC;
 
-	void dumpStacktrace();
+	// static class properties are named static_<classname>_<propertyname>
+	_NR<SoundTransform> static_SoundMixer_soundTransform;
+	int static_SoundMixer_bufferTime;
+	_NR<ASObject> static_ObjectEncoding_dynamicPropertyWriter;
+	tiny_string static_Multitouch_inputMode;
+	_NR<ASFile> static_ASFile_applicationDirectory;
+	_NR<ASFile> static_ASFile_applicationStorageDirectory;
+
+	ACQUIRE_RELEASE_FLAG(isinitialized);
+	Mutex initializedMutex;
+	Cond initializedCond;
+	void waitInitialized();
+	void getClassInstanceByName(ASWorker* wrk, asAtom &ret, const tiny_string& clsname);
+	Mutex resetParentMutex;
+	void addDisplayObjectToResetParentList(DisplayObject* child)
+	{
+		Locker l(resetParentMutex);
+		child->incRef();
+		child->addStoredMember();
+		listResetParent.insert(child);
+	}
+	void resetParentList()
+	{
+		Locker l(resetParentMutex);
+		auto it = listResetParent.begin();
+		while (it != listResetParent.end())
+		{
+			(*it)->setParent(nullptr);
+			(*it)->removeStoredMember();
+			it = listResetParent.erase(it);
+		}
+	}
+	bool isInResetParentList(DisplayObject* d)
+	{
+		Locker l(resetParentMutex);
+		auto it = listResetParent.begin();
+		while (it != listResetParent.end())
+		{
+			if ((*it)==d)
+				return true;
+			it++;
+		}
+		return false;
+	}
+	void removeFromResetParentList(DisplayObject* d)
+	{
+		Locker l(resetParentMutex);
+		auto it = listResetParent.begin();
+		while (it != listResetParent.end())
+		{
+			if ((*it)==d)
+			{
+				d->removeStoredMember();
+				listResetParent.erase(it);
+				break;
+			}
+			it++;
+		}
+	}
 };
 
 class ParseThread: public IThreadJob
@@ -494,27 +626,32 @@ public:
 	ParseThread(std::istream& in, RootMovieClip *root) DLL_PUBLIC;
 	~ParseThread();
 	FILE_TYPE getFileType() const { return fileType; }
-        _NR<DisplayObject> getParsedObject();
+	_NR<DisplayObject> getParsedObject();
 	RootMovieClip* getRootMovie() const;
 	static FILE_TYPE recognizeFile(uint8_t c1, uint8_t c2, uint8_t c3, uint8_t c4);
-	void execute();
+	void execute() override;
 	_NR<ApplicationDomain> applicationDomain;
 	_NR<SecurityDomain> securityDomain;
+	void getSWFByteArray(ByteArray* ba);
+	void addExtensions(std::vector<tiny_string>& ext) { extensions = ext; }
 private:
+	std::vector<tiny_string> extensions;
 	std::istream& f;
 	uncompressing_filter* uncompressingFilter;
 	std::streambuf* backend;
+	std::streambuf* bytearraybuf;
 	Loader *loader;
 	_NR<DisplayObject> parsedObject;
-	Spinlock objectSpinlock;
+	Mutex objectSpinlock;
 	tiny_string url;
 	FILE_TYPE fileType;
-	void threadAbort();
-	void jobFence() {};
+	void threadAbort() override;
+	void jobFence() override {}
 	void parseSWFHeader(RootMovieClip *root, UI8 ver);
 	void parseSWF(UI8 ver);
 	void parseBitmap();
 	void setRootMovie(RootMovieClip *root);
+	void parseExtensions(RootMovieClip* root);
 };
 
 /* Returns the thread-specific SystemState */
@@ -523,6 +660,9 @@ SystemState* getSys() DLL_PUBLIC;
 void setTLSSys(SystemState* sys) DLL_PUBLIC;
 
 ParseThread* getParseThread();
+/* Returns the thread-specific SystemState */
+ASWorker* getWorker() DLL_PUBLIC;
+void setTLSWorker(ASWorker* worker) DLL_PUBLIC;
 
-};
+}
 #endif /* SWF_H */

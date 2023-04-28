@@ -176,7 +176,7 @@ NPObjectObject::NPObjectObject(std::map<const NPObject*, std::unique_ptr<ExtObje
 {
 	//First of all add this object to the map, so that recursive cycles may be broken
 	if(objectsMap.count(obj)==0)
-		objectsMap[obj] = move(unique_ptr<ExtObject>(this));
+		objectsMap[obj] = unique_ptr<ExtObject>(this);
 
 	NPIdentifier* ids = NULL;
 	NPVariant property;
@@ -519,7 +519,7 @@ bool NPScriptObject::callExternalHandler(const char* scriptString, const lightsp
 			std::map<const NPObject*, std::unique_ptr<ExtObject>> npObjectsMap;
 			NPVariantObject tmp(npObjectsMap, instance, resultVariant);
 			std::map<const ExtObject*, ASObject*> asObjectsMap;
-			*(result) = tmp.getASObject(m_sys,asObjectsMap);
+			*(result) = tmp.getASObject(m_sys->worker,asObjectsMap);
 			NPN_ReleaseVariantValue(&resultVariant);
 		}
 		else
@@ -550,7 +550,7 @@ bool NPScriptObject::callExternalHandler(const char* scriptString, const lightsp
 				std::map<const NPObject*, std::unique_ptr<ExtObject>> npObjectsMap;
 				NPVariantObject tmp(npObjectsMap, instance, resultVariant);
 				std::map<const ExtObject*, ASObject*> asObjectsMap;
-				*(result) = tmp.getASObject(m_sys,asObjectsMap);
+				*(result) = tmp.getASObject(m_sys->worker,asObjectsMap);
 				NPN_ReleaseVariantValue(&resultVariant);
 			}
 

@@ -22,8 +22,12 @@
 #include "scripting/class.h"
 #include "parsing/amf3_generator.h"
 #include "scripting/argconv.h"
+#include "scripting/toplevel/Number.h"
+#include "scripting/toplevel/Integer.h"
+#include "scripting/toplevel/UInteger.h"
 #include "scripting/toplevel/XML.h"
 #include <3rdparty/pugixml/src/pugixml.hpp>
+#include <algorithm>
 
 using namespace std;
 using namespace lightspark;
@@ -32,74 +36,74 @@ void Vector::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_FINAL);
 	c->isReusable = true;
-	c->setDeclaredMethodByQName("length","",Class<IFunction>::getFunction(c->getSystemState(),getLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("length","",Class<IFunction>::getFunction(c->getSystemState(),setLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("toString","",Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("toString",AS3,Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("fixed","",Class<IFunction>::getFunction(c->getSystemState(),getFixed,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("fixed","",Class<IFunction>::getFunction(c->getSystemState(),setFixed,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("concat","",Class<IFunction>::getFunction(c->getSystemState(),_concat),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("concat",AS3,Class<IFunction>::getFunction(c->getSystemState(),_concat),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("every","",Class<IFunction>::getFunction(c->getSystemState(),every),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("every",AS3,Class<IFunction>::getFunction(c->getSystemState(),every),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("filter","",Class<IFunction>::getFunction(c->getSystemState(),filter),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("filter",AS3,Class<IFunction>::getFunction(c->getSystemState(),filter),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("forEach","",Class<IFunction>::getFunction(c->getSystemState(),forEach),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("forEach",AS3,Class<IFunction>::getFunction(c->getSystemState(),forEach),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("indexOf","",Class<IFunction>::getFunction(c->getSystemState(),indexOf),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("indexOf",AS3,Class<IFunction>::getFunction(c->getSystemState(),indexOf),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("lastIndexOf","",Class<IFunction>::getFunction(c->getSystemState(),lastIndexOf),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("lastIndexOf",AS3,Class<IFunction>::getFunction(c->getSystemState(),lastIndexOf),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("join","",Class<IFunction>::getFunction(c->getSystemState(),join),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("join",AS3,Class<IFunction>::getFunction(c->getSystemState(),join),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("map","",Class<IFunction>::getFunction(c->getSystemState(),_map),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("map",AS3,Class<IFunction>::getFunction(c->getSystemState(),_map),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("pop","",Class<IFunction>::getFunction(c->getSystemState(),_pop),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("pop",AS3,Class<IFunction>::getFunction(c->getSystemState(),_pop),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("push","",Class<IFunction>::getFunction(c->getSystemState(),push),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("push",AS3,Class<IFunction>::getFunction(c->getSystemState(),push),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("reverse","",Class<IFunction>::getFunction(c->getSystemState(),_reverse),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("reverse",AS3,Class<IFunction>::getFunction(c->getSystemState(),_reverse),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("shift","",Class<IFunction>::getFunction(c->getSystemState(),shift),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("shift",AS3,Class<IFunction>::getFunction(c->getSystemState(),shift),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("slice","",Class<IFunction>::getFunction(c->getSystemState(),slice),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("slice",AS3,Class<IFunction>::getFunction(c->getSystemState(),slice),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("some","",Class<IFunction>::getFunction(c->getSystemState(),some),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("some",AS3,Class<IFunction>::getFunction(c->getSystemState(),some),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("sort","",Class<IFunction>::getFunction(c->getSystemState(),_sort),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("sort",AS3,Class<IFunction>::getFunction(c->getSystemState(),_sort),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("splice","",Class<IFunction>::getFunction(c->getSystemState(),splice),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("splice",AS3,Class<IFunction>::getFunction(c->getSystemState(),splice),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("toLocaleString","",Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("toLocaleString",AS3,Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("unshift","",Class<IFunction>::getFunction(c->getSystemState(),unshift),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("unshift",AS3,Class<IFunction>::getFunction(c->getSystemState(),unshift),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("insertAt",AS3,Class<IFunction>::getFunction(c->getSystemState(),insertAt,2),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("removeAt",AS3,Class<IFunction>::getFunction(c->getSystemState(),removeAt,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("length",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),getLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("length",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),setLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("toString",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("toString",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("fixed",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),getFixed,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("fixed",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),setFixed,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("concat",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_concat),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("concat",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_concat),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("every",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),every),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("every",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),every),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("filter",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),filter),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("filter",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),filter),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("forEach",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),forEach),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("forEach",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),forEach),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("indexOf",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),indexOf),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("indexOf",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),indexOf),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("lastIndexOf",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),lastIndexOf),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("lastIndexOf",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),lastIndexOf),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("join",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),join),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("join",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),join),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("map",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_map),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("map",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_map),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("pop",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_pop),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("pop",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_pop),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("push",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),push),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("push",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),push),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("reverse",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_reverse),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("reverse",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_reverse),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("shift",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),shift),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("shift",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),shift),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("slice",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),slice),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("slice",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),slice),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("some",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),some),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("some",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),some),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("sort",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_sort),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("sort",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_sort),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("splice",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),splice),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("splice",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),splice),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("toLocaleString",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("toLocaleString",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("unshift",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),unshift),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("unshift",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),unshift),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("insertAt",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),insertAt,2),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("removeAt",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),removeAt,1),NORMAL_METHOD,true);
 	
 
-	c->prototype->setVariableByQName("toString",AS3,Class<IFunction>::getFunction(c->getSystemState(),_toString),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("concat",AS3,Class<IFunction>::getFunction(c->getSystemState(),_concat),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("every",AS3,Class<IFunction>::getFunction(c->getSystemState(),every),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("filter",AS3,Class<IFunction>::getFunction(c->getSystemState(),filter),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("forEach",AS3,Class<IFunction>::getFunction(c->getSystemState(),forEach),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("indexOf",AS3,Class<IFunction>::getFunction(c->getSystemState(),indexOf),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("lastIndexOf",AS3,Class<IFunction>::getFunction(c->getSystemState(),lastIndexOf),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("join",AS3,Class<IFunction>::getFunction(c->getSystemState(),join),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("map",AS3,Class<IFunction>::getFunction(c->getSystemState(),_map),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("pop",AS3,Class<IFunction>::getFunction(c->getSystemState(),_pop),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("push",AS3,Class<IFunction>::getFunction(c->getSystemState(),push),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("reverse",AS3,Class<IFunction>::getFunction(c->getSystemState(),_reverse),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("shift",AS3,Class<IFunction>::getFunction(c->getSystemState(),shift),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("slice",AS3,Class<IFunction>::getFunction(c->getSystemState(),slice),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("some",AS3,Class<IFunction>::getFunction(c->getSystemState(),some),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("sort",AS3,Class<IFunction>::getFunction(c->getSystemState(),_sort),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("splice",AS3,Class<IFunction>::getFunction(c->getSystemState(),splice),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("toLocaleString",AS3,Class<IFunction>::getFunction(c->getSystemState(),_toString),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("unshift",AS3,Class<IFunction>::getFunction(c->getSystemState(),unshift),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName(BUILTIN_STRINGS::STRING_TOSTRING,nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_toString),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("concat",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_concat),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("every",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),every),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("filter",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),filter),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("forEach",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),forEach),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("indexOf",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),indexOf),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("lastIndexOf",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),lastIndexOf),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("join",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),join),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("map",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_map),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("pop",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_pop),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("push",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),push),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("reverse",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_reverse),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("shift",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),shift),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("slice",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),slice),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("some",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),some),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("sort",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_sort),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("splice",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),splice),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("toLocaleString",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_toString),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("unshift",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),unshift),CONSTANT_TRAIT);
 }
 
-Vector::Vector(Class_base* c, const Type *vtype):ASObject(c,T_OBJECT,SUBTYPE_VECTOR),vec_type(vtype),fixed(false),vec(reporter_allocator<asAtom>(c->memoryAccount))
+Vector::Vector(ASWorker* wrk, Class_base* c, const Type *vtype):ASObject(wrk,c,T_OBJECT,SUBTYPE_VECTOR),vec_type(vtype),fixed(false),vec(reporter_allocator<asAtom>(c->memoryAccount))
 {
 }
 
@@ -107,70 +111,133 @@ Vector::~Vector()
 {
 }
 
+bool Vector::destruct()
+{
+	for(unsigned int i=0;i<size();i++)
+	{
+		ASObject* obj = asAtomHandler::getObject(vec[i]);
+		vec[i]=asAtomHandler::invalidAtom;
+		if (obj)
+			obj->removeStoredMember();
+	}
+	vec.clear();
+	vec_type=nullptr;
+	return destructIntern();
+}
+
+void Vector::finalize()
+{
+	for(unsigned int i=0;i<size();i++)
+	{
+		ASObject* obj = asAtomHandler::getObject(vec[i]);
+		vec[i]=asAtomHandler::invalidAtom;
+		if (obj)
+			obj->removeStoredMember();
+	}
+	vec.clear();
+	vec_type=nullptr;
+}
+
+void Vector::prepareShutdown()
+{
+	if (this->preparedforshutdown)
+		return;
+	ASObject::prepareShutdown();
+	for(unsigned int i=0;i<size();i++)
+	{
+		ASObject* v = asAtomHandler::getObject(vec[i]);
+		if (v)
+			v->prepareShutdown();
+	}
+}
+bool Vector::countCylicMemberReferences(garbagecollectorstate& gcstate)
+{
+	if (gcstate.checkAncestors(this))
+		return false;
+	bool ret = ASObject::countCylicMemberReferences(gcstate);
+	for (auto it = vec.begin(); it != vec.end(); it++)
+	{
+		if (asAtomHandler::isObject(*it))
+			ret = asAtomHandler::getObjectNoCheck(*it)->countAllCylicMemberReferences(gcstate) || ret;
+	}
+	return ret;
+}
+
 void Vector::setTypes(const std::vector<const Type *> &types)
 {
-	assert(vec_type == NULL);
+	assert(vec_type == nullptr);
 	if(types.size() == 1)
 		vec_type = types[0];
 }
 bool Vector::sameType(const Class_base *cls) const
 {
+	if (this->getClass()->class_name == cls->class_name)
+		return true;
 	tiny_string clsname = this->getClass()->getQualifiedClassName();
 	return (clsname.startsWith(cls->class_name.getQualifiedName(getSystemState()).raw_buf()));
 }
 
-void Vector::generator(asAtom& ret,SystemState *sys, asAtom &o_class, asAtom* args, const unsigned int argslen)
+void Vector::generator(asAtom& ret, ASWorker* wrk, asAtom &o_class, asAtom* args, const unsigned int argslen)
 {
 	assert_and_throw(argslen == 1);
-	assert_and_throw(args[0].toObject(sys)->getClass());
-	assert_and_throw(o_class.as<TemplatedClass<Vector>>()->getTypes().size() == 1);
+	assert_and_throw(asAtomHandler::toObject(args[0],wrk)->getClass());
+	assert_and_throw(asAtomHandler::as<TemplatedClass<Vector>>(o_class)->getTypes().size() == 1);
 
-	const Type* type = o_class.as<TemplatedClass<Vector>>()->getTypes()[0];
+	const Type* type = asAtomHandler::as<TemplatedClass<Vector>>(o_class)->getTypes()[0];
 
-	if(args[0].is<Array>())
+	RootMovieClip* root = wrk->rootClip.getPtr();
+	if(asAtomHandler::is<Array>(args[0]))
 	{
 		//create object without calling _constructor
-		o_class.as<TemplatedClass<Vector>>()->getInstance(ret,false,NULL,0);
-		Vector* res = ret.as<Vector>();
+		asAtomHandler::as<TemplatedClass<Vector>>(o_class)->getInstance(wrk,ret,false,nullptr,0);
+		Vector* res = asAtomHandler::as<Vector>(ret);
 
-		Array* a = args[0].as<Array>();
+		Array* a = asAtomHandler::as<Array>(args[0]);
 		for(unsigned int i=0;i<a->size();++i)
 		{
-			asAtom obj = a->at(i);
-			ASATOM_INCREF(obj);
+			asAtom o = a->at(i);
 			//Convert the elements of the array to the type of this vector
-			type->coerce(sys,obj);
-			res->vec.push_back(obj);
+			if (!type->coerce(wrk,o))
+				ASATOM_INCREF(o);
+			ASObject* obj = asAtomHandler::getObject(o);
+			if (obj)
+				obj->addStoredMember();
+			res->vec.push_back(o);
 		}
+		res->setIsInitialized(true);
 	}
-	else if(args[0].getObject()->getClass()->getTemplate() == Template<Vector>::getTemplate(sys))
+	else if(asAtomHandler::getObject(args[0])->getClass()->getTemplate() == Template<Vector>::getTemplate(root))
 	{
-		Vector* arg = args[0].as<Vector>();
+		Vector* arg = asAtomHandler::as<Vector>(args[0]);
 
-		Vector* res = NULL;
+		Vector* res = nullptr;
 		if (arg->vec_type == type)
 		{
 			// according to specs, the argument is returned if it is a vector of the same type as the provided class
 			res = arg;
 			res->incRef();
-			ret = asAtom::fromObject(res);
+			ret = asAtomHandler::fromObject(res);
 		}
 		else
 		{
 			//create object without calling _constructor
-			o_class.as<TemplatedClass<Vector>>()->getInstance(ret,false,NULL,0);
-			res = ret.as<Vector>();
+			asAtomHandler::as<TemplatedClass<Vector>>(o_class)->getInstance(wrk,ret,false,nullptr,0);
+			res = asAtomHandler::as<Vector>(ret);
 			for(auto i = arg->vec.begin(); i != arg->vec.end(); ++i)
 			{
-				ASATOM_INCREF((*i));
-				type->coerce(sys,*i);
-				res->vec.push_back( *i );
+				asAtom o = *i;
+				if (!type->coerce(wrk,o))
+					ASATOM_INCREF(o);
+				ASObject* obj = asAtomHandler::getObject(o);
+				if (obj)
+					obj->addStoredMember();
+				res->vec.push_back(o);
 			}
 		}
 	}
 	else
 	{
-		throwError<ArgumentError>(kCheckTypeFailedError, args[0].toObject(sys)->getClassName(), "Vector");
+		createError<ArgumentError>(wrk,kCheckTypeFailedError, asAtomHandler::toObject(args[0],wrk)->getClassName(), "Vector");
 	}
 }
 
@@ -178,96 +245,120 @@ ASFUNCTIONBODY_ATOM(Vector,_constructor)
 {
 	uint32_t len;
 	bool fixed;
-	ARG_UNPACK_ATOM (len, 0) (fixed, false);
+	ARG_CHECK(ARG_UNPACK (len, 0) (fixed, false));
 	assert_and_throw(argslen <= 2);
 
-	Vector* th=obj.as< Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
 	assert(th->vec_type);
 	th->fixed = fixed;
-	th->vec.resize(len, asAtom::invalidAtom);
+	th->vec.resize(len, th->getDefaultValue());
 }
 
 ASFUNCTIONBODY_ATOM(Vector,_concat)
 {
-	Vector* th=obj.as<Vector>();
-	th->getClass()->getInstance(ret,true,NULL,0);
-	Vector* res = ret.as<Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
+	th->getClass()->getInstance(wrk,ret,true,nullptr,0);
+	Vector* res = asAtomHandler::as<Vector>(ret);
 	// copy values into new Vector
-	res->vec.resize(th->size(), asAtom::invalidAtom);
+	res->vec.resize(th->size(), th->getDefaultValue());
 	auto it=th->vec.begin();
 	uint32_t index = 0;
 	for(;it != th->vec.end();++it)
 	{
 		res->vec[index]=*it;
-		ASATOM_INCREF(res->vec[index]);
+		ASObject* obj = asAtomHandler::getObject(*it);
+		if (obj)
+		{
+			obj->incRef();
+			obj->addStoredMember();
+		}
 		index++;
 	}
 	//Insert the arguments in the vector
-	int pos = sys->getSwfVersion() < 11 ? argslen-1 : 0;
+	int pos = wrk->getSystemState()->getSwfVersion() < 11 ? argslen-1 : 0;
 	for(unsigned int i=0;i<argslen;i++)
 	{
-		if (args[pos].is<Vector>())
+		if (asAtomHandler::is<Vector>(args[pos]))
 		{
-			Vector* arg=args[pos].as<Vector>();
-			res->vec.resize(index+arg->size(), asAtom::invalidAtom);
+			Vector* arg=asAtomHandler::as<Vector>(args[pos]);
+			res->vec.resize(index+arg->size(), th->getDefaultValue());
 			auto it=arg->vec.begin();
 			for(;it != arg->vec.end();++it)
 			{
-				if (it->type != T_INVALID)
+				if (asAtomHandler::isValid(*it))
 				{
 					res->vec[index]= *it;
-					th->vec_type->coerceForTemplate(sys,res->vec[index]);
-					ASATOM_INCREF(res->vec[index]);
+					th->vec_type->coerceForTemplate(th->getInstanceWorker(),res->vec[index]);
+					ASObject* obj = asAtomHandler::getObject(*it);
+					if (obj)
+					{
+						obj->incRef();
+						obj->addStoredMember();
+					}
 				}
 				index++;
 			}
 		}
 		else
 		{
-			th->vec_type->coerce(sys,args[pos]);
-			res->vec[index] = args[pos];
-			ASATOM_INCREF(res->vec[index]);
+			asAtom v = args[pos];
+			if (!th->vec_type->coerce(th->getInstanceWorker(),v))
+				ASATOM_INCREF(v);
+			ASObject* obj = asAtomHandler::getObject(v);
+			if (obj)
+				obj->addStoredMember();
+			res->vec[index] = v;
 			index++;
 		}
-		pos += (sys->getSwfVersion() < 11 ?-1 : 1);
+		pos += (wrk->getSystemState()->getSwfVersion() < 11 ?-1 : 1);
 	}	
 }
 
 ASFUNCTIONBODY_ATOM(Vector,filter)
 {
-	if (argslen < 1 || argslen > 2)
-		throwError<ArgumentError>(kWrongArgumentCountError, "Vector.filter", "1", Integer::toString(argslen));
-	if (!args[0].is<IFunction>())
-		throwError<TypeError>(kCheckTypeFailedError, args[0].toObject(sys)->getClassName(), "Function");
-	Vector* th=obj.as<Vector>();
+	if ((argslen < 1) || (argslen > 2))
+	{
+		createError<ArgumentError>(wrk,kWrongArgumentCountError, "Vector.filter", "1", Integer::toString(argslen));
+		return;
+	}
+	if (!asAtomHandler::is<IFunction>(args[0]))
+	{
+		createError<TypeError>(wrk,kCheckTypeFailedError, asAtomHandler::toObject(args[0],wrk)->getClassName(), "Function");
+		return;
+	}
+	Vector* th=asAtomHandler::as<Vector>(obj);
 	  
 	asAtom f = args[0];
 	asAtom params[3];
-	th->getClass()->getInstance(ret,true,NULL,0);
-	Vector* res= ret.as<Vector>();
-	asAtom funcRet;
+	th->getClass()->getInstance(wrk,ret,true,nullptr,0);
+	Vector* res= asAtomHandler::as<Vector>(ret);
+	asAtom funcRet=asAtomHandler::invalidAtom;
+	asAtom closure = asAtomHandler::getClosure(f) ? asAtomHandler::fromObject(asAtomHandler::getClosure(f)) : asAtomHandler::nullAtom;
 
 	for(unsigned int i=0;i<th->size();i++)
 	{
-		if (th->vec[i].type == T_INVALID)
-			continue;
 		params[0] = th->vec[i];
-		params[1] = asAtom(i);
-		params[2] = asAtom::fromObject(th);
+		params[1] = asAtomHandler::fromUInt(i);
+		params[2] = asAtomHandler::fromObject(th);
 
 		if(argslen==1)
 		{
-			f.callFunction(funcRet,asAtom::nullAtom, params, 3,false);
+			asAtomHandler::callFunction(f,wrk,funcRet,closure, params, 3,false);
 		}
 		else
 		{
-			f.callFunction(funcRet,args[1], params, 3,false);
+			asAtomHandler::callFunction(f,wrk,funcRet,args[1], params, 3,false);
 		}
-		if(funcRet.type != T_INVALID)
+		if(asAtomHandler::isValid(funcRet))
 		{
-			if(funcRet.Boolean_concrete())
+			if(asAtomHandler::Boolean_concrete(funcRet))
 			{
-				ASATOM_INCREF(th->vec[i]);
+				ASObject* obj = asAtomHandler::getObject(th->vec[i]);
+				if (obj)
+				{
+					obj->incRef();
+					obj->addStoredMember();
+				}
 				res->vec.push_back(th->vec[i]);
 			}
 			ASATOM_DECREF(funcRet);
@@ -278,80 +369,95 @@ ASFUNCTIONBODY_ATOM(Vector,filter)
 ASFUNCTIONBODY_ATOM(Vector, some)
 {
 	if (argslen < 1)
-		throwError<ArgumentError>(kWrongArgumentCountError, "Vector.some", "1", Integer::toString(argslen));
-	if (!args[0].is<IFunction>())
-		throwError<TypeError>(kCheckTypeFailedError, args[0].toObject(sys)->getClassName(), "Function");
-	Vector* th=static_cast<Vector*>(obj.getObject());
+	{
+		createError<ArgumentError>(wrk,kWrongArgumentCountError, "Vector.some", "1", Integer::toString(argslen));
+		return;
+	}
+	if (!asAtomHandler::is<IFunction>(args[0]))
+	{
+		createError<TypeError>(wrk,kCheckTypeFailedError, asAtomHandler::toObject(args[0],wrk)->getClassName(), "Function");
+		return;
+	}
+	Vector* th=static_cast<Vector*>(asAtomHandler::getObject(obj));
 	asAtom f = args[0];
 	asAtom params[3];
+	asAtom closure = asAtomHandler::getClosure(f) ? asAtomHandler::fromObject(asAtomHandler::getClosure(f)) : asAtomHandler::nullAtom;
 
 	for(unsigned int i=0; i < th->size(); i++)
 	{
-		if (th->vec[i].type == T_INVALID)
-			continue;
 		params[0] = th->vec[i];
-		params[1] = asAtom(i);
-		params[2] = asAtom::fromObject(th);
+		params[1] = asAtomHandler::fromUInt(i);
+		params[2] = asAtomHandler::fromObject(th);
 
 		if(argslen==1)
 		{
-			f.callFunction(ret,asAtom::nullAtom, params, 3,false);
+			asAtomHandler::callFunction(f,wrk,ret,closure, params, 3,false);
 		}
 		else
 		{
-			f.callFunction(ret,args[1], params, 3,false);
+			asAtomHandler::callFunction(f,wrk,ret,args[1], params, 3,false);
 		}
-		if(ret.type != T_INVALID)
+		if(asAtomHandler::isValid(ret))
 		{
-			if(ret.Boolean_concrete())
+			if(asAtomHandler::Boolean_concrete(ret))
 			{
 				return;
 			}
 			ASATOM_DECREF(ret);
 		}
 	}
-	ret.setBool(false);
+	asAtomHandler::setBool(ret,false);
 }
 
 ASFUNCTIONBODY_ATOM(Vector, every)
 {
-	Vector* th=static_cast<Vector*>(obj.getObject());
+	Vector* th=static_cast<Vector*>(asAtomHandler::getObject(obj));
 	if (argslen < 1)
-		throwError<ArgumentError>(kWrongArgumentCountError, "Vector.some", "1", Integer::toString(argslen));
-	if (!args[0].is<IFunction>())
-		throwError<TypeError>(kCheckTypeFailedError, args[0].toObject(th->getSystemState())->getClassName(), "Function");
+	{
+		createError<ArgumentError>(wrk,kWrongArgumentCountError, "Vector.every", "1", Integer::toString(argslen));
+		return;
+	}
+	if (!asAtomHandler::is<IFunction>(args[0]))
+	{
+		createError<TypeError>(wrk,kCheckTypeFailedError, asAtomHandler::toObject(args[0],wrk)->getClassName(), "Function");
+		return;
+	}
 	asAtom f = args[0];
 	asAtom params[3];
+	asAtom closure = asAtomHandler::getClosure(f) ? asAtomHandler::fromObject(asAtomHandler::getClosure(f)) : asAtomHandler::nullAtom;
 
 	for(unsigned int i=0; i < th->size(); i++)
 	{
-		if (th->vec[i].type != T_INVALID)
+		if (asAtomHandler::isValid(th->vec[i]))
 			params[0] = th->vec[i];
 		else
-			params[0] = asAtom::nullAtom;
-		params[1] = asAtom(i);
-		params[2] = asAtom::fromObject(th);
+			params[0] = asAtomHandler::nullAtom;
+		params[1] = asAtomHandler::fromUInt(i);
+		params[2] = asAtomHandler::fromObject(th);
 
 		if(argslen==1)
 		{
-			f.callFunction(ret,asAtom::nullAtom, params, 3,false);
+			asAtomHandler::callFunction(f,wrk,ret,closure, params, 3,false);
 		}
 		else
 		{
-			f.callFunction(ret,args[1], params, 3,false);
+			asAtomHandler::callFunction(f,wrk,ret,args[1], params, 3,false);
 		}
-		if(ret.type != T_INVALID)
+		if(asAtomHandler::isValid(ret))
 		{
-			if (ret.type == T_UNDEFINED || ret.type == T_NULL)
-				throwError<TypeError>(kCallOfNonFunctionError, ret.toString(sys));
-			if(!ret.Boolean_concrete())
+			if (asAtomHandler::isUndefined(ret) || asAtomHandler::isNull(ret))
+			{
+				createError<TypeError>(wrk,kCallOfNonFunctionError, asAtomHandler::toString(ret,wrk));
+				return;
+			}
+			if(!asAtomHandler::Boolean_concrete(ret))
 			{
 				return;
 			}
 			ASATOM_DECREF(ret);
 		}
 	}
-	ret.setBool(true);
+	asAtomHandler::setBool(ret,true);
 }
 
 void Vector::append(asAtom &o)
@@ -359,13 +465,32 @@ void Vector::append(asAtom &o)
 	if (fixed)
 	{
 		ASATOM_DECREF(o);
-		throwError<RangeError>(kVectorFixedError);
+		createError<RangeError>(getInstanceWorker(),kVectorFixedError);
+		return;
 	}
-	vec_type->coerce(getSystemState(),o);
+	asAtom v = o;
+	if (vec_type->coerce(getInstanceWorker(),v))
+		ASATOM_DECREF(v);
+	ASObject* obj = asAtomHandler::getObject(v);
+	if (obj)
+		obj->addStoredMember();
 	vec.push_back(o);
 }
 
-ASObject *Vector::describeType() const
+void Vector::remove(ASObject *o)
+{
+	for (auto it = vec.begin(); it != vec.end(); it++)
+	{
+		if (asAtomHandler::getObject(*it) == o)
+		{
+			o->removeStoredMember();
+			vec.erase(it);
+			break;
+		}
+	}
+}
+
+ASObject *Vector::describeType(ASWorker* wrk) const
 {
 	pugi::xml_document p;
 	pugi::xml_node root = p.append_child("type");
@@ -385,110 +510,133 @@ ASObject *Vector::describeType() const
 	node.append_attribute("type").set_value("__AS3__.vec::Vector.<*>");
 
 	if(prot)
-		prot->describeInstance(root,true);
+		prot->describeInstance(root,true,true);
 
-	//LOG(LOG_INFO,"describeType:"<< Class<XML>::getInstanceS(getSystemState(),root)->toXMLString_internal());
+	//LOG(LOG_INFO,"describeType:"<< Class<XML>::getInstanceS(getInstanceWorker(),root)->toXMLString_internal());
 
-	return XML::createFromNode(root);
+	return XML::createFromNode(wrk,root);
 	
 }
 
 ASFUNCTIONBODY_ATOM(Vector,push)
 {
-	Vector* th=static_cast<Vector*>(obj.getObject());
+	Vector* th=static_cast<Vector*>(asAtomHandler::getObject(obj));
 	if (th->fixed)
-		throwError<RangeError>(kVectorFixedError);
+	{
+		createError<RangeError>(wrk,kVectorFixedError);
+		return;
+	}
 	for(size_t i = 0; i < argslen; ++i)
 	{
-		ASATOM_INCREF(args[i]);
 		//The proprietary player violates the specification and allows elements of any type to be pushed;
 		//they are converted to the vec_type
-		th->vec_type->coerce(th->getSystemState(),args[i]);
-		th->vec.push_back(args[i]);
+		asAtom v = args[i];
+		if (!th->vec_type->coerce(th->getInstanceWorker(),v))
+			ASATOM_INCREF(v);
+		ASObject* obj = asAtomHandler::getObject(v);
+		if (obj)
+			obj->addStoredMember();
+		th->vec.push_back(v);
 	}
-	ret.setUInt((uint32_t)th->vec.size());
+	asAtomHandler::setUInt(ret,wrk,(uint32_t)th->vec.size());
 }
 
 ASFUNCTIONBODY_ATOM(Vector,_pop)
 {
-	Vector* th=obj.as<Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
 	if (th->fixed)
-		throwError<RangeError>(kVectorFixedError);
+	{
+		createError<RangeError>(wrk,kVectorFixedError);
+		return;
+	}
 	uint32_t size =th->size();
 	if (size == 0)
 	{
-		ret.setNull();
-		th->vec_type->coerce(th->getSystemState(),ret);
+		asAtomHandler::setNull(ret);
+		th->vec_type->coerce(th->getInstanceWorker(),ret);
 		return;
 	}
 	ret = th->vec[size-1];
-	if (ret.type == T_INVALID)
+	ASObject* ob = asAtomHandler::getObject(ret);
+	if (ob)
 	{
-		ret.setNull();
-		th->vec_type->coerce(th->getSystemState(),ret);
+		ob->incRef(); // will be decreffed in removeStoreMember
+		ob->removeStoredMember();
 	}
 	th->vec.pop_back();
 }
 
 ASFUNCTIONBODY_ATOM(Vector,getLength)
 {
-	ret.setUInt((uint32_t)obj.as<Vector>()->vec.size());
+	asAtomHandler::setUInt(ret,wrk,(uint32_t)asAtomHandler::as<Vector>(obj)->vec.size());
 }
 
 ASFUNCTIONBODY_ATOM(Vector,setLength)
 {
-	Vector* th = obj.as<Vector>();
+	Vector* th = asAtomHandler::as<Vector>(obj);
 	if (th->fixed)
-		throwError<RangeError>(kVectorFixedError);
+	{
+		createError<RangeError>(wrk,kVectorFixedError);
+		return;
+	}
 	uint32_t len;
-	ARG_UNPACK_ATOM (len);
+	ARG_CHECK(ARG_UNPACK (len));
 	if(len <= th->vec.size())
 	{
 		for(size_t i=len; i< th->vec.size(); ++i)
-			ASATOM_DECREF(th->vec[i]);
+		{
+			ASObject* ob = asAtomHandler::getObject(th->vec[i]);
+			if (ob)
+				ob->removeStoredMember();
+		}
 	}
-	th->vec.resize(len, asAtom::invalidAtom);
+	th->vec.resize(len, th->getDefaultValue());
 }
 
 ASFUNCTIONBODY_ATOM(Vector,getFixed)
 {
-	ret.setBool(obj.as<Vector>()->fixed);
+	asAtomHandler::setBool(ret,asAtomHandler::as<Vector>(obj)->fixed);
 }
 
 ASFUNCTIONBODY_ATOM(Vector,setFixed)
 {
-	Vector* th = obj.as<Vector>();
+	Vector* th = asAtomHandler::as<Vector>(obj);
 	bool fixed;
-	ARG_UNPACK_ATOM (fixed);
+	ARG_CHECK(ARG_UNPACK (fixed));
 	th->fixed = fixed;
 }
 
 ASFUNCTIONBODY_ATOM(Vector,forEach)
 {
-	Vector* th=obj.as<Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
 	if (argslen < 1)
-		throwError<ArgumentError>(kWrongArgumentCountError, "Vector.forEach", "1", Integer::toString(argslen));
-	if (!args[0].is<IFunction>())
-		throwError<TypeError>(kCheckTypeFailedError, args[0].toObject(th->getSystemState())->getClassName(), "Function");
+	{
+		createError<ArgumentError>(wrk,kWrongArgumentCountError, "Vector.forEach", "1", Integer::toString(argslen));
+		return;
+	}
+	if (!asAtomHandler::is<IFunction>(args[0]))
+	{
+		createError<TypeError>(wrk,kCheckTypeFailedError, asAtomHandler::toObject(args[0],wrk)->getClassName(), "Function");
+		return;
+	}
 	asAtom f = args[0];
 	asAtom params[3];
+	asAtom closure = asAtomHandler::getClosure(f) ? asAtomHandler::fromObject(asAtomHandler::getClosure(f)) : asAtomHandler::nullAtom;
 
 	for(unsigned int i=0; i < th->size(); i++)
 	{
-		if (th->vec[i].type == T_INVALID)
-			continue;
 		params[0] = th->vec[i];
-		params[1] = asAtom(i);
-		params[2] = asAtom::fromObject(th);
+		params[1] = asAtomHandler::fromUInt(i);
+		params[2] = asAtomHandler::fromObject(th);
 
-		asAtom funcret;
+		asAtom funcret=asAtomHandler::invalidAtom;
 		if( argslen == 1 )
 		{
-			f.callFunction(funcret,asAtom::nullAtom, params, 3,false);
+			asAtomHandler::callFunction(f,wrk,funcret,closure, params, 3,false);
 		}
 		else
 		{
-			f.callFunction(funcret,args[1], params, 3,false);
+			asAtomHandler::callFunction(f,wrk,funcret,args[1], params, 3,false);
 		}
 		ASATOM_DECREF(funcret);
 	}
@@ -496,12 +644,12 @@ ASFUNCTIONBODY_ATOM(Vector,forEach)
 
 ASFUNCTIONBODY_ATOM(Vector, _reverse)
 {
-	Vector* th = obj.as<Vector>();
+	Vector* th = asAtomHandler::as<Vector>(obj);
 
 	std::vector<asAtom> tmp = std::vector<asAtom>(th->vec.begin(),th->vec.end());
 	uint32_t size = th->size();
 	th->vec.clear();
-	th->vec.resize(size, asAtom::invalidAtom);
+	th->vec.resize(size, th->getDefaultValue());
 	std::vector<asAtom>::iterator it=tmp.begin();
 	uint32_t index = size-1;
 	for(;it != tmp.end();++it)
@@ -510,33 +658,33 @@ ASFUNCTIONBODY_ATOM(Vector, _reverse)
 		index--;
 	}
 	th->incRef();
-	ret = asAtom::fromObject(th);
+	ret = asAtomHandler::fromObject(th);
 }
 
 ASFUNCTIONBODY_ATOM(Vector,lastIndexOf)
 {
-	Vector* th=obj.as<Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
 	assert_and_throw(argslen==1 || argslen==2);
 	int32_t res=-1;
 	asAtom arg0=args[0];
 
 	if(th->vec.size() == 0)
 	{
-		ret.setInt((int32_t)-1);
+		asAtomHandler::setInt(ret,wrk,(int32_t)-1);
 		return;
 	}
 
 	size_t i = th->size()-1;
 
-	if(argslen == 2 && std::isnan(args[1].toNumber()))
+	if(argslen == 2 && std::isnan(asAtomHandler::toNumber(args[1])))
 	{
-		ret.setInt(0);
+		asAtomHandler::setInt(ret,wrk,0);
 		return;
 	}
 
-	if(argslen == 2 && args[1].type != T_UNDEFINED && !std::isnan(args[1].toNumber()))
+	if(argslen == 2 && !asAtomHandler::isUndefined(args[1]) && !std::isnan(asAtomHandler::toNumber(args[1])))
 	{
-		int j = args[1].toInt(); //Preserve sign
+		int j = asAtomHandler::toInt(args[1]); //Preserve sign
 		if(j < 0) //Negative offset, use it as offset from the end of the array
 		{
 			if((size_t)-j > th->size())
@@ -546,7 +694,7 @@ ASFUNCTIONBODY_ATOM(Vector,lastIndexOf)
 		}
 		else //Positive offset, use it directly
 		{
-			if((size_t)j > th->size()) //If the passed offset is bigger than the array, cap the offset
+			if((size_t)j >= th->size()) //If the passed offset is bigger than the array, cap the offset
 				i = th->size()-1;
 			else
 				i = j;
@@ -554,9 +702,7 @@ ASFUNCTIONBODY_ATOM(Vector,lastIndexOf)
 	}
 	do
 	{
-		if (th->vec[i].type == T_INVALID)
-		    continue;
-		if (th->vec[i].isEqualStrict(th->getSystemState(),arg0))
+		if (asAtomHandler::isEqualStrict(th->vec[i],wrk,arg0))
 		{
 			res=i;
 			break;
@@ -564,32 +710,41 @@ ASFUNCTIONBODY_ATOM(Vector,lastIndexOf)
 	}
 	while(i--);
 
-	ret.setInt(res);
+	asAtomHandler::setInt(ret,wrk,res);
 }
 
 ASFUNCTIONBODY_ATOM(Vector,shift)
 {
-	Vector* th=obj.as<Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
 	if (th->fixed)
-		throwError<RangeError>(kVectorFixedError);
-	if(!th->size())
 	{
-		ret.setNull();
-		th->vec_type->coerce(th->getSystemState(),ret);
+		createError<RangeError>(wrk,kVectorFixedError);
 		return;
 	}
-	if(th->vec[0].type !=T_INVALID)
+	if(!th->size())
+	{
+		asAtomHandler::setNull(ret);
+		th->vec_type->coerce(th->getInstanceWorker(),ret);
+		return;
+	}
+	if(asAtomHandler::isValid(th->vec[0]))
 		ret=th->vec[0];
 	else
 	{
-		ret.setNull();
-		th->vec_type->coerce(th->getSystemState(),ret);
+		asAtomHandler::setNull(ret);
+		th->vec_type->coerce(th->getInstanceWorker(),ret);
 	}
 	for(uint32_t i= 1;i< th->size();i++)
 	{
 		th->vec[i-1]=th->vec[i];
 	}
-	th->vec.resize(th->size()-1, asAtom::invalidAtom);
+	th->vec.resize(th->size()-1, th->getDefaultValue());
+	ASObject* ob = asAtomHandler::getObject(ret);
+	if (ob)
+	{
+		ob->incRef(); // will be decreffed in removeStoreMember
+		ob->removeStoredMember();
+	}
 }
 
 int Vector::capIndex(int i) const
@@ -611,30 +766,47 @@ int Vector::capIndex(int i) const
 	}
 }
 
+asAtom Vector::getDefaultValue()
+{
+	if (vec_type == Class<Integer>::getClass(getSystemState()))
+		return asAtomHandler::fromInt(0);
+	else if (vec_type == Class<UInteger>::getClass(getSystemState()))
+		return asAtomHandler::fromUInt(0);
+	else if (vec_type == Class<Number>::getClass(getSystemState()))
+		return asAtomHandler::fromInt(0);
+	else
+		return asAtomHandler::nullAtom;
+}
+
 ASFUNCTIONBODY_ATOM(Vector,slice)
 {
-	Vector* th=obj.as<Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
 
 	int startIndex=0;
 	int endIndex=16777215;
 	if(argslen>0)
-		startIndex=args[0].toInt();
+		startIndex=asAtomHandler::toInt(args[0]);
 	if(argslen>1)
-		endIndex=args[1].toInt();
+		endIndex=asAtomHandler::toInt(args[1]);
 
 	startIndex=th->capIndex(startIndex);
 	endIndex=th->capIndex(endIndex);
-	th->getClass()->getInstance(ret,true,NULL,0);
-	Vector* res= ret.as<Vector>();
-	res->vec.resize(endIndex-startIndex, asAtom::invalidAtom);
+	th->getClass()->getInstance(wrk,ret,true,nullptr,0);
+	Vector* res= asAtomHandler::as<Vector>(ret);
+	res->vec.resize(endIndex-startIndex, th->getDefaultValue());
 	int j = 0;
 	for(int i=startIndex; i<endIndex; i++) 
 	{
-		if (th->vec[i].type != T_INVALID)
+		if (asAtomHandler::isValid(th->vec[i]))
 		{
-			ASATOM_INCREF(th->vec[i]);
 			res->vec[j] =th->vec[i];
-			th->vec_type->coerce(th->getSystemState(),th->vec[j]);
+			if (!th->vec_type->coerce(th->getInstanceWorker(),res->vec[j]))
+			{
+				ASATOM_INCREF(res->vec[j]);
+				ASObject* obj = asAtomHandler::getObject(res->vec[j]);
+				if (obj)
+					obj->addStoredMember();
+			}
 		}
 		j++;
 	}
@@ -642,60 +814,68 @@ ASFUNCTIONBODY_ATOM(Vector,slice)
 
 ASFUNCTIONBODY_ATOM(Vector,splice)
 {
-	Vector* th=obj.as<Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
 	if (th->fixed)
-		throwError<RangeError>(kVectorFixedError);
-	int startIndex=args[0].toInt();
+	{
+		createError<RangeError>(wrk,kVectorFixedError);
+		return;
+	}
+	int startIndex=asAtomHandler::toInt(args[0]);
 	//By default, delete all the element up to the end
 	//Use the array len, it will be capped below
 	int deleteCount=th->size();
 	if(argslen > 1)
-		deleteCount=args[1].toUInt();
+		deleteCount=asAtomHandler::toUInt(args[1]);
 	int totalSize=th->size();
-	th->getClass()->getInstance(ret,true,NULL,0);
-	Vector* res= ret.as<Vector>();
+	th->getClass()->getInstance(wrk,ret,true,nullptr,0);
+	Vector* res= asAtomHandler::as<Vector>(ret);
 
 	startIndex=th->capIndex(startIndex);
 
 	if((startIndex+deleteCount)>totalSize)
 		deleteCount=totalSize-startIndex;
 
-	res->vec.resize(deleteCount, asAtom::invalidAtom);
+	res->vec.resize(deleteCount, th->getDefaultValue());
 	if(deleteCount)
 	{
-		// write deleted items to return array
+		// write deleted items to return vector
 		for(int i=0;i<deleteCount;i++)
 		{
 			res->vec[i] = th->vec[startIndex+i];
 		}
-		// delete items from current array
+		// delete items from current vector (no need to decref/removemember, as they are added to the result)
 		for (int i = 0; i < deleteCount; i++)
 		{
-			th->vec[startIndex+i] = asAtom::invalidAtom;
+			th->vec[startIndex+i] = th->getDefaultValue();
 		}
 	}
 	// remember items in current array that have to be moved to new position
 	vector<asAtom> tmp = vector<asAtom>(totalSize- (startIndex+deleteCount));
-	tmp.resize(totalSize- (startIndex+deleteCount), asAtom::invalidAtom);
+	tmp.resize(totalSize- (startIndex+deleteCount), th->getDefaultValue());
 	for (int i = startIndex+deleteCount; i < totalSize ; i++)
 	{
-		if (th->vec[i].type != T_INVALID)
+		if (asAtomHandler::isValid(th->vec[i]))
 		{
 			tmp[i-(startIndex+deleteCount)] = th->vec[i];
-			th->vec[i] = asAtom::invalidAtom;
+			th->vec[i] = th->getDefaultValue();
 		}
 	}
-	th->vec.resize(startIndex, asAtom::invalidAtom);
+	th->vec.resize(startIndex, th->getDefaultValue());
 
 	
 	//Insert requested values starting at startIndex
 	for(unsigned int i=2;i<argslen;i++)
 	{
-		ASATOM_INCREF(args[i]);
+		ASObject* obj = asAtomHandler::getObject(args[i]);
+		if (obj)
+		{
+			obj->incRef();
+			obj->addStoredMember();
+		}
 		th->vec.push_back(args[i]);
 	}
 	// move remembered items to new position
-	th->vec.resize((totalSize-deleteCount)+(argslen > 2 ? argslen-2 : 0), asAtom::invalidAtom);
+	th->vec.resize((totalSize-deleteCount)+(argslen > 2 ? argslen-2 : 0), th->getDefaultValue());
 	for(int i=0;i<totalSize- (startIndex+deleteCount);i++)
 	{
 		th->vec[startIndex+i+(argslen > 2 ? argslen-2 : 0)] = tmp[i];
@@ -704,25 +884,25 @@ ASFUNCTIONBODY_ATOM(Vector,splice)
 
 ASFUNCTIONBODY_ATOM(Vector,join)
 {
-	Vector* th=obj.as<Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
 	
 	tiny_string del = ",";
 	if (argslen == 1)
-		  del=args[0].toString(sys);
+		  del=asAtomHandler::toString(args[0],wrk);
 	string res;
 	for(uint32_t i=0;i<th->size();i++)
 	{
-		if (th->vec[i].type != T_INVALID)
-			res+=th->vec[i].toString(sys).raw_buf();
+		if (asAtomHandler::isValid(th->vec[i]))
+			res+=asAtomHandler::toString(th->vec[i],wrk).raw_buf();
 		if(i!=th->size()-1)
 			res+=del.raw_buf();
 	}
-	ret = asAtom::fromObject(abstract_s(th->getSystemState(),res));
+	ret = asAtomHandler::fromObject(abstract_s(wrk,res));
 }
 
 ASFUNCTIONBODY_ATOM(Vector,indexOf)
 {
-	Vector* th=obj.as<Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
 	assert_and_throw(argslen==1 || argslen==2);
 	int32_t res=-1;
 	asAtom arg0=args[0];
@@ -730,20 +910,18 @@ ASFUNCTIONBODY_ATOM(Vector,indexOf)
 	int unsigned i = 0;
 	if(argslen == 2)
 	{
-		i = args[1].toInt();
+		i = asAtomHandler::toInt(args[1]);
 	}
 
 	for(;i<th->size();i++)
 	{
-		if (th->vec[i].type ==T_INVALID)
-			continue;
-		if(th->vec[i].isEqualStrict(th->getSystemState(),arg0))
+		if(asAtomHandler::isEqualStrict(th->vec[i],wrk,arg0))
 		{
 			res=i;
 			break;
 		}
 	}
-	ret.setInt(res);
+	asAtomHandler::setInt(ret,wrk,res);
 }
 bool Vector::sortComparatorDefault::operator()(const asAtom& d1, const asAtom& d2)
 {
@@ -751,9 +929,9 @@ bool Vector::sortComparatorDefault::operator()(const asAtom& d1, const asAtom& d
 	asAtom o2 = d2;
 	if(isNumeric)
 	{
-		number_t a=o1.toNumber();
+		number_t a=asAtomHandler::toNumber(o1);
 
-		number_t b=o2.toNumber();
+		number_t b=asAtomHandler::toNumber(o2);
 
 		if(std::isnan(a) || std::isnan(b))
 			throw RunTimeException("Cannot sort non number with Array.NUMERIC option");
@@ -765,8 +943,8 @@ bool Vector::sortComparatorDefault::operator()(const asAtom& d1, const asAtom& d
 	else
 	{
 		//Comparison is always in lexicographic order
-		tiny_string s1 = o1.toString(getSys());
-		tiny_string s2 = o2.toString(getSys());
+		tiny_string s1 = asAtomHandler::toString(o1,getWorker());
+		tiny_string s2 = asAtomHandler::toString(o2,getWorker());
 
 		if(isDescending)
 		{
@@ -789,82 +967,202 @@ bool Vector::sortComparatorDefault::operator()(const asAtom& d1, const asAtom& d
 number_t Vector::sortComparatorWrapper::compare(const asAtom& d1, const asAtom& d2)
 {
 	asAtom objs[2];
-	if (d1.type != T_INVALID)
+	if (asAtomHandler::isValid(d1))
 		objs[0] = d1;
 	else
-		objs[0] = asAtom::nullAtom;
-	if (d2.type != T_INVALID)
+		objs[0] = asAtomHandler::nullAtom;
+	if (asAtomHandler::isValid(d2))
 		objs[1] = d2;
 	else
-		objs[1] = asAtom::nullAtom;
-	asAtom ret;
+		objs[1] = asAtomHandler::nullAtom;
+	asAtom ret=asAtomHandler::invalidAtom;
+	asAtom obj = asAtomHandler::getClosureAtom(comparator);
 	// don't coerce the result, as it may be an int that would loose it's sign through coercion
-	comparator.callFunction(ret,asAtom::nullAtom, objs, 2,false,false);
-	assert_and_throw(ret.type != T_INVALID);
-	return ret.toNumber();
+	asAtomHandler::callFunction(comparator,asAtomHandler::getObjectNoCheck(comparator)->getInstanceWorker(), ret,obj, objs, 2,false,false);
+	assert_and_throw(asAtomHandler::isValid(ret));
+	return asAtomHandler::toNumber(ret);
 }
 
 // std::sort expects strict weak ordering for the comparison function
 // this is not guarranteed by user defined comparison functions, so we need our own sorting method.
-// TODO this is just a simple quicksort implementation, not optimized for performance
-void simplequicksortVector(std::vector<asAtom>& v, Vector::sortComparatorWrapper& comp, int32_t lo, int32_t hi)
+
+// this is the quicksort algorithm used by avmplus
+// see https://github.com/adobe-flash/avmplus/blob/master/core/ArrayClass.cpp
+// TODO merge with qsort in Array.cpp
+void qsortVector(std::vector<asAtom>& v, Vector::sortComparatorWrapper& comp, uint32_t lo, uint32_t hi)
 {
-	if (v.size() == 2)
-	{
-		if (comp.compare(v[0],v[1]) > 0)
-			std::swap(v[0],v[1]);
+	// This is an iterative implementation of the recursive quick sort.
+	// Recursive implementations are basically storing nested (lo,hi) pairs
+	// in the stack frame, so we can avoid the recursion by storing them
+	// in an array.
+	//
+	// Once partitioned, we sub-partition the smaller half first. This means
+	// the greatest stack depth happens with equal partitions, all the way down,
+	// which would be 1 + log2(size), which could never exceed 33.
+
+	uint32_t size;
+	struct StackFrame { uint32_t lo, hi; };
+	StackFrame stk[33];
+	int stkptr = 0;
+
+	// leave without doing anything if the array is empty (lo > hi) or only one element (lo == hi)
+	if (lo >= hi)
 		return;
-	}
-	if (lo < hi)
-	{
-		asAtom pivot = v[lo];
-		int32_t i = lo - 1;
-		int32_t j = hi + 1;
-		while (true)
-		{
-			do
-			{
-				i++;
+
+	// code below branches to this label instead of recursively calling qsort()
+recurse:
+
+	size = (hi - lo) + 1; // number of elements in the partition
+
+	if (size < 4) {
+
+		// It is standard to use another sort for smaller partitions,
+		// for instance c library source uses insertion sort for 8 or less.
+		//
+		// However, as our swap() is essentially free, the relative cost of
+		// compare() is high, and with profiling, I found quicksort()-ing
+		// down to four had better performance.
+		//
+		// Although verbose, handling the remaining cases explicitly is faster,
+		// so I do so here.
+
+		if (size == 3) {
+			if (comp.compare(v[lo],v[lo + 1]) > 0) {
+				std::swap(v[lo], v[lo + 1]);
+				if (comp.compare(v[lo + 1], v[lo + 2]) > 0) {
+					std::swap(v[lo + 1], v[lo + 2]);
+					if (comp.compare(v[lo], v[lo + 1]) > 0) {
+						std::swap(v[lo], v[lo + 1]);
+					}
+				}
+			} else {
+				if (comp.compare(v[lo + 1], v[lo + 2]) > 0) {
+					std::swap(v[lo + 1], v[lo + 2]);
+					if (comp.compare(v[lo], v[lo + 1]) > 0) {
+						std::swap(v[lo], v[lo + 1]);
+					}
+				}
 			}
-			while (i < hi && (comp.compare(v[i],pivot) < 0));
-			
-			do
-			{
-				j--;
-			}
-			while (j >= 0 && (comp.compare(v[j],pivot) > 0));
-	
-			if (i >= j)
+		} else if (size == 2) {
+			if (comp.compare(v[lo], v[lo + 1]) > 0)
+				std::swap(v[lo], v[lo + 1]);
+		} else {
+			// size is one, zero or negative, so there isn't any sorting to be done
+		}
+	} else {
+		// qsort()-ing a near or already sorted list goes much better if
+		// you use the midpoint as the pivot, but the algorithm is simpler
+		// if the pivot is at the start of the list, so move the middle
+		// element to the front!
+		uint32_t pivot = lo + (size / 2);
+		std::swap(v[pivot], v[lo]);
+
+
+		uint32_t left = lo;
+		uint32_t right = hi + 1;
+
+		for (;;) {
+			// Move the left right until it's at an element greater than the pivot.
+			// Move the right left until it's at an element less than the pivot.
+			// If left and right cross, we can terminate, otherwise swap and continue.
+			//
+			// As each pass of the outer loop increments left at least once,
+			// and decrements right at least once, this loop has to terminate.
+
+			do  {
+				left++;
+			} while ((left <= hi) && (comp.compare(v[left], v[lo]) <= 0));
+
+			do  {
+				right--;
+			} while ((right > lo) && (comp.compare(v[right], v[lo]) >= 0));
+
+			if (right < left)
 				break;
-	
-			std::swap(v[i],v[j]);
+
+			std::swap(v[left], v[right]);
 		}
-		if (j >= lo)
+
+		// move the pivot after the lower partition
+		std::swap(v[lo], v[right]);
+
+		// The array is now in three partions:
+		//  1. left partition   : i in [lo, right), elements less than or equal to pivot
+		//  2. center partition : i in [right, left], elements equal to pivot
+		//  3. right partition  : i in (left, hi], elements greater than pivot
+		// NOTE : [ means the range includes the lower bounds, ( means it excludes it, with the same for ] and ).
+
+		// Many quick sorts recurse into the left partition, and then the right.
+		// The worst case of this can lead to a stack depth of size -- for instance,
+		// the left is empty, the center is just the pivot, and the right is everything else.
+		//
+		// If you recurse into the smaller partition first, then the worst case is an
+		// equal partitioning, which leads to a depth of log2(size).
+		if ((right - 1 - lo) >= (hi - left))
 		{
-			simplequicksortVector(v, comp, lo, j);
-			simplequicksortVector(v, comp, j + 1, hi);
+			if ((lo + 1) < right)
+			{
+				stk[stkptr].lo = lo;
+				stk[stkptr].hi = right - 1;
+				++stkptr;
+			}
+
+			if (left < hi)
+			{
+				lo = left;
+				goto recurse;
+			}
+		}
+		else
+		{
+			if (left < hi)
+			{
+				stk[stkptr].lo = left;
+				stk[stkptr].hi = hi;
+				++stkptr;
+			}
+
+			if ((lo + 1) < right)
+			{
+				hi = right - 1;
+				goto recurse;           /* do small recursion */
+			}
 		}
 	}
+
+	// we reached the bottom of the well, pop the nested stack frame
+	if (--stkptr >= 0)
+	{
+		lo = stk[stkptr].lo;
+		hi = stk[stkptr].hi;
+		goto recurse;
+	}
+
+	// we've returned to the top, so we are done!
+	return;
 }
 
 ASFUNCTIONBODY_ATOM(Vector,_sort)
 {
 	if (argslen != 1)
-		throwError<ArgumentError>(kWrongArgumentCountError, "Vector.sort", "1", Integer::toString(argslen));
-	Vector* th=static_cast<Vector*>(obj.getObject());
+	{
+		createError<ArgumentError>(wrk,kWrongArgumentCountError, "Vector.sort", "1", Integer::toString(argslen));
+		return;
+	}
+	Vector* th=static_cast<Vector*>(asAtomHandler::getObject(obj));
 	
-	asAtom comp;
+	asAtom comp=asAtomHandler::invalidAtom;
 	bool isNumeric=false;
 	bool isCaseInsensitive=false;
 	bool isDescending=false;
-	if(args[0].type==T_FUNCTION) //Comparison func
+	if(asAtomHandler::isFunction(args[0])) //Comparison func
 	{
-		assert_and_throw(comp.type==T_INVALID);
+		assert_and_throw(asAtomHandler::isInvalid(comp));
 		comp=args[0];
 	}
 	else
 	{
-		uint32_t options=args[0].toInt();
+		uint32_t options=asAtomHandler::toInt(args[0]);
 		if(options&Array::NUMERIC)
 			isNumeric=true;
 		if(options&Array::CASEINSENSITIVE)
@@ -881,10 +1179,10 @@ ASFUNCTIONBODY_ATOM(Vector,_sort)
 		tmp[i++]= *it;
 	}
 	
-	if(comp.type != T_INVALID)
+	if(asAtomHandler::isValid(comp))
 	{
 		sortComparatorWrapper c(comp);
-		simplequicksortVector(tmp,c,0,tmp.size()-1);
+		qsortVector(tmp,c,0,tmp.size()-1);
 	}
 	else
 		sort(tmp.begin(),tmp.end(),sortComparatorDefault(isNumeric,isCaseInsensitive,isDescending));
@@ -900,112 +1198,136 @@ ASFUNCTIONBODY_ATOM(Vector,_sort)
 
 ASFUNCTIONBODY_ATOM(Vector,unshift)
 {
-	Vector* th=obj.as<Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
 	if (th->fixed)
-		throwError<RangeError>(kVectorFixedError);
+	{
+		createError<RangeError>(wrk,kVectorFixedError);
+		return;
+	}
 	if (argslen > 0)
 	{
 		uint32_t s = th->size();
-		th->vec.resize(th->size()+argslen, asAtom::invalidAtom);
+		th->vec.resize(th->size()+argslen, th->getDefaultValue());
 		for(uint32_t i=s;i> 0;i--)
 		{
 			th->vec[(i-1)+argslen]=th->vec[i-1];
-			th->vec[i-1] = asAtom::invalidAtom;
+			th->vec[i-1] = th->getDefaultValue();
 		}
 		
 		for(uint32_t i=0;i<argslen;i++)
 		{
-			ASATOM_INCREF(args[i]);
 			th->vec[i] = args[i];
-			th->vec_type->coerce(th->getSystemState(),th->vec[i]);
+			if (!th->vec_type->coerce(th->getInstanceWorker(),th->vec[i]))
+			{
+				ASObject* obj = asAtomHandler::getObject(th->vec[i]);
+				if (obj)
+				{
+					obj->incRef();
+					obj->addStoredMember();
+				}
+			}
 		}
 	}
-	ret.setInt((int32_t)th->size());
+	asAtomHandler::setInt(ret,wrk,(int32_t)th->size());
 }
 
 ASFUNCTIONBODY_ATOM(Vector,_map)
 {
-	Vector* th=obj.as<Vector>();
-	asAtom func(T_FUNCTION);
-	asAtom thisObject;
+	Vector* th=asAtomHandler::as<Vector>(obj);
+	asAtom thisObject=asAtomHandler::invalidAtom;
 	
-	if (argslen >= 1 && !args[0].is<IFunction>())
-		throwError<TypeError>(kCheckTypeFailedError, args[0].toObject(th->getSystemState())->getClassName(), "Function");
+	if (argslen >= 1 && !asAtomHandler::is<IFunction>(args[0]))
+	{
+		createError<TypeError>(wrk,kCheckTypeFailedError, asAtomHandler::toObject(args[0],wrk)->getClassName(), "Function");
+		return;
+	}
+	asAtom func=asAtomHandler::invalidAtom;
 
-	ARG_UNPACK_ATOM(func)(thisObject,asAtom::nullAtom);
-	th->getClass()->getInstance(ret,true,NULL,0);
-	Vector* res= ret.as<Vector>();
+	ARG_CHECK(ARG_UNPACK(func)(thisObject,asAtomHandler::nullAtom));
+	th->getClass()->getInstance(wrk,ret,true,nullptr,0);
+	Vector* res= asAtomHandler::as<Vector>(ret);
 
 	for(uint32_t i=0;i<th->size();i++)
 	{
 		asAtom funcArgs[3];
 		funcArgs[0]=th->vec[i];
-		funcArgs[1]=asAtom(i);
-		funcArgs[2]=asAtom::fromObject(th);
-		asAtom funcRet;
-		func.callFunction(funcRet,thisObject, funcArgs, 3,false);
-		assert_and_throw(funcRet.type != T_INVALID);
-		ASATOM_INCREF(funcRet);
+		funcArgs[1]=asAtomHandler::fromUInt(i);
+		funcArgs[2]=asAtomHandler::fromObject(th);
+		asAtom funcRet=asAtomHandler::invalidAtom;
+		asAtomHandler::callFunction(func,wrk,funcRet,thisObject, funcArgs, 3,false);
+		assert_and_throw(asAtomHandler::isValid(funcRet));
+		ASObject* obj = asAtomHandler::getObject(funcRet);
+		if (obj)
+		{
+			obj->incRef();
+			obj->addStoredMember();
+		}
 		res->vec.push_back(funcRet);
 	}
 
-	ret = asAtom::fromObject(res);
+	ret = asAtomHandler::fromObject(res);
 }
 
 ASFUNCTIONBODY_ATOM(Vector,_toString)
 {
 	tiny_string res;
-	Vector* th = obj.as<Vector>();
+	Vector* th = asAtomHandler::as<Vector>(obj);
 	for(size_t i=0; i < th->vec.size(); ++i)
 	{
-		if (th->vec[i].type != T_INVALID)
-			res += th->vec[i].toString(sys);
+		if (asAtomHandler::isValid(th->vec[i]))
+			res += asAtomHandler::toString(th->vec[i],wrk);
 		else
 		{
 			// use the type's default value
-			asAtom natom(T_NULL);
-			th->vec_type->coerce(th->getSystemState(), natom);
-			res += natom.toString(sys);
+			asAtom natom = asAtomHandler::nullAtom;
+			th->vec_type->coerce(th->getInstanceWorker(), natom);
+			res += asAtomHandler::toString(natom,wrk);
 		}
 
 		if(i!=th->vec.size()-1)
 			res += ',';
 	}
-	ret = asAtom::fromObject(abstract_s(th->getSystemState(),res));
+	ret = asAtomHandler::fromObject(abstract_s(wrk,res));
 }
 
 ASFUNCTIONBODY_ATOM(Vector,insertAt)
 {
-	Vector* th=obj.as<Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
 	if (th->fixed)
-		throwError<RangeError>(kOutOfRangeError);
+	{
+		createError<RangeError>(wrk,kOutOfRangeError);
+		return;
+	}
 	int32_t index;
-	asAtom o;
-	ARG_UNPACK_ATOM(index)(o);
+	asAtom o=asAtomHandler::invalidAtom;
+	ARG_CHECK(ARG_UNPACK(index)(o));
 
 	if (index < 0 && th->vec.size() >= (uint32_t)(-index))
 		index = th->vec.size()+(index);
 	if (index < 0)
 		index = 0;
+	ASObject* ob = asAtomHandler::getObject(o);
+	if (ob)
+	{
+		ob->incRef();
+		ob->addStoredMember();
+	}
 	if ((uint32_t)index >= th->vec.size())
-	{
-		ASATOM_INCREF(o);
 		th->vec.push_back(o);
-	}
 	else
-	{
-		ASATOM_INCREF(o);
 		th->vec.insert(th->vec.begin()+index,o);
-	}
 }
 
 ASFUNCTIONBODY_ATOM(Vector,removeAt)
 {
-	Vector* th=obj.as<Vector>();
+	Vector* th=asAtomHandler::as<Vector>(obj);
 	if (th->fixed)
-		throwError<RangeError>(kOutOfRangeError);
+	{
+		createError<RangeError>(wrk,kOutOfRangeError);
+		return;
+	}
 	int32_t index;
-	ARG_UNPACK_ATOM(index);
+	ARG_CHECK(ARG_UNPACK(index));
 	if (index < 0)
 		index = th->vec.size()+index;
 	if (index < 0)
@@ -1013,23 +1335,26 @@ ASFUNCTIONBODY_ATOM(Vector,removeAt)
 	if ((uint32_t)index < th->vec.size())
 	{
 		ret = th->vec[index];
+		ASObject* ob = asAtomHandler::getObject(ret);
 		th->vec.erase(th->vec.begin()+index);
+		if (ob)
+			ob->removeStoredMember();
 	}
 	else
-		throwError<RangeError>(kOutOfRangeError);
+		createError<RangeError>(wrk,kOutOfRangeError);
 }
 
-bool Vector::hasPropertyByMultiname(const multiname& name, bool considerDynamic, bool considerPrototype)
+bool Vector::hasPropertyByMultiname(const multiname& name, bool considerDynamic, bool considerPrototype, ASWorker* wrk)
 {
 	if(!considerDynamic)
-		return ASObject::hasPropertyByMultiname(name, considerDynamic, considerPrototype);
+		return ASObject::hasPropertyByMultiname(name, considerDynamic, considerPrototype,wrk);
 
 	if(!name.hasEmptyNS)
-		return ASObject::hasPropertyByMultiname(name, considerDynamic, considerPrototype);
+		return ASObject::hasPropertyByMultiname(name, considerDynamic, considerPrototype,wrk);
 
 	unsigned int index=0;
 	if(!Vector::isValidMultiname(getSystemState(),name,index))
-		return ASObject::hasPropertyByMultiname(name, considerDynamic, considerPrototype);
+		return ASObject::hasPropertyByMultiname(name, considerDynamic, considerPrototype,wrk);
 
 	if(index < vec.size())
 		return true;
@@ -1038,17 +1363,16 @@ bool Vector::hasPropertyByMultiname(const multiname& name, bool considerDynamic,
 }
 
 /* this handles the [] operator, because vec[12] becomes vec.12 in bytecode */
-GET_VARIABLE_RESULT Vector::getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt)
+GET_VARIABLE_RESULT Vector::getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt,ASWorker* wrk)
 {
 	if((opt & SKIP_IMPL)!=0 || !implEnable)
 	{
-		return getVariableByMultinameIntern(ret,name,this->getClass(),opt);
+		return getVariableByMultinameIntern(ret,name,this->getClass(),opt,wrk);
 	}
 
-	assert_and_throw(name.ns.size()>0);
 	if(!name.hasEmptyNS)
 	{
-		return getVariableByMultinameIntern(ret,name,this->getClass(),opt);
+		return getVariableByMultinameIntern(ret,name,this->getClass(),opt,wrk);
 	}
 
 	unsigned int index=0;
@@ -1060,65 +1384,70 @@ GET_VARIABLE_RESULT Vector::getVariableByMultiname(asAtom& ret, const multiname&
 			case multiname::NAME_NUMBER:
 				if (getSystemState()->getSwfVersion() >= 11 
 						|| (uint32_t(name.name_d) == name.name_d && name.name_d < UINT32_MAX))
-					throwError<RangeError>(kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
+					createError<RangeError>(getInstanceWorker(),kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
 				else
-					throwError<ReferenceError>(kReadSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
-				break;
+					createError<ReferenceError>(getInstanceWorker(),kReadSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
+				return GET_VARIABLE_RESULT::GETVAR_NORMAL;
 			case multiname::NAME_INT:
 				if (getSystemState()->getSwfVersion() >= 11
 						|| name.name_i >= (int32_t)vec.size())
-					throwError<RangeError>(kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
+					createError<RangeError>(getInstanceWorker(),kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
 				else
-					throwError<ReferenceError>(kReadSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
-				break;
+					createError<ReferenceError>(getInstanceWorker(),kReadSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
+				return GET_VARIABLE_RESULT::GETVAR_NORMAL;
 			case multiname::NAME_UINT:
-				throwError<RangeError>(kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
-				break;
+				createError<RangeError>(getInstanceWorker(),kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
+				return GET_VARIABLE_RESULT::GETVAR_NORMAL;
 			case multiname::NAME_STRING:
 				if (isNumber)
 				{
 					if (getSystemState()->getSwfVersion() >= 11 )
-						throwError<RangeError>(kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
+						createError<RangeError>(getInstanceWorker(),kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
 					else
-						throwError<ReferenceError>(kReadSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
+						createError<ReferenceError>(getInstanceWorker(),kReadSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
+					return GET_VARIABLE_RESULT::GETVAR_NORMAL;
 				}
 				break;
 			default:
 				break;
 		}
 
-		GET_VARIABLE_RESULT res = getVariableByMultinameIntern(ret,name,this->getClass(),opt);
-		if (ret.type == T_INVALID)
-			throwError<ReferenceError>(kReadSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
+		GET_VARIABLE_RESULT res = getVariableByMultinameIntern(ret,name,this->getClass(),opt,wrk);
+		if (asAtomHandler::isInvalid(ret))
+			createError<ReferenceError>(getInstanceWorker(),kReadSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
 		return res;
 	}
 	if(index < vec.size())
 	{
-		if (vec[index].type !=T_INVALID)
-		{
-			ASATOM_INCREF(vec[index]);
-			ret = vec[index];
-		}
-		else
-		{
-			ret.setNull();
-			vec_type->coerce(getSystemState(), ret );
-		}
+		ret = vec[index];
+		if (!(opt & NO_INCREF))
+			ASATOM_INCREF(ret);
 	}
 	else
 	{
-		throwError<RangeError>(kOutOfRangeError,
+		createError<RangeError>(getInstanceWorker(),kOutOfRangeError,
 				       Integer::toString(index),
 				       Integer::toString(vec.size()));
 	}
 	return GET_VARIABLE_RESULT::GETVAR_NORMAL;
 }
-
-void Vector::setVariableByMultiname(const multiname& name, asAtom& o, CONST_ALLOWED_FLAG allowConst)
+GET_VARIABLE_RESULT Vector::getVariableByInteger(asAtom &ret, int index, GET_VARIABLE_OPTION opt, ASWorker* wrk)
 {
-	assert_and_throw(name.ns.size()>0);
+	if (index >=0 && uint32_t(index) < size())
+	{
+		ret = vec[index];
+		if (!(opt & NO_INCREF))
+			ASATOM_INCREF(ret);
+		return GET_VARIABLE_RESULT::GETVAR_NORMAL;
+	}
+	else
+		return getVariableByIntegerIntern(ret,index,opt,wrk);
+}
+
+multiname *Vector::setVariableByMultiname(multiname& name, asAtom& o, CONST_ALLOWED_FLAG allowConst,bool* alreadyset,ASWorker* wrk)
+{
 	if(!name.hasEmptyNS)
-		return ASObject::setVariableByMultiname(name, o, allowConst);
+		return ASObject::setVariableByMultiname(name, o, allowConst,alreadyset,wrk);
 
 	unsigned int index=0;
 	if(!Vector::isValidMultiname(getSystemState(),name,index))
@@ -1127,48 +1456,121 @@ void Vector::setVariableByMultiname(const multiname& name, asAtom& o, CONST_ALLO
 		{
 			case multiname::NAME_NUMBER:
 				if (getSystemState()->getSwfVersion() >= 11 
-						|| (int32_t(name.name_d) == name.name_d && name.name_d < UINT32_MAX))
-					throwError<RangeError>(kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
+						|| (this->fixed && ((int32_t(name.name_d) != name.name_d) || name.name_d >= (int32_t)vec.size() || name.name_d < 0)))
+					createError<RangeError>(getInstanceWorker(),kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
 				else
-					throwError<ReferenceError>(kWriteSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
-				break;
+					createError<ReferenceError>(getInstanceWorker(),kWriteSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
+				return nullptr;
 			case multiname::NAME_INT:
 				if (getSystemState()->getSwfVersion() >= 11
-						|| name.name_i >= (int32_t)vec.size())
-					throwError<RangeError>(kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
+						|| (this->fixed && (name.name_i >= (int32_t)vec.size() || name.name_i < 0)))
+					createError<RangeError>(getInstanceWorker(),kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
 				else
-					throwError<ReferenceError>(kWriteSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
-				break;
+					createError<ReferenceError>(getInstanceWorker(),kWriteSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
+				return nullptr;
 			case multiname::NAME_UINT:
-				throwError<RangeError>(kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
-				break;
+				createError<RangeError>(getInstanceWorker(),kOutOfRangeError,name.normalizedName(getSystemState()),Integer::toString(vec.size()));
+				return nullptr;
 			default:
 				break;
 		}
 		
-		if (!ASObject::hasPropertyByMultiname(name,false,true))
-			throwError<ReferenceError>(kWriteSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
-		return ASObject::setVariableByMultiname(name, o, allowConst);
+		if (!ASObject::hasPropertyByMultiname(name,false,true,wrk))
+		{
+			createError<ReferenceError>(getInstanceWorker(),kWriteSealedError, name.normalizedName(getSystemState()), this->getClass()->getQualifiedClassName());
+			return nullptr;
+		}
+		return ASObject::setVariableByMultiname(name, o, allowConst,alreadyset,wrk);
 	}
-	this->vec_type->coerce(getSystemState(), o);
-	  
+	asAtom v = o;
+	if (this->vec_type->coerce(getInstanceWorker(), o))
+		ASATOM_DECREF(v);
 	if(index < vec.size())
 	{
-		ASATOM_DECREF(vec[index]);
-		vec[index] = o;
+		if (vec[index].uintval == o.uintval)
+		{
+			if (alreadyset)
+				*alreadyset = true;
+		}
+		else
+		{
+			ASObject* obj = asAtomHandler::getObject(vec[index]);
+			if (obj)
+				obj->removeStoredMember();
+			obj = asAtomHandler::getObject(o);
+			if (obj)
+				obj->addStoredMember();
+			vec[index] = o;
+		}
 	}
 	else if(!fixed && index == vec.size())
 	{
-		vec.push_back( o );
+		ASObject* obj = asAtomHandler::getObject(o);
+		if (obj)
+			obj->addStoredMember();
+		vec.push_back(o);
 	}
 	else
 	{
 		/* Spec says: one may not set a value with an index more than
 		 * one beyond the current final index. */
-		throwError<RangeError>(kOutOfRangeError,
+		createError<RangeError>(getInstanceWorker(),kOutOfRangeError,
 				       Integer::toString(index),
 				       Integer::toString(vec.size()));
 	}
+	return nullptr;
+}
+
+void Vector::setVariableByInteger(int index, asAtom &o, ASObject::CONST_ALLOWED_FLAG allowConst, bool* alreadyset, ASWorker* wrk)
+{
+	if (index < 0)
+	{
+		setVariableByInteger_intern(index,o,allowConst,alreadyset,wrk);
+		return;
+	}
+	*alreadyset = false;
+	asAtom v = o;
+	if (this->vec_type->coerce(getInstanceWorker(), o))
+		ASATOM_DECREF(v);
+	if(size_t(index) < vec.size())
+	{
+		if (vec[index].uintval != o.uintval)
+		{
+			ASObject* obj = asAtomHandler::getObject(vec[index]);
+			if (obj)
+				obj->removeStoredMember();
+			obj = asAtomHandler::getObject(o);
+			if (obj)
+				obj->addStoredMember();
+			vec[index] = o;
+		}
+		else
+			*alreadyset=true;
+	}
+	else if(!fixed && size_t(index) == vec.size())
+	{
+		ASObject* obj = asAtomHandler::getObject(o);
+		if (obj)
+			obj->addStoredMember();
+		vec.push_back(o);
+	}
+	else
+	{
+		/* Spec says: one may not set a value with an index more than
+		 * one beyond the current final index. */
+		createError<RangeError>(getInstanceWorker(),kOutOfRangeError,
+				       Integer::toString(index),
+				       Integer::toString(vec.size()));
+	}
+}
+
+void Vector::throwRangeError(int index)
+{
+	/* Spec says: one may not set a value with an index more than
+	 * one beyond the current final index. */
+	createError<RangeError>(getInstanceWorker(),kOutOfRangeError,
+				   Integer::toString(index),
+				   Integer::toString(vec.size()));
 }
 
 tiny_string Vector::toString()
@@ -1179,14 +1581,7 @@ tiny_string Vector::toString()
 	{
 		if( i )
 			t += ",";
-		if (vec[i].type != T_INVALID) 
-			t += vec[i].toString(getSystemState());
-		else
-		{
-			asAtom natom(T_NULL);
-			vec_type->coerce(getSystemState(), natom );
-			t += natom.toString(getSystemState());
-		}
+		t += asAtomHandler::toString(vec[i],getInstanceWorker());
 	}
 	return t;
 }
@@ -1202,7 +1597,7 @@ uint32_t Vector::nextNameIndex(uint32_t cur_index)
 void Vector::nextName(asAtom& ret,uint32_t index)
 {
 	if(index<=vec.size())
-		ret.setUInt(index-1);
+		asAtomHandler::setUInt(ret,this->getInstanceWorker(),index-1);
 	else
 		throw RunTimeException("Vector::nextName out of bounds");
 }
@@ -1211,16 +1606,8 @@ void Vector::nextValue(asAtom& ret,uint32_t index)
 {
 	if(index<=vec.size())
 	{
-		if (vec[index-1].type != T_INVALID)
-		{
-			ASATOM_INCREF(vec[index-1]);
-			ret = vec[index-1];
-		}
-		else
-		{
-			ret.setNull();
-			vec_type->coerce(getSystemState(), ret);
-		}
+		ASATOM_INCREF(vec[index-1]);
+		ret = vec[index-1];
 	}
 	else
 		throw RunTimeException("Vector::nextValue out of bounds");
@@ -1230,7 +1617,6 @@ bool Vector::isValidMultiname(SystemState* sys,const multiname& name, uint32_t& 
 {
 	//First of all the multiname has to contain the null namespace
 	//As the namespace vector is sorted, we check only the first one
-	assert_and_throw(name.ns.size()!=0);
 	if(!name.hasEmptyNS)
 		return false;
 
@@ -1247,32 +1633,40 @@ tiny_string Vector::toJSON(std::vector<ASObject *> &path, asAtom replacer, const
 		return res;
 	// check for cylic reference
 	if (std::find(path.begin(),path.end(), this) != path.end())
-		throwError<TypeError>(kJSONCyclicStructure);
+	{
+		createError<TypeError>(getInstanceWorker(),kJSONCyclicStructure);
+		return res;
+	}
 
 	path.push_back(this);
 	res += "[";
 	bool bfirst = true;
 	tiny_string newline = (spaces.empty() ? "" : "\n");
+	asAtom closure = asAtomHandler::isValid(replacer) && asAtomHandler::getClosure(replacer) ? asAtomHandler::fromObject(asAtomHandler::getClosure(replacer)) : asAtomHandler::nullAtom;
 	for (unsigned int i =0;  i < vec.size(); i++)
 	{
 		tiny_string subres;
 		asAtom o = vec[i];
-		if (o.type == T_INVALID)
-			o= asAtom::nullAtom;
-		if (replacer.type != T_INVALID)
+		if (asAtomHandler::isValid(replacer))
 		{
 			asAtom params[2];
 			
-			params[0] = asAtom(i);
+			params[0] = asAtomHandler::fromUInt(i);
 			params[1] = o;
-			asAtom funcret;
-			replacer.callFunction(funcret,asAtom::nullAtom, params, 2,false);
-			if (funcret.type != T_INVALID)
-				subres = funcret.toObject(getSystemState())->toJSON(path,asAtom::invalidAtom,spaces,filter);
+			asAtom funcret=asAtomHandler::invalidAtom;
+			asAtomHandler::callFunction(replacer,getInstanceWorker(),funcret,closure, params, 2,false);
+			if (asAtomHandler::isValid(funcret))
+			{
+				subres = asAtomHandler::toObject(funcret,getInstanceWorker())->toJSON(path,asAtomHandler::invalidAtom,spaces,filter);
+				ASATOM_DECREF(funcret);
+			}
 		}
 		else
 		{
-			subres = o.toObject(getSystemState())->toJSON(path,replacer,spaces,filter);
+			bool newobj = !asAtomHandler::isObject(o); // member is not a pointer to an ASObject, so toObject() will create a temporary ASObject that has to be decreffed after usage
+			subres = asAtomHandler::toObject(o,getInstanceWorker())->toJSON(path,replacer,spaces,filter);
+			if (newobj)
+				ASATOM_DECREF(o);
 		}
 		if (!subres.empty())
 		{
@@ -1301,9 +1695,9 @@ asAtom Vector::at(unsigned int index, asAtom defaultValue) const
 
 void Vector::serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap)
+				std::map<const Class_base*, uint32_t>& traitsMap,ASWorker* wrk)
 {
-	if (out->getObjectEncoding() == ObjectEncoding::AMF0)
+	if (out->getObjectEncoding() == OBJECT_ENCODING::AMF0)
 	{
 		LOG(LOG_NOT_IMPLEMENTED,"serializing Vector in AMF0 not implemented");
 		return;
@@ -1341,7 +1735,7 @@ void Vector::serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMa
 		}
 		for(uint32_t i=0;i<count;i++)
 		{
-			if (vec[i].type == T_INVALID)
+			if (asAtomHandler::isInvalid(vec[i]))
 			{
 				//TODO should we write a null_marker here?
 				LOG(LOG_NOT_IMPLEMENTED,"serialize unset vector objects");
@@ -1350,16 +1744,16 @@ void Vector::serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMa
 			switch (marker)
 			{
 				case vector_int_marker:
-					out->writeUnsignedInt(out->endianIn((uint32_t)vec[i].toInt()));
+					out->writeUnsignedInt(out->endianIn((uint32_t)asAtomHandler::toInt(vec[i])));
 					break;
 				case vector_uint_marker:
-					out->writeUnsignedInt(out->endianIn(vec[i].toUInt()));
+					out->writeUnsignedInt(out->endianIn(asAtomHandler::toUInt(vec[i])));
 					break;
 				case vector_double_marker:
-					out->serializeDouble(vec[i].toNumber());
+					out->serializeDouble(asAtomHandler::toNumber(vec[i]));
 					break;
 				case vector_object_marker:
-					vec[i].toObject(getSystemState())->serialize(out, stringMap, objMap, traitsMap);
+					asAtomHandler::serialize(out, stringMap, objMap, traitsMap,wrk,vec[i]);
 					break;
 			}
 		}

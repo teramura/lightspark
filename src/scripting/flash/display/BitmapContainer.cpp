@@ -19,18 +19,57 @@
 
 #include <stack>
 #include "scripting/flash/display/BitmapContainer.h"
-#include "backends/rendering_context.h"
+#include "scripting/flash/display/flashdisplay.h"
+#include "scripting/flash/filters/flashfilters.h"
+#include "backends/rendering.h"
 #include "backends/image.h"
+#include "backends/decoder.h"
+#include "swf.h"
 
 using namespace std;
 using namespace lightspark;
 
+extern void nanoVGDeleteImage(int image);
 BitmapContainer::BitmapContainer(MemoryAccount* m):stride(0),width(0),height(0),
-	data(reporter_allocator<uint8_t>(m))
+	data(reporter_allocator<uint8_t>(m)),nanoVGImageHandle(-1)
 {
 }
 
-bool BitmapContainer::fromRGB(uint8_t* rgb, uint32_t w, uint32_t h, BITMAP_FORMAT format, bool convertendianess)
+BitmapContainer::~BitmapContainer()
+{
+	if (bitmaptexture.isValid())
+	{
+		RenderThread* rt = getSys()->getRenderThread();
+		if (rt)
+		{
+			getSys()->getRenderThread()->releaseTexture(bitmaptexture);
+		}
+	}
+	if (nanoVGImageHandle != -1)
+		nanoVGDeleteImage(nanoVGImageHandle);
+}
+
+uint8_t* BitmapContainer::getRectangleData(const RECT& sourceRect)
+{
+	RECT clippedSourceRect;
+	clipRect(sourceRect, clippedSourceRect);
+
+	int copyWidth = clippedSourceRect.Xmax - clippedSourceRect.Xmin;
+	int copyHeight = clippedSourceRect.Ymax - clippedSourceRect.Ymin;
+
+	int sx = clippedSourceRect.Xmin;
+	int sy = clippedSourceRect.Ymin;
+	uint8_t* res = new uint8_t[copyWidth * copyHeight * 4];
+	for (int i=0; i<copyHeight; i++)
+	{
+		memcpy(&res[i*copyWidth*4],
+				&data[(sy+i)*stride + 4*sx],
+				4*copyWidth);
+	}
+	return res;
+}
+
+bool BitmapContainer::fromRGB(uint8_t* rgb, uint32_t w, uint32_t h, BITMAP_FORMAT format, bool frompng)
 {
 	if(!rgb)
 		return false;
@@ -39,9 +78,9 @@ bool BitmapContainer::fromRGB(uint8_t* rgb, uint32_t w, uint32_t h, BITMAP_FORMA
 	height = h;
 	size_t dataSize;
 	if(format==ARGB32)
-		CairoRenderer::convertBitmapWithAlphaToCairo(data, rgb, width, height, &dataSize, &stride,convertendianess);
+		CairoRenderer::convertBitmapWithAlphaToCairo(data, rgb, width, height, &dataSize, &stride,frompng);
 	else
-		CairoRenderer::convertBitmapToCairo(data, rgb, width, height, &dataSize, &stride, format==RGB15 ? 2 : (format==RGB24 ? 3 : 4),convertendianess);
+		CairoRenderer::convertBitmapToCairo(data, rgb, width, height, &dataSize, &stride, format==RGB15 ? 2 : (format==RGB24 ? 3 : 4));
 	delete[] rgb;
 	if(data.empty())
 	{
@@ -85,7 +124,7 @@ bool BitmapContainer::fromPNG(std::istream &s)
 	uint8_t *rgb=ImageDecoder::decodePNG(s, &w, &h,&hasAlpha);
 	assert_and_throw((int32_t)w >= 0 && (int32_t)h >= 0);
 	BITMAP_FORMAT format=hasAlpha ? ARGB32 : RGB24;
-	return fromRGB(rgb, (int32_t)w, (int32_t)h, format,false);
+	return fromRGB(rgb, (int32_t)w, (int32_t)h, format,true);
 }
 bool BitmapContainer::fromPNG(uint8_t* data, int len)
 {
@@ -95,7 +134,34 @@ bool BitmapContainer::fromPNG(uint8_t* data, int len)
 	uint8_t *rgb=ImageDecoder::decodePNG(data,len, &w, &h,&hasAlpha);
 	assert_and_throw((int32_t)w >= 0 && (int32_t)h >= 0);
 	BITMAP_FORMAT format=hasAlpha ? ARGB32 : RGB24;
-	return fromRGB(rgb, (int32_t)w, (int32_t)h, format,false);
+	return fromRGB(rgb, (int32_t)w, (int32_t)h, format,true);
+}
+bool BitmapContainer::fromGIF(uint8_t* data, int len, SystemState* sys)
+{
+#ifdef ENABLE_LIBAVCODEC
+	MemoryStreamCache gifdata(sys);
+	gifdata.append(data, len);
+	gifdata.markFinished();
+	std::streambuf *sbuf = gifdata.createReader();
+	istream s(sbuf);
+	FFMpegStreamDecoder* streamDecoder=new FFMpegStreamDecoder(nullptr,sys->getEngineData(),s,0,nullptr,gifdata.getReceivedLength());
+	if(streamDecoder->videoDecoder)
+	{
+		uint32_t w,h;
+		streamDecoder->videoDecoder->sizeNeeded(w,h);
+		// TODO how are GIFs with multiple frames handled?
+		if (streamDecoder->decodeNextFrame())
+		{
+			uint8_t* frame =streamDecoder->videoDecoder->upload(true);
+			return fromRGB(frame, (int32_t)w, (int32_t)h, ARGB32,true);
+		}
+	}
+	delete streamDecoder;
+	delete sbuf;
+#else
+	LOG(LOG_ERROR,"can't decode gif image because ffmpeg is not available");
+#endif
+	return false;
 }
 
 bool BitmapContainer::fromPalette(uint8_t* inData, uint32_t w, uint32_t h, uint32_t inStride, uint8_t* palette, unsigned numColors, unsigned paletteBPP)
@@ -110,6 +176,17 @@ bool BitmapContainer::fromPalette(uint8_t* inData, uint32_t w, uint32_t h, uint3
 	return fromRGB(rgb, (int32_t)w, (int32_t)h, paletteBPP == 4 ? ARGB32 : RGB24);
 }
 
+void BitmapContainer::fromRawData(uint8_t* data, uint32_t width, uint32_t height)
+{
+	this->stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, width);
+	this->width=width;
+	this->height=height;
+	uint32_t dataSize = stride * height;
+	this->data.resize(dataSize);
+	memcpy(this->data.data(),data,dataSize);
+	
+}
+
 void BitmapContainer::clear()
 {
 	data.clear();
@@ -117,6 +194,36 @@ void BitmapContainer::clear()
 	stride=0;
 	width=0;
 	height=0;
+	bitmaptexture.makeEmpty();
+}
+
+uint8_t* BitmapContainer::upload(bool refresh)
+{
+	return getData();
+}
+
+TextureChunk& BitmapContainer::getTexture()
+{
+	return bitmaptexture;
+}
+
+void BitmapContainer::uploadFence()
+{
+	ITextureUploadable::uploadFence();
+	decRef();// is increffed in checkTexture
+}
+bool BitmapContainer::checkTexture()
+{
+	if (isEmpty()) {
+		return false;
+	}
+
+	if (!bitmaptexture.isValid())
+	{
+		bitmaptexture=getSys()->getRenderThread()->allocateTexture(width, height, true);
+	}
+	incRef();// is decreffed in uploadFence
+	return true;
 }
 
 void BitmapContainer::setAlpha(int32_t x, int32_t y, uint8_t alpha)
@@ -195,7 +302,6 @@ void BitmapContainer::copyRectangle(_R<BitmapContainer> source,
 
 	if (copyWidth <= 0 || copyHeight <= 0)
 		return;
-
 	int sx = clippedSourceRect.Xmin;
 	int sy = clippedSourceRect.Ymin;
 	if (mergeAlpha==false)
@@ -227,6 +333,18 @@ void BitmapContainer::copyRectangle(_R<BitmapContainer> source,
 		if (needsdeletion)
 			delete[] sourcedata;
 	}
+}
+
+void BitmapContainer::applyFilter(_R<BitmapContainer> source,
+				    const RECT& sourceRect,
+				    int32_t destX, int32_t destY,
+				    BitmapFilter* filter)
+{
+	RECT clippedSourceRect;
+	int32_t clippedX;
+	int32_t clippedY;
+	clipRect(source, sourceRect, destX, destY, clippedSourceRect, clippedX, clippedY);
+	filter->applyFilter(this,source.getPtr(),clippedSourceRect,destX,destY,1.0,1.0);
 }
 
 void BitmapContainer::fillRectangle(const RECT& inputRect, uint32_t color, bool useAlpha)
@@ -296,7 +414,7 @@ void BitmapContainer::floodFill(int32_t startX, int32_t startY, uint32_t color)
 {
 	struct LineSegment {
 		LineSegment(int32_t _x1, int32_t _x2, int32_t _y, int32_t _dy) 
-			: x1(_x1), x2(_x2), y(_y), dy(_dy) {};
+			: x1(_x1), x2(_x2), y(_y), dy(_dy) {}
 		int32_t x1; // leftmost filled point on last line
 		int32_t x2; // rightmost filled point on last line
 		int32_t y;  // y coordinate (may be invalid!)

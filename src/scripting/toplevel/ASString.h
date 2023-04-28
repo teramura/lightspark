@@ -22,6 +22,7 @@
 
 #include "scripting/class.h"
 
+
 namespace Glib { class ustring; }
 
 namespace lightspark
@@ -32,22 +33,26 @@ namespace lightspark
  */
 class ASString: public ASObject
 {
-	friend ASObject* abstract_s(SystemState* sys);
-	friend ASObject* abstract_s(SystemState* sys, const char* s, uint32_t len);
-	friend ASObject* abstract_s(SystemState* sys, const char* s);
-	friend ASObject* abstract_s(SystemState* sys, const tiny_string& s);
-	friend ASObject* abstract_s(SystemState* sys, uint32_t stringId);
+	friend ASObject* abstract_s(ASWorker* w);
+	friend ASObject* abstract_s(ASWorker* wrk, const char* s, uint32_t len);
+	friend ASObject* abstract_s(ASWorker* wrk, const char* s, int numbytes, int numchars, bool issinglebyte, bool hasNull);
+	friend ASObject* abstract_s(ASWorker* wrk, const char* s);
+	friend ASObject* abstract_s(ASWorker* wrk, const tiny_string& s);
+	friend ASObject* abstract_s(ASWorker* wrk, uint32_t stringId);
 private:
 	number_t parseStringInfinite(const char *s, char **end) const;
 	tiny_string data;
-	_NR<ASObject> strlength;
+	
+	// stores the position of utf8-characters in the string
+	// speeds up direct access to characters by position
+	std::vector<uint32_t> charpositions;
 public:
-	ASString(Class_base* c);
-	ASString(Class_base* c, const std::string& s);
-	ASString(Class_base* c, const tiny_string& s);
-	ASString(Class_base* c, const Glib::ustring& s);
-	ASString(Class_base* c, const char* s);
-	ASString(Class_base* c, const char* s, uint32_t len);
+	ASString(ASWorker* wrk,Class_base* c);
+	ASString(ASWorker* wrk,Class_base* c, const std::string& s);
+	ASString(ASWorker* wrk,Class_base* c, const tiny_string& s);
+	ASString(ASWorker* wrk,Class_base* c, const Glib::ustring& s);
+	ASString(ASWorker* wrk,Class_base* c, const char* s);
+	ASString(ASWorker* wrk,Class_base* c, const char* s, uint32_t len);
 	bool hasId:1;
 	bool datafilled:1;
 	FORCE_INLINE tiny_string& getData()
@@ -67,7 +72,6 @@ public:
 	}
 
 	static void sinit(Class_base* c);
-	static void buildTraits(ASObject* o);
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(charAt);
 	ASFUNCTION_ATOM(charCodeAt);
@@ -88,29 +92,30 @@ public:
 	ASFUNCTION_ATOM(_getLength);
 	ASFUNCTION_ATOM(localeCompare);
 	ASFUNCTION_ATOM(localeCompare_prototype);
-	bool isEqual(ASObject* r);
-	TRISTATE isLess(ASObject* r);
-	number_t toNumber();
-	int32_t toInt();
-	int32_t toIntStrict();
-	uint32_t toUInt();
-	int64_t toInt64();
-	
+	bool isEqual(ASObject* r) override;
+	TRISTATE isLess(ASObject* r) override;
+	TRISTATE isLessAtom(asAtom& r) override;
+	number_t toNumber() override;
+	int32_t toInt() override;
+	int32_t toIntStrict() override;
+	uint32_t toUInt() override;
+	int64_t toInt64() override;
+
 	ASFUNCTION_ATOM(generator);
 	//Serialization interface
 	void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap);
-	std::string toDebugString() { return std::string("\"") + std::string(getData()) + "\""; }
+				std::map<const Class_base*, uint32_t>& traitsMap, ASWorker* wrk) override;
+	std::string toDebugString() const override;
 	static bool isEcmaSpace(uint32_t c);
 	static bool isEcmaLineTerminator(uint32_t c);
-	inline bool destruct() 
-	{ 
+	inline bool destruct() override
+	{
 		data.clear(); 
-		strlength.reset();
 		hasId = false;
 		datafilled=false; 
-		if (!ASObject::destruct())
+		charpositions.clear();
+		if (!destructIntern())
 		{
 			stringId = BUILTIN_STRINGS::EMPTY;
 			hasId = true;
@@ -119,27 +124,43 @@ public:
 		}
 		return true;
 	}
+	inline uint32_t getBytePosition(uint32_t charpos)
+	{
+		if (charpos > data.numChars())
+			return UINT32_MAX;
+		if (data.isSinglebyte())
+			return charpos;
+		if (charpositions.empty())
+		{
+			charpositions.reserve(this->data.numChars());
+			for (auto it = data.begin(); it != data.end(); it++)
+			{
+				charpositions.push_back(it.ptr()-data.raw_buf());
+			}
+		}
+		return charpositions[charpos];
+		
+	}
 };
 
 template<>
-inline void Class<ASString>::coerce(SystemState* sys,asAtom& o) const
+inline bool Class<ASString>::coerce(ASWorker* wrk,asAtom& o) const
 {
-	if (o.type == T_STRING)
-		return;
+	if (asAtomHandler::isString(o))
+		return false;
 	//Special handling for Null and Undefined follows avm2overview's description of 'coerce_s' opcode
-	if(o.type == T_NULL)
-		return;
-	if(o.type == T_UNDEFINED)
+	if(asAtomHandler::isNull(o))
+		return false;
+	if(asAtomHandler::isUndefined(o))
 	{
-		ASATOM_DECREF(o);
-		o.setNull();
-		return;
+		asAtomHandler::setNull(o);
+		return true;
 	}
-	if(!o.isConstructed())
-		return;
-	uint32_t stringID =o.toStringId(sys);
-	ASATOM_DECREF(o);
-	o = asAtom::fromStringID(stringID);
+	if(!asAtomHandler::isConstructed(o))
+		return false;
+	uint32_t stringID =asAtomHandler::toStringId(o,wrk);
+	o = asAtomHandler::fromStringID(stringID);
+	return true;
 }
 
 }

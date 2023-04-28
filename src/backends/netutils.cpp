@@ -21,6 +21,7 @@
 #include "backends/security.h"
 #include "scripting/abc.h"
 #include "scripting/class.h"
+#include "scripting/flash/net/flashnet.h"
 #include "swf.h"
 #include "backends/config.h"
 #include "backends/netutils.h"
@@ -59,7 +60,7 @@ DownloadManager::~DownloadManager()
  */
 void DownloadManager::stopAll()
 {
-	Mutex::Lock l(mutex);
+	Locker l(mutex);
 
 	std::list<Downloader*>::iterator it=downloaders.begin();
 	for(;it!=downloaders.end();++it)
@@ -77,7 +78,7 @@ void DownloadManager::stopAll()
  */
 void DownloadManager::cleanUp()
 {
-	Mutex::Lock l(mutex);
+	Locker l(mutex);
 
 	while(!downloaders.empty())
 	{
@@ -118,7 +119,7 @@ void StandaloneDownloadManager::destroy(Downloader* downloader)
  */
 void DownloadManager::addDownloader(Downloader* downloader)
 {
-	Mutex::Lock l(mutex);
+	Locker l(mutex);
 	downloaders.push_back(downloader);
 }
 
@@ -129,7 +130,7 @@ void DownloadManager::addDownloader(Downloader* downloader)
  */
 bool DownloadManager::removeDownloader(Downloader* downloader)
 {
-	Mutex::Lock l(mutex);
+	Locker l(mutex);
 
 	for(std::list<Downloader*>::iterator it=downloaders.begin(); it!=downloaders.end(); ++it)
 	{
@@ -170,33 +171,33 @@ StandaloneDownloadManager::~StandaloneDownloadManager()
 Downloader* StandaloneDownloadManager::download(const URLInfo& url, _R<StreamCache> cache, ILoadable* owner)
 {
 	bool cached = dynamic_cast<FileStreamCache *>(cache.getPtr()) != NULL;
-	LOG(LOG_INFO, _("NET: STANDALONE: DownloadManager::download '") << url.getParsedURL()
-			<< "'" << (cached ? _(" - cached") : ""));
+	LOG(LOG_INFO, "NET: STANDALONE: DownloadManager::download '" << url.getParsedURL()
+			<< "'" << (cached ? " - cached" : ""));
 	ThreadedDownloader* downloader;
 	// empty URL means data is generated from calls to NetStream::appendBytes
 	if(url.isEmpty())
 	{
-		LOG(LOG_INFO, _("NET: STANDALONE: DownloadManager: Data generation mode"));
+		LOG(LOG_INFO, "NET: STANDALONE: DownloadManager: Data generation mode");
 		downloader=new LocalDownloader(url.getPath(), cache, owner,true);
 	}
 	else if(url.getProtocol() == "file")
 	{
-		LOG(LOG_INFO, _("NET: STANDALONE: DownloadManager: local file"));
+		LOG(LOG_INFO, "NET: STANDALONE: DownloadManager: local file");
 		downloader=new LocalDownloader(url.getPath(), cache, owner);
 	}
 	else if(url.getProtocol().substr(0, 4) == "rtmp")
 	{
-		LOG(LOG_INFO, _("NET: STANDALONE: DownloadManager: RTMP stream"));
+		LOG(LOG_INFO, "NET: STANDALONE: DownloadManager: RTMP stream");
 		downloader=new RTMPDownloader(url.getParsedURL(), cache, url.getStream(), owner);
 	}
 	else
 	{
-		LOG(LOG_INFO, _("NET: STANDALONE: DownloadManager: remote file"));
+		LOG(LOG_INFO, "NET: STANDALONE: DownloadManager: remote file");
 		downloader=new CurlDownloader(url.getParsedURL(), cache, owner);
 	}
 	downloader->enableFencingWaiting();
 	addDownloader(downloader);
-	getSys()->addJob(downloader);
+	getSys()->addDownloadJob(downloader);
 	return downloader;
 }
 
@@ -214,23 +215,23 @@ Downloader* StandaloneDownloadManager::downloadWithData(const URLInfo& url, _R<S
 		const std::vector<uint8_t>& data,
 		const std::list<tiny_string>& headers, ILoadable* owner)
 {
-	LOG(LOG_INFO, _("NET: STANDALONE: DownloadManager::downloadWithData '") << url.getParsedURL());
+	LOG(LOG_INFO, "NET: STANDALONE: DownloadManager::downloadWithData '" << url.getParsedURL());
 	ThreadedDownloader* downloader;
 	if(url.getProtocol() == "file")
 	{
-		LOG(LOG_INFO, _("NET: STANDALONE: DownloadManager: local file - Ignoring data field"));
+		LOG(LOG_INFO, "NET: STANDALONE: DownloadManager: local file - Ignoring data field");
 		downloader=new LocalDownloader(url.getPath(), cache, owner);
 	}
 	else if(url.getProtocol() == "rtmpe")
 		throw RunTimeException("RTMPE does not support additional data");
 	else
 	{
-		LOG(LOG_INFO, _("NET: STANDALONE: DownloadManager: remote file"));
+		LOG(LOG_INFO, "NET: STANDALONE: DownloadManager: remote file");
 		downloader=new CurlDownloader(url.getParsedURL(), cache, data, headers, owner);
 	}
 	downloader->enableFencingWaiting();
 	addDownloader(downloader);
-	getSys()->addJob(downloader);
+	getSys()->addDownloadJob(downloader);
 	return downloader;
 }
 
@@ -305,7 +306,7 @@ void Downloader::setFailed()
 void Downloader::setFinished()
 {
 	length = cache->markFinished();
-	LOG(LOG_INFO,"download finished:"<<length);
+	LOG(LOG_INFO,"download finished:"<<url<<" "<<length);
 }
 
 /**
@@ -360,7 +361,7 @@ void Downloader::append(uint8_t* buf, uint32_t added)
  */
 void Downloader::parseHeaders(const char* _headers, bool _setLength)
 {
-	if(_headers == NULL)
+	if(_headers == nullptr)
 		return;
 
 	std::string headersStr(_headers);
@@ -425,7 +426,7 @@ void Downloader::parseHeader(std::string header, bool _setLength)
 			//Set the new real URL when we are being redirected
 			if(getRequestStatus()/100 == 3 && headerName == "location")
 			{
-				LOG(LOG_INFO, _("NET: redirect detected"));
+				LOG(LOG_INFO, "NET: redirect detected");
 				setRedirected(URLInfo(url).goToURL(tiny_string(headerValue)).getParsedURL());
 			}
 			if(headerName == "content-length")
@@ -576,7 +577,7 @@ void CurlDownloader::execute()
 		setFailed();
 		return;
 	}
-	LOG(LOG_INFO, _("NET: CurlDownloader::execute: reading remote file: ") << url.raw_buf());
+	LOG(LOG_INFO, "NET: CurlDownloader::execute: reading remote file: " << url.raw_buf());
 #ifdef ENABLE_CURL
 	CURL *curl;
 	CURLcode res;
@@ -596,13 +597,18 @@ void CurlDownloader::execute()
 		curl_easy_setopt(curl, CURLOPT_WRITEDATA, this);
 		curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, write_header);
 		curl_easy_setopt(curl, CURLOPT_HEADERDATA, this);
+#if LIBCURL_VERSION_NUM>= 0x072000
+		curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
+#else
 		curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, progress_callback);
+#endif
 		curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, this);
 		curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0);
 		curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
 		//Its probably a good idea to limit redirections, 100 should be more than enough
 		curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 100);
-		curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
+		// TODO use same useragent as adobe
+		//curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
 		// Empty string means that CURL will decompress if the
 		// server send a compressed file. (This has been
 		// renamed to CURLOPT_ACCEPT_ENCODING in newer CURL,
@@ -657,7 +663,7 @@ void CurlDownloader::execute()
 	}
 #else
 	//ENABLE_CURL not defined
-	LOG(LOG_ERROR,_("NET: CURL not enabled in this build. Downloader will always fail."));
+	LOG(LOG_ERROR,"NET: CURL not enabled in this build. Downloader will always fail.");
 	setFailed();
 	return;
 #endif
@@ -686,7 +692,7 @@ size_t CurlDownloader::write_data(void *buffer, size_t size, size_t nmemb, void 
 {
 	CurlDownloader* th=static_cast<CurlDownloader*>(userp);
 	size_t added=size*nmemb;
-	if(th->getRequestStatus()/100 == 2)
+	if(th->getRequestStatus()/100 == 2 || th->getRequestStatus()/100 == 3)
 		th->append((uint8_t*)buffer,added);
 	return added;
 }
@@ -747,7 +753,7 @@ void LocalDownloader::execute()
 	}
 	else
 	{
-		LOG(LOG_INFO, _("NET: LocalDownloader::execute: reading local file: ") << url.raw_buf());
+		LOG(LOG_INFO, "NET: LocalDownloader::execute: reading local file: " << url.raw_buf());
 		//If the caching is selected, we override the normal behaviour and use the local file as the cache file
 		//This prevents unneeded copying of the file's data
 
@@ -789,7 +795,7 @@ void LocalDownloader::execute()
 				}
 				if(readFailed)
 				{
-					LOG(LOG_ERROR, _("NET: LocalDownloader::execute: reading from local file failed: ") << url.raw_buf());
+					LOG(LOG_ERROR, "NET: LocalDownloader::execute: reading from local file failed: " << url.raw_buf());
 					setFailed();
 					return;
 				}
@@ -797,7 +803,7 @@ void LocalDownloader::execute()
 			}
 			else
 			{
-				LOG(LOG_ERROR, _("NET: LocalDownloader::execute: could not open local file: ") << url.raw_buf());
+				LOG(LOG_ERROR, "NET: LocalDownloader::execute: could not open local file: " << url.raw_buf());
 				setFailed();
 				return;
 			}
@@ -833,7 +839,7 @@ bool DownloaderThreadBase::createDownloader(_R<StreamCache> cache,
 		if(evaluationResult == SecurityManager::NA_CROSSDOMAIN_POLICY)
 		{
 			dispatcher->incRef();
-			getVm(dispatcher->getSystemState())->addEvent(dispatcher,_MR(Class<SecurityErrorEvent>::getInstanceS(dispatcher->getSystemState(),"SecurityError: "
+			getVm(dispatcher->getSystemState())->addEvent(dispatcher,_MR(Class<SecurityErrorEvent>::getInstanceS(dispatcher->getInstanceWorker(),"SecurityError: "
 												 "connection to domain not allowed by securityManager")));
 			return false;
 		}
@@ -843,7 +849,7 @@ bool DownloaderThreadBase::createDownloader(_R<StreamCache> cache,
 		// url points to an adobe signed library which we cannot handle, so we abort here
 		LOG(LOG_NOT_IMPLEMENTED,"we don't handle adobe signed libraries");
 		dispatcher->incRef();
-		getVm(dispatcher->getSystemState())->addEvent(dispatcher,_MR(Class<IOErrorEvent>::getInstanceS(dispatcher->getSystemState())));
+		getVm(dispatcher->getSystemState())->addEvent(dispatcher,_MR(Class<IOErrorEvent>::getInstanceS(dispatcher->getInstanceWorker())));
 		return false;
 	}
 
@@ -869,11 +875,11 @@ void DownloaderThreadBase::jobFence()
 	//Get a copy of the downloader, do hold the lock less time.
 	//It's safe to set this->downloader to NULL, this is the last function that will
 	//be called over this thread job
-	Downloader* d=NULL;
+	Downloader* d=nullptr;
 	{
-		SpinlockLocker l(downloaderLock);
+		Locker l(downloaderLock);
 		d=downloader;
-		downloader=NULL;
+		downloader=nullptr;
 	}
 	if(d)
 		getSys()->downloadManager->destroy(d);
@@ -884,8 +890,8 @@ void DownloaderThreadBase::jobFence()
 void DownloaderThreadBase::threadAbort()
 {
 	//We have to stop the downloader
-	SpinlockLocker l(downloaderLock);
-	if(downloader != NULL)
+	Locker l(downloaderLock);
+	if(downloader != nullptr)
 		downloader->stop();
 	threadAborting=true;
 }

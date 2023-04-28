@@ -21,6 +21,7 @@
 #ifndef PLUGIN_PLUGIN_H
 #define PLUGIN_PLUGIN_H 1
 
+#include "platforms/engineutils.h"
 #include "swf.h"
 #include <iostream>
 #include <sstream>
@@ -83,16 +84,12 @@ private:
 	unsigned char * mPixels;
 	bool inRendering;
 	Mutex resizeMutex;
+	int winposx;
+	int winposy;
 public:
 	SystemState* sys;
-	PluginEngineData(nsPluginInstance* i, uint32_t w, uint32_t h,SystemState* _sys) : instance(i),inputHandlerId(0),sizeHandlerId(0),sys(_sys)
-	{
-		width = w;
-		height = h;
-		mPixels = NULL;
-		inRendering = false;
-	}
-	~PluginEngineData() 
+	PluginEngineData(nsPluginInstance* i, uint32_t w, uint32_t h,SystemState* _sys);
+	~PluginEngineData()
 	{
 		if(inputHandlerId)
 			g_signal_handler_disconnect(widget, inputHandlerId);
@@ -101,27 +98,30 @@ public:
 		if (mPixels)
 			delete[] mPixels;
 	}
-
-	void stopMainDownload();
-	bool isSizable() const { return false; }
-	uint32_t getWindowForGnash();
+	void setupLocalStorage();
+	void stopMainDownload() override;
+	bool isSizable() const override { return false; }
+	uint32_t getWindowForGnash() override;
 	/* must be called within mainLoopThread */
-	SDL_Window* createWidget(uint32_t w,uint32_t h);
+	SDL_Window* createWidget(uint32_t w,uint32_t h) override;
+	void setDisplayState(const tiny_string& displaystate,SystemState* sys) override;
+	
 	/* must be called within mainLoopThread */
-	void grabFocus();
-	void openPageInBrowser(const tiny_string& url, const tiny_string& window);
-	bool getScreenData(SDL_DisplayMode* screen);
-	double getScreenDPI();
+	void grabFocus() override;
+	void openPageInBrowser(const tiny_string& url, const tiny_string& window) override;
+	bool getScreenData(SDL_DisplayMode* screen) override;
+	double getScreenDPI() override;
 	static void forceRedraw(SystemState* sys);
-	void DoSwapBuffers();
-	void InitOpenGL();
-	void DeinitOpenGL();
+	void DoSwapBuffers() override;
+	void InitOpenGL() override;
+	void DeinitOpenGL() override;
 	void draw(void *event, uint32_t evx, uint32_t evy, uint32_t evwidth, uint32_t evheight);
-	void runInMainThread(SystemState *sys, void (*func)(SystemState *));
+	void runInMainThread(SystemState *sys, void (*func)(SystemState *)) override;
 	static void pluginCallHandler(void* d)
 	{
 		mainloop_from_plugin((SystemState*)d);
 	}
+	void openContextMenu() override;
 };
 
 class nsPluginInstance : public nsPluginInstanceBase
@@ -164,7 +164,7 @@ private:
 	 * draw into that.
 	 */
 	uint32_t mWindow;
-#ifdef _WIN32
+#ifdef XP_WIN
 	HDC mDC;
 #endif
 

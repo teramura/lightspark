@@ -23,7 +23,7 @@
 using namespace std;
 using namespace lightspark;
 
-ASCondition::ASCondition(Class_base* c):ASObject(c)
+ASCondition::ASCondition(ASWorker* wrk, Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_CONDITION)
 {
 	
 }
@@ -37,43 +37,49 @@ void ASCondition::sinit(Class_base* c)
 	REGISTER_GETTER(c,mutex);
 }
 
-ASFUNCTIONBODY_GETTER(ASCondition,mutex);
+ASFUNCTIONBODY_GETTER(ASCondition,mutex)
 
 ASFUNCTIONBODY_ATOM(ASCondition,_constructor)
 {
-	ASCondition* th=obj.as<ASCondition>();
+	ASCondition* th=asAtomHandler::as<ASCondition>(obj);
 	_NR<ASObject> arg;
-	ARG_UNPACK_ATOM(arg);
+	ARG_CHECK(ARG_UNPACK(arg));
 	if (arg->is<Null>())
-		throwError<ArgumentError>(kNullPointerError);
+	{
+		createError<ArgumentError>(wrk,kNullPointerError);
+		return;
+	}
 	
 	if (!arg->is<ASMutex>())
-		throwError<ArgumentError>(kInvalidArgumentError) ;
+	{
+		createError<ArgumentError>(wrk,kInvalidArgumentError) ;
+		return;
+	}
 	arg->incRef();
 	th->mutex = _NR<ASMutex>(arg->as<ASMutex>());
 }
 ASFUNCTIONBODY_ATOM(ASCondition,_notify)
 {
 	LOG(LOG_NOT_IMPLEMENTED,"condition notify not implemented");
-	ASCondition* th=obj.as<ASCondition>();
+	ASCondition* th=asAtomHandler::as<ASCondition>(obj);
 	if (!th->mutex->getLockCount())
-		throwError<ASError>(kConditionCannotNotify);
-	ret.setNull();
+		createError<ASError>(wrk,kConditionCannotNotify);
+	asAtomHandler::setNull(ret);
 }
 ASFUNCTIONBODY_ATOM(ASCondition,_notifyAll)
 {
 	LOG(LOG_NOT_IMPLEMENTED,"condition notifyAll not implemented");
-	ASCondition* th=obj.as<ASCondition>();
+	ASCondition* th=asAtomHandler::as<ASCondition>(obj);
 	if (!th->mutex->getLockCount())
-		throwError<ASError>(kConditionCannotNotifyAll) ;
-	ret.setNull();
+		createError<ASError>(wrk,kConditionCannotNotifyAll) ;
+	asAtomHandler::setNull(ret);
 }
 ASFUNCTIONBODY_ATOM(ASCondition,_wait)
 {
 	LOG(LOG_NOT_IMPLEMENTED,"condition wait not implemented");
-	ASCondition* th=obj.as<ASCondition>();
+	ASCondition* th=asAtomHandler::as<ASCondition>(obj);
 	if (!th->mutex->getLockCount())
-		throwError<ASError>(kConditionCannotWait) ;
-	ret.setBool(true);
+		createError<ASError>(wrk,kConditionCannotWait) ;
+	asAtomHandler::setBool(ret,true);
 }
 

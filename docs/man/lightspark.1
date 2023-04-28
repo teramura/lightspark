@@ -19,7 +19,7 @@
 lightspark \- a free Flash player
 .SH SYNOPSIS
 .B lightspark 
-[\-\-url|\-u http://loader.url/file.swf] [\-\-air] [\-\-avmplus] [\-\-disable-rendering] [\-\-disable-interpreter|\-ni] [\-\-enable-fast-interpreter|\-fi] [\-\-enable\-jit|\-j] [\-\-log\-level|\-l 0-4] [\-\-parameters\-file|\-p params-file] [\-\-profiling-output|\-o] [\-\-security-sandbox|\-s <sandbox type>] [\-\-exit-on-error] [\-\-HTTP-cookies <cookie>] [\-\-version|\-v] file.swf
+[\-\-url|\-u http://loader.url/file.swf] [\-\-air] [\-\-avmplus] [\-\-disable-rendering] [\-\-disable-interpreter|\-ni] [\-\-enable-fast-interpreter|\-fi] [\-\-enable\-jit|\-j] [\-\-ignore-unhandled-exceptions|\-ne] [\-\-log\-level|\-l 0-4] [\-\-parameters\-file|\-p params-file] [\-\-profiling-output|\-o] [\-\-security-sandbox|\-s <sandbox type>] [\-\-exit-on-error] [\-\-HTTP-cookies <cookie>] [\-\-version|\-v] file.swf
 .SH DESCRIPTION
 .B Lightspark
 is a free, modern Flash Player implementation, this documents the options accepted by the standalone version of the program.
@@ -49,6 +49,10 @@ Enable an experimental optimized ActionScript interpreter
 .IP
 Enable the ActionScript JIT compilation engine
 .HP 
+\fB\-\-ignore-unhandled-exceptions\fP, \fB\-ne\fP
+.IP
+Ignore unhandled runtime exceptions
+.HP 
 \fB\-\-log-level\fP 0-4, \fB\-l\fP 0-4
 .IP
 Sets the verbosity of the output, the default is 2
@@ -77,6 +81,10 @@ Set cookie to be used in HTTP requests.
 .IP
 Run as an AIR application: grant permission to access both local files and network, and enable AIR APIs.
 .HP
+.HP
+\fB\-\-load-extension\fP extension-file, \fB\-p\fP extension-file
+.IP
+Load AIR extension from file.
 \fB\-\-avmplus\fP
 .IP
 Run as an application with avmplus package: grant permission to access both local files and network, and enable avmplus APIs.
@@ -84,6 +92,15 @@ Run as an application with avmplus package: grant permission to access both loca
 \fB\-\-disable-rendering\fP
 .IP
 Run the application without the need for a graphical environment.
+.HP 
+\fB\-\-scale\fP >=1.0, \fB\-sc\fP >=1.0
+.IP
+scales the application window by the provided factor, default is 1.0
+for example use --scale 2.0 on 4k screens
+.HP 
+\fB\-\-fullscreen\fP, \fB\-fs\fP
+.IP
+displays the swf file in fullscreen mode
 .HP
 \fB\-\-version\fP, \fB\-v\fP
 .IP

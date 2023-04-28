@@ -34,63 +34,70 @@ void Mouse::sinit(Class_base* c)
 	CLASS_SETUP(c, ASObject, _constructorNotInstantiatable, CLASS_FINAL | CLASS_SEALED);
 	c->setDeclaredMethodByQName("hide","",Class<IFunction>::getFunction(c->getSystemState(),hide),NORMAL_METHOD,false);
 	c->setDeclaredMethodByQName("show","",Class<IFunction>::getFunction(c->getSystemState(),show),NORMAL_METHOD,false);
-	c->setDeclaredMethodByQName("cursor","",Class<IFunction>::getFunction(c->getSystemState(),getCursor),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("cursor","",Class<IFunction>::getFunction(c->getSystemState(),getCursor,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
 	c->setDeclaredMethodByQName("cursor","",Class<IFunction>::getFunction(c->getSystemState(),setCursor),SETTER_METHOD,false);
-	c->setDeclaredMethodByQName("supportsCursor","",Class<IFunction>::getFunction(c->getSystemState(),getSupportsCursor),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("supportsNativeCursor","",Class<IFunction>::getFunction(c->getSystemState(),getSupportsNativeCursor),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("supportsCursor","",Class<IFunction>::getFunction(c->getSystemState(),getSupportsCursor,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("supportsNativeCursor","",Class<IFunction>::getFunction(c->getSystemState(),getSupportsNativeCursor,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
 	c->setDeclaredMethodByQName("registerCursor","",Class<IFunction>::getFunction(c->getSystemState(),registerCursor),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("unregisterCursor","",Class<IFunction>::getFunction(c->getSystemState(),unregisterCursor),NORMAL_METHOD,false);
 }
 
 ASFUNCTIONBODY_ATOM(Mouse, hide)
 {
-	sys->showMouseCursor(false);
+	wrk->getSystemState()->showMouseCursor(false);
 }
 
 ASFUNCTIONBODY_ATOM(Mouse, show)
 {
-	sys->showMouseCursor(true);
+	wrk->getSystemState()->showMouseCursor(true);
 }
 
 ASFUNCTIONBODY_ATOM(Mouse, getCursor)
 {
-	ret = asAtom::fromString(sys,"auto");
+	ret = asAtomHandler::fromString(wrk->getSystemState(),"auto");
 }
 
 ASFUNCTIONBODY_ATOM(Mouse, setCursor)
 {
 	tiny_string cursorName;
-	ARG_UNPACK_ATOM(cursorName);
+	ARG_CHECK(ARG_UNPACK(cursorName));
 	if (cursorName != "auto")
 		LOG(LOG_NOT_IMPLEMENTED,"setting mouse cursor is not implemented");
 }
 
 ASFUNCTIONBODY_ATOM(Mouse, getSupportsCursor)
 {
-	ret.setBool(true);
+	asAtomHandler::setBool(ret,true);
 }
 
 ASFUNCTIONBODY_ATOM(Mouse, getSupportsNativeCursor)
 {
-	ret.setBool(false); // until registerCursor() is implemented
+	asAtomHandler::setBool(ret,false); // until registerCursor() is implemented
 }
 
 ASFUNCTIONBODY_ATOM(Mouse, registerCursor)
 {
 	tiny_string cursorName;
 	_NR<MouseCursorData> mousecursordata;
-	ARG_UNPACK_ATOM(cursorName) (mousecursordata);
+	ARG_CHECK(ARG_UNPACK(cursorName) (mousecursordata));
 	LOG(LOG_NOT_IMPLEMENTED,"Mouse.registerCursor is not implemented");
+}
+ASFUNCTIONBODY_ATOM(Mouse, unregisterCursor)
+{
+	tiny_string cursorName;
+	ARG_CHECK(ARG_UNPACK(cursorName));
+	LOG(LOG_NOT_IMPLEMENTED,"Mouse.unregisterCursor is not implemented");
 }
 void MouseCursor::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructorNotInstantiatable, CLASS_FINAL | CLASS_SEALED);
-	c->setVariableAtomByQName("ARROW",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"arrow"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("AUTO",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"auto"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("BUTTON",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"button"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("HAND",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"hand"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("IBEAM",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"ibeam"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("ARROW",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"arrow"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("AUTO",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"auto"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("BUTTON",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"button"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("HAND",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"hand"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("IBEAM",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"ibeam"),CONSTANT_TRAIT);
 }
-MouseCursorData::MouseCursorData(Class_base *c):ASObject(c),frameRate(0)
+MouseCursorData::MouseCursorData(ASWorker* wrk, Class_base *c):ASObject(wrk,c),frameRate(0)
 {
 }
 
@@ -102,9 +109,9 @@ void MouseCursorData::sinit(Class_base* c)
 	REGISTER_GETTER_SETTER(c, hotSpot);
 
 }
-ASFUNCTIONBODY_GETTER_SETTER(MouseCursorData, data);
-ASFUNCTIONBODY_GETTER_SETTER(MouseCursorData, frameRate);
-ASFUNCTIONBODY_GETTER_SETTER(MouseCursorData, hotSpot);
+ASFUNCTIONBODY_GETTER_SETTER(MouseCursorData, data)
+ASFUNCTIONBODY_GETTER_SETTER(MouseCursorData, frameRate)
+ASFUNCTIONBODY_GETTER_SETTER(MouseCursorData, hotSpot)
 
 ASFUNCTIONBODY_ATOM(MouseCursorData,_constructor)
 {

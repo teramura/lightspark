@@ -19,21 +19,27 @@
 
 #include "scripting/abc.h"
 #include "scripting/flash/text/flashtext.h"
+#include "scripting/flash/geom/flashgeom.h"
+#include "scripting/flash/ui/keycodes.h"
 #include "scripting/class.h"
 #include "compat.h"
 #include "backends/geometry.h"
 #include "backends/graphics.h"
+#include "backends/rendering.h"
+#include "backends/rendering_context.h"
 #include "scripting/argconv.h"
 #include <3rdparty/pugixml/src/pugixml.hpp>
+#include "parsing/tags.h"
+#include "scripting/toplevel/Integer.h"
 
 using namespace std;
 using namespace lightspark;
 
-void lightspark::AntiAliasType::sinit(Class_base* c)
+void AntiAliasType::sinit(Class_base* c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_FINAL | CLASS_SEALED);
-	c->setVariableAtomByQName("ADVANCED",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"advanced"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("NORMAL",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"normal"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("ADVANCED",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"advanced"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("NORMAL",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"normal"),CONSTANT_TRAIT);
 }
 
 void ASFont::sinit(Class_base* c)
@@ -64,63 +70,68 @@ std::vector<asAtom> *ASFont::getFontList()
 	static std::vector<asAtom> fontlist;
 	return &fontlist;
 }
-ASFUNCTIONBODY_GETTER(ASFont, fontName);
-ASFUNCTIONBODY_GETTER(ASFont, fontStyle);
-ASFUNCTIONBODY_GETTER(ASFont, fontType);
+ASFUNCTIONBODY_GETTER(ASFont, fontName)
+ASFUNCTIONBODY_GETTER(ASFont, fontStyle)
+ASFUNCTIONBODY_GETTER(ASFont, fontType)
 
 ASFUNCTIONBODY_ATOM(ASFont,enumerateFonts)
 {
 	bool enumerateDeviceFonts=false;
-	ARG_UNPACK_ATOM(enumerateDeviceFonts,false);
+	ARG_CHECK(ARG_UNPACK(enumerateDeviceFonts,false));
 
 	if (enumerateDeviceFonts)
 		LOG(LOG_NOT_IMPLEMENTED,"Font::enumerateFonts: flag enumerateDeviceFonts is not handled");
-	Array* res = Class<Array>::getInstanceSNoArgs(sys);
+	Array* res = Class<Array>::getInstanceSNoArgs(wrk);
 	std::vector<asAtom>* fontlist = getFontList();
 	for(auto i = fontlist->begin(); i != fontlist->end(); ++i)
 	{
 		ASATOM_INCREF((*i));
 		res->push(*i);
 	}
-	ret = asAtom::fromObject(res);
+	ret = asAtomHandler::fromObject(res);
 }
 ASFUNCTIONBODY_ATOM(ASFont,registerFont)
 {
 	_NR<ASObject> fontclass;
-	ARG_UNPACK_ATOM(fontclass);
+	ARG_CHECK(ARG_UNPACK(fontclass));
 	if (!fontclass->is<Class_inherit>())
-		throwError<ArgumentError>(kCheckTypeFailedError,
+	{
+		createError<ArgumentError>(wrk,kCheckTypeFailedError,
 								  fontclass->getClassName(),
-								  Class<ASFont>::getClass(sys)->getQualifiedClassName());
-	ASFont* font = new (fontclass->as<Class_base>()->memoryAccount) ASFont(fontclass->as<Class_base>());
+								  Class<ASFont>::getClass(wrk->getSystemState())->getQualifiedClassName());
+		return;
+	}
+	ASFont* font = new (fontclass->as<Class_base>()->memoryAccount) ASFont(wrk,fontclass->as<Class_base>());
 	fontclass->as<Class_base>()->setupDeclaredTraits(font);
 	font->constructionComplete();
 	font->setConstructIndicator();
-	getFontList()->push_back(asAtom::fromObject(font));
+	getFontList()->push_back(asAtomHandler::fromObject(font));
 }
 ASFUNCTIONBODY_ATOM(ASFont,hasGlyphs)
 {
-	ASFont* th = obj.as<ASFont>();
+	ASFont* th = asAtomHandler::as<ASFont>(obj);
 	tiny_string text;
-	ARG_UNPACK_ATOM(text);
+	ARG_CHECK(ARG_UNPACK(text));
 	if (th->fontType == "embedded")
 	{
-		DefineFont3Tag* f = sys->mainClip->getEmbeddedFont(th->fontName);
+		FontTag* f = wrk->getSystemState()->mainClip->getEmbeddedFont(th->fontName);
 		if (f)
 		{
-			ret.setBool(f->hasGlyphs(text));
+			asAtomHandler::setBool(ret,f->hasGlyphs(text));
 			return;
 		}
 	}
 	LOG(LOG_NOT_IMPLEMENTED,"Font.hasGlyphs always returns true for not embedded fonts:"<<text<<" "<<th->fontName<<" "<<th->fontStyle<<" "<<th->fontType);
-	ret.setBool(true);
+	asAtomHandler::setBool(ret,true);
 }
-TextField::TextField(Class_base* c, const TextData& textData, bool _selectable, bool readOnly)
-	: InteractiveObject(c), TextData(textData), TokenContainer(this), type(ET_READ_ONLY),
+TextField::TextField(ASWorker* wrk, Class_base* c, const TextData& textData, bool _selectable, bool readOnly, const char *varname, DefineEditTextTag *_tag)
+	: InteractiveObject(wrk,c), TextData(textData), TokenContainer(this), type(ET_READ_ONLY),
 	  antiAliasType(AA_NORMAL), gridFitType(GF_PIXEL),
-	  textInteractionMode(TI_NORMAL), alwaysShowSelection(false),
-	  caretIndex(0), condenseWhite(false), displayAsPassword(false),
-	  embedFonts(false), maxChars(0), mouseWheelEnabled(true),
+	  textInteractionMode(TI_NORMAL),autosizeposition(0),tagvarname(varname,true),tagvartarget(nullptr),tag(_tag),originalXPosition(0),originalWidth(textData.width),
+	  fillstyleBackgroundColor(0xff),lineStyleBorder(0xff),lineStyleCaret(0xff),linemutex(new Mutex()),
+	  alwaysShowSelection(false),
+	  condenseWhite(false),
+	  embedFonts(false), maxChars(_tag ? int32_t(_tag->MaxLength) : 0), mouseWheelEnabled(true),
 	  selectable(_selectable), selectionBeginIndex(0), selectionEndIndex(0),
 	  sharpness(0), thickness(0), useRichTextClipboard(false)
 {
@@ -130,6 +141,13 @@ TextField::TextField(Class_base* c, const TextData& textData, bool _selectable, 
 		type = ET_EDITABLE;
 		tabEnabled = true;
 	}
+	fillstyleTextColor.push_back(0xff);
+}
+
+TextField::~TextField()
+{
+	delete linemutex;
+	linemutex=nullptr;
 }
 
 void TextField::sinit(Class_base* c)
@@ -149,6 +167,7 @@ void TextField::sinit(Class_base* c)
 	c->setDeclaredMethodByQName("replaceSelectedText","",Class<IFunction>::getFunction(c->getSystemState(),_replaceSelectedText),NORMAL_METHOD,true);
 	c->setDeclaredMethodByQName("replaceText","",Class<IFunction>::getFunction(c->getSystemState(),_replaceText),NORMAL_METHOD,true);
 	c->setDeclaredMethodByQName("setSelection","",Class<IFunction>::getFunction(c->getSystemState(),_setSelection),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getCharBoundaries","",Class<IFunction>::getFunction(c->getSystemState(),_getCharBoundaries),NORMAL_METHOD,true);
 
 	// properties
 	c->setDeclaredMethodByQName("antiAliasType","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_getAntiAliasType),GETTER_METHOD,true);
@@ -163,7 +182,7 @@ void TextField::sinit(Class_base* c)
 	c->setDeclaredMethodByQName("height","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_setHeight),SETTER_METHOD,true);
 	c->setDeclaredMethodByQName("htmlText","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_getHtmlText),GETTER_METHOD,true);
 	c->setDeclaredMethodByQName("htmlText","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_setHtmlText),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("length","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_getLength),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("length","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_getLength,0,Class<Integer>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
 	c->setDeclaredMethodByQName("text","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_getText),GETTER_METHOD,true);
 	c->setDeclaredMethodByQName("text","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_setText),SETTER_METHOD,true);
 	c->setDeclaredMethodByQName("textHeight","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_getTextHeight),GETTER_METHOD,true);
@@ -179,6 +198,12 @@ void TextField::sinit(Class_base* c)
 	c->setDeclaredMethodByQName("restrict","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_getRestrict),GETTER_METHOD,true);
 	c->setDeclaredMethodByQName("restrict","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_setRestrict),SETTER_METHOD,true);
 	c->setDeclaredMethodByQName("textInteractionMode","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_getTextInteractionMode),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("displayAsPassword","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_getdisplayAsPassword),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("displayAsPassword","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_setdisplayAsPassword),SETTER_METHOD,true);
+
+	// special handling neccessary when getting/setting x
+	c->setDeclaredMethodByQName("x","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_getTextFieldX),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("x","",Class<IFunction>::getFunction(c->getSystemState(),TextField::_setTextFieldX),SETTER_METHOD,true);
 
 	REGISTER_GETTER_SETTER(c, alwaysShowSelection);
 	REGISTER_GETTER_SETTER(c, background);
@@ -187,7 +212,6 @@ void TextField::sinit(Class_base* c)
 	REGISTER_GETTER_SETTER(c, borderColor);
 	REGISTER_GETTER(c, caretIndex);
 	REGISTER_GETTER_SETTER(c, condenseWhite);
-	REGISTER_GETTER_SETTER(c, displayAsPassword);
 	REGISTER_GETTER_SETTER(c, embedFonts);
 	REGISTER_GETTER_SETTER(c, maxChars);
 	REGISTER_GETTER_SETTER(c, multiline);
@@ -205,56 +229,94 @@ void TextField::sinit(Class_base* c)
 	REGISTER_GETTER_SETTER(c, useRichTextClipboard);
 }
 
-ASFUNCTIONBODY_GETTER_SETTER(TextField, alwaysShowSelection); // stub
-ASFUNCTIONBODY_GETTER_SETTER(TextField, background);
-ASFUNCTIONBODY_GETTER_SETTER(TextField, backgroundColor);
-ASFUNCTIONBODY_GETTER_SETTER(TextField, border);
-ASFUNCTIONBODY_GETTER_SETTER(TextField, borderColor);
-ASFUNCTIONBODY_GETTER(TextField, caretIndex);
-ASFUNCTIONBODY_GETTER_SETTER(TextField, condenseWhite);
-ASFUNCTIONBODY_GETTER_SETTER(TextField, displayAsPassword); // stub
-ASFUNCTIONBODY_GETTER_SETTER(TextField, embedFonts); // stub
-ASFUNCTIONBODY_GETTER_SETTER(TextField, maxChars); // stub
-ASFUNCTIONBODY_GETTER_SETTER(TextField, multiline);
-ASFUNCTIONBODY_GETTER_SETTER(TextField, mouseWheelEnabled); // stub
-ASFUNCTIONBODY_GETTER_SETTER_CB(TextField, scrollH, validateScrollH);
-ASFUNCTIONBODY_GETTER_SETTER_CB(TextField, scrollV, validateScrollV);
-ASFUNCTIONBODY_GETTER_SETTER(TextField, selectable); // stub
-ASFUNCTIONBODY_GETTER(TextField, selectionBeginIndex);
-ASFUNCTIONBODY_GETTER(TextField, selectionEndIndex);
-ASFUNCTIONBODY_GETTER_SETTER_CB(TextField, sharpness, validateSharpness); // stub
-ASFUNCTIONBODY_GETTER_SETTER(TextField, styleSheet); // stub
-ASFUNCTIONBODY_GETTER_SETTER(TextField, textColor);
-ASFUNCTIONBODY_GETTER_SETTER_CB(TextField, thickness, validateThickness); // stub
-ASFUNCTIONBODY_GETTER_SETTER(TextField, useRichTextClipboard); // stub
+ASFUNCTIONBODY_GETTER_SETTER(TextField, alwaysShowSelection) // stub
+ASFUNCTIONBODY_GETTER_SETTER(TextField, background)
+ASFUNCTIONBODY_GETTER_SETTER(TextField, backgroundColor)
+ASFUNCTIONBODY_GETTER_SETTER(TextField, border)
+ASFUNCTIONBODY_GETTER_SETTER(TextField, borderColor)
+ASFUNCTIONBODY_GETTER(TextField, caretIndex)
+ASFUNCTIONBODY_GETTER_SETTER(TextField, condenseWhite)
+ASFUNCTIONBODY_GETTER_SETTER(TextField, embedFonts) // stub
+ASFUNCTIONBODY_GETTER_SETTER(TextField, maxChars) // stub
+ASFUNCTIONBODY_GETTER_SETTER(TextField, multiline)
+ASFUNCTIONBODY_GETTER_SETTER(TextField, mouseWheelEnabled) // stub
+ASFUNCTIONBODY_GETTER_SETTER_CB(TextField, scrollH, validateScrollH)
+ASFUNCTIONBODY_GETTER_SETTER_CB(TextField, scrollV, validateScrollV)
+ASFUNCTIONBODY_GETTER_SETTER(TextField, selectable)
+ASFUNCTIONBODY_GETTER(TextField, selectionBeginIndex)
+ASFUNCTIONBODY_GETTER(TextField, selectionEndIndex)
+ASFUNCTIONBODY_GETTER_SETTER_CB(TextField, sharpness, validateSharpness) // stub
+ASFUNCTIONBODY_GETTER_SETTER(TextField, styleSheet) // stub
+ASFUNCTIONBODY_GETTER_SETTER(TextField, textColor)
+ASFUNCTIONBODY_GETTER_SETTER_CB(TextField, thickness, validateThickness) // stub
+ASFUNCTIONBODY_GETTER_SETTER(TextField, useRichTextClipboard) // stub
 
 void TextField::finalize()
 {
-	ASObject::finalize();
+	InteractiveObject::finalize();
 	restrictChars.reset();
 	styleSheet.reset();
 }
 
-void TextField::buildTraits(ASObject* o)
+void TextField::prepareShutdown()
 {
+	if (preparedforshutdown)
+		return;
+	InteractiveObject::prepareShutdown();
+	if(restrictChars)
+		restrictChars->prepareShutdown();
+	if (styleSheet)
+		styleSheet->prepareShutdown();
 }
 
-bool TextField::boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) const
+bool TextField::boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax)
 {
-	xmin=0;
-	xmax=width;
-	ymin=0;
-	ymax=height;
+	if (this->type == ET_EDITABLE && tag)
+	{
+		xmin=tag->Bounds.Xmin/20.0f;
+		xmax=tag->Bounds.Xmax/20.0f;
+		ymin=tag->Bounds.Ymin/20.0f;
+		ymax=tag->Bounds.Ymax/20.0f;
+		return true;
+	}
+	if ((!this->legacy || (tag==nullptr) || autoSize!=AS_NONE))
+	{
+		xmin=tag ? tag->Bounds.Xmin/20.0f : 0.0f;
+		if (wordWrap)
+			xmax=max(0.0f,float(width))+ (tag ? tag->Bounds.Xmin/20.0f : 0.0f);
+		else
+			xmax=max(0.0f,float(textWidth+autosizeposition))+2*TEXTFIELD_PADDING+ (tag ? tag->Bounds.Xmin/20.0f : 0.0f);
+		ymin=tag ? tag->Bounds.Ymin/20.0f : 0.0f;
+		ymax=max(0.0f,float(height)+(tag ? tag->Bounds.Ymin/20.0f :0.0f)+2*TEXTFIELD_PADDING);
+		return true;
+	}
+	xmin=tag->Bounds.Xmin/20.0f;
+	if (wordWrap)
+		xmax=max(0.0f,float(width)+tag->Bounds.Xmin/20.0f);
+	else
+		xmax=max(0.0f,float(textWidth)+2*TEXTFIELD_PADDING+tag->Bounds.Xmin/20.0f);
+	ymin=tag->Bounds.Ymin/20.0f;
+	ymax=max(0.0f,float(height)+tag->Bounds.Ymin/20.0f);
 	return true;
 }
 
-_NR<DisplayObject> TextField::hitTestImpl(_NR<DisplayObject> last, number_t x, number_t y, DisplayObject::HIT_TYPE type)
+_NR<DisplayObject> TextField::hitTestImpl(number_t x, number_t y, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly)
 {
 	/* I suppose one does not have to actually hit a character */
 	number_t xmin,xmax,ymin,ymax;
 	boundsRect(xmin,xmax,ymin,ymax);
-	if( xmin <= x && x <= xmax && ymin <= y && y <= ymax && isHittable(type))
+	if( xmin <= x && x <= xmax && ymin <= y && y <= ymax)
 	{
+		if (interactiveObjectsOnly && this->tag && this->tag->WasStatic && this->type == ET_READ_ONLY && (type == MOUSE_CLICK || type == DOUBLE_CLICK))
+		{
+			// it seems that TextFields are not set as target to MouseEvents if constructed from a DefineEditTextTag that has the flag WasStatic 
+			if (this->getParent())
+			{
+				this->getParent()->incRef();
+				return _MNR(this->getParent());
+			}
+			return NullRef;
+		}
 		incRef();
 		return _MNR(this);
 	}
@@ -262,276 +324,470 @@ _NR<DisplayObject> TextField::hitTestImpl(_NR<DisplayObject> last, number_t x, n
 		return NullRef;
 }
 
+ASFUNCTIONBODY_ATOM(TextField,_getdisplayAsPassword)
+{
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	asAtomHandler::setBool(ret,th->isPassword);
+}
+
+ASFUNCTIONBODY_ATOM(TextField,_setdisplayAsPassword)
+{
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	ARG_CHECK(ARG_UNPACK(th->isPassword));
+	th->setSizeAndPositionFromAutoSize();
+	th->hasChanged=true;
+	th->setNeedsTextureRecalculation();
+	if(th->onStage && th->isVisible())
+		th->requestInvalidation(th->getSystemState());
+}
+
 ASFUNCTIONBODY_ATOM(TextField,_getWordWrap)
 {
-	TextField* th=obj.as<TextField>();
-	ret.setBool(th->wordWrap);
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	asAtomHandler::setBool(ret,th->wordWrap);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_setWordWrap)
 {
-	TextField* th=obj.as<TextField>();
-	ARG_UNPACK_ATOM(th->wordWrap);
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	ARG_CHECK(ARG_UNPACK(th->wordWrap));
 	th->setSizeAndPositionFromAutoSize();
 	th->hasChanged=true;
+	th->setNeedsTextureRecalculation();
 	if(th->onStage && th->isVisible())
 		th->requestInvalidation(th->getSystemState());
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getAutoSize)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	switch(th->autoSize)
 	{
 		case AS_NONE:
-			ret = asAtom::fromString(sys,"none");
+			ret = asAtomHandler::fromString(wrk->getSystemState(),"none");
 			return;
 		case AS_LEFT:
-			ret = asAtom::fromString(sys,"left");
+			ret = asAtomHandler::fromString(wrk->getSystemState(),"left");
 			return;
 		case AS_RIGHT:
-			ret =asAtom::fromString(sys,"right");
+			ret =asAtomHandler::fromString(wrk->getSystemState(),"right");
 			return;
 		case AS_CENTER:
-			ret = asAtom::fromString(sys,"center");
+			ret = asAtomHandler::fromString(wrk->getSystemState(),"center");
 			return;
 	}
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_setAutoSize)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	tiny_string autoSizeString;
-	ARG_UNPACK_ATOM(autoSizeString);
+	ARG_CHECK(ARG_UNPACK(autoSizeString));
 
-	AUTO_SIZE newAutoSize = AS_NONE;
-	if(autoSizeString == "none")
+	ALIGNMENT newAutoSize = AS_NONE;
+	if(autoSizeString == "none" || (!th->loadedFrom->usesActionScript3 && autoSizeString=="false"))
 		newAutoSize = AS_NONE;
-	else if (autoSizeString == "left")
+	else if (autoSizeString == "left" || (!th->loadedFrom->usesActionScript3 && autoSizeString=="true"))
 		newAutoSize = AS_LEFT;
 	else if (autoSizeString == "right")
 		newAutoSize = AS_RIGHT;
 	else if (autoSizeString == "center")
 		newAutoSize = AS_CENTER;
 	else
-		throwError<ArgumentError>(kInvalidEnumError, "autoSize");
+	{
+		createError<ArgumentError>(wrk,kInvalidEnumError, "autoSize");
+		return;
+	}
 
 	if (th->autoSize != newAutoSize)
 	{
 		th->autoSize = newAutoSize;
 		th->setSizeAndPositionFromAutoSize();
 		th->hasChanged=true;
+		th->setNeedsTextureRecalculation();
 		if(th->onStage && th->isVisible())
 			th->requestInvalidation(th->getSystemState());
 	}
 }
-
-void TextField::setSizeAndPositionFromAutoSize()
+void TextField::setSizeAndPositionFromAutoSize(bool updatewidth)
 {
 	if (autoSize == AS_NONE)
-		return;
-
-	if (!wordWrap)
 	{
-		if (autoSize == AS_RIGHT)
-			tx += (int)width-(int)textWidth;
-		else if (autoSize == AS_CENTER)
-			tx += ((int)width - (int)textWidth)/2.0;
-		if (width < textWidth)
-			width = textWidth;
-		if (height < textHeight)
-			height = textHeight;
+		switch (align)
+		{
+			case AS_RIGHT:
+				linemutex->lock();
+				autosizeposition = width-textWidth-TEXTFIELD_PADDING*2;
+				for (auto it = textlines.begin(); it != textlines.end(); it++)
+				{
+					if ((*it).textwidth < textWidth)
+						(*it).autosizeposition = (textWidth+TEXTFIELD_PADDING*2-(*it).textwidth);
+					else
+						(*it).autosizeposition = 0;
+				}
+				linemutex->unlock();
+				break;
+			case AS_CENTER:
+				linemutex->lock();
+				autosizeposition = (width-textWidth-TEXTFIELD_PADDING*2)/2;
+				for (auto it = textlines.begin(); it != textlines.end(); it++)
+				{
+					if ((*it).textwidth < textWidth)
+						(*it).autosizeposition = (textWidth+TEXTFIELD_PADDING*2-(*it).textwidth)/2;
+					else
+						(*it).autosizeposition = 0;
+				}
+				linemutex->unlock();
+				break;
+			default:
+				autosizeposition = 0;
+				break;
+		}
+		if (updatewidth && !wordWrap)
+			width = originalWidth;
+		return;
 	}
+	switch (autoSize)
+	{
+		case AS_RIGHT:
+			linemutex->lock();
+			autosizeposition = 0;
+			if (!wordWrap) // not in the specs but Adobe changes x position if wordWrap is not set
+			{
+				this->setX(originalXPosition + (int(originalWidth-TEXTFIELD_PADDING*2 - textWidth))*sx);
+				if (updatewidth)
+					width = textWidth+TEXTFIELD_PADDING*2;
+			}
+			else
+				autosizeposition = max(0.0f,float(width-TEXTFIELD_PADDING*2)-textWidth);
+			for (auto it = textlines.begin(); it != textlines.end(); it++)
+			{
+				if ((*it).textwidth< textWidth)
+					(*it).autosizeposition = (textWidth-(*it).textwidth);
+				else
+					(*it).autosizeposition = 0;
+			}
+			linemutex->unlock();
+			break;
+		case AS_CENTER:
+			autosizeposition = 0;
+			if (!wordWrap) // not in the specs but Adobe changes x position if wordWrap is not set
+			{
+				this->setX(originalXPosition + (int(originalWidth-TEXTFIELD_PADDING*2 - textWidth))/2*sx);
+				if (updatewidth)
+					width = textWidth+TEXTFIELD_PADDING*2;
+			}
+			else
+				autosizeposition = (int32_t((width-TEXTFIELD_PADDING*2) - textWidth)/2);
+			linemutex->lock();
+			for (auto it = textlines.begin(); it != textlines.end(); it++)
+			{
+				if ((*it).textwidth< textWidth)
+					(*it).autosizeposition = (textWidth-(*it).textwidth)/2;
+				else
+					(*it).autosizeposition = 0;
+			}
+			linemutex->unlock();
+			break;
+		default:
+			autosizeposition = 0;
+			if (updatewidth && !wordWrap)
+				width = textWidth+TEXTFIELD_PADDING*2;
+			break;
+	}
+	height = textHeight+TEXTFIELD_PADDING*2;
+	geometryChanged();
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getWidth)
 {
-	TextField* th=obj.as<TextField>();
-	ret.setUInt(th->width);
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	asAtomHandler::setUInt(ret,wrk,th->width);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_setWidth)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	assert_and_throw(argslen==1);
-	//The width needs to be updated only if autoSize is off or wordWrap is on TODO:check this, adobe's behavior is not clear
-	if(((th->autoSize == AS_NONE)||(th->wordWrap == true))
-			&& (th->width != args[0].toUInt()))
+	if((th->width != asAtomHandler::toUInt(args[0]))
+			&& (th->width != asAtomHandler::toUInt(args[0]))
+			&&  (asAtomHandler::toInt(args[0]) >= 0))
 	{
-		th->width=args[0].toUInt();
+		th->width=asAtomHandler::toUInt(args[0]);
+		th->originalWidth=th->width;
 		th->hasChanged=true;
+		th->setNeedsTextureRecalculation();
+		th->updateSizes();
+		th->setSizeAndPositionFromAutoSize(false);
+		th->width -= TEXTFIELD_PADDING*2;
 		if(th->onStage && th->isVisible())
-			th->requestInvalidation(sys);
-		else
-			th->updateSizes();
+			th->requestInvalidation(wrk->getSystemState());
+		th->legacy=false;
 	}
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getHeight)
 {
-	TextField* th=obj.as<TextField>();
-	ret.setUInt(th->height);
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	// it seems that Adobe returns the textHeight if in autoSize mode
+	if (th->autoSize != AS_NONE || th->wordWrap)
+		asAtomHandler::setUInt(ret,wrk,th->textHeight);
+	else
+		asAtomHandler::setUInt(ret,wrk,th->height);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_setHeight)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	assert_and_throw(argslen==1);
 	if((th->autoSize == AS_NONE)
-		&& (th->height != args[0].toUInt()))
+		&& (th->height != asAtomHandler::toUInt(args[0]))
+			&&  (asAtomHandler::toInt(args[0]) >= 0))
 	{
-		th->height=args[0].toUInt();
+		th->height=asAtomHandler::toUInt(args[0]);
 		th->hasChanged=true;
+		th->setNeedsTextureRecalculation();
+		th->updateSizes();
+		th->setSizeAndPositionFromAutoSize();
 		if(th->onStage && th->isVisible())
 			th->requestInvalidation(th->getSystemState());
-		else
-			th->updateSizes();
+		th->legacy=false;
 	}
 	//else do nothing as the height is determined by autoSize
 }
 
+ASFUNCTIONBODY_ATOM(TextField,_getTextFieldX)
+{
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	asAtomHandler::setNumber(ret,wrk,th->originalXPosition+th->autosizeposition);
+}
+ASFUNCTIONBODY_ATOM(TextField,_setTextFieldX)
+{
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	DisplayObject::_setX(ret,wrk,obj,args,argslen);
+	th->originalXPosition=asAtomHandler::toInt(args[0]);
+}
+
 ASFUNCTIONBODY_ATOM(TextField,_getTextWidth)
 {
-	TextField* th=obj.as<TextField>();
-	ret.setUInt(th->textWidth);
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	asAtomHandler::setUInt(ret,wrk,th->textWidth);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getTextHeight)
 {
-	TextField* th=obj.as<TextField>();
-	ret.setUInt(th->textHeight);
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	asAtomHandler::setUInt(ret,wrk,th->textHeight);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getHtmlText)
 {
-	TextField* th=obj.as<TextField>();
-	ret = asAtom::fromObject(abstract_s(sys,th->toHtmlText()));
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	ret = asAtomHandler::fromObject(abstract_s(wrk,th->toHtmlText()));
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_setHtmlText)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	tiny_string value;
-	ARG_UNPACK_ATOM(value);
+	ARG_CHECK(ARG_UNPACK(value));
 	th->setHtmlText(value);
+	th->legacy=false;
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getText)
 {
-	TextField* th=obj.as<TextField>();
-	ret = asAtom::fromObject(abstract_s(sys,th->text));
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	ret = asAtomHandler::fromObject(abstract_s(wrk,th->getText()));
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_setText)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	assert_and_throw(argslen==1);
-	th->updateText(args[0].toString(sys));
+	th->updateText(asAtomHandler::toString(args[0],wrk));
+	th->legacy=false;
 }
 
 ASFUNCTIONBODY_ATOM(TextField, appendText)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	assert_and_throw(argslen==1);
-	th->updateText(th->text + args[0].toString(sys));
+	th->updateText(th->getText() + asAtomHandler::toString(args[0],wrk));
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getTextFormat)
 {
-	TextField* th=obj.as<TextField>();
-	TextFormat *format=Class<TextFormat>::getInstanceS(sys);
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	TextFormat *format=Class<TextFormat>::getInstanceS(wrk);
 
-	format->color= asAtom(th->textColor.toUInt());
-	format->font = th->font;
-	format->size = th->fontSize;
+	format->color= asAtomHandler::fromUInt(th->textColor.toUInt());
+	format->font = asAtomHandler::fromString(wrk->getSystemState(),th->font);
+	format->size = asAtomHandler::fromUInt(th->fontSize);
 
 	LOG(LOG_NOT_IMPLEMENTED, "getTextFormat is not fully implemeted");
 
-	ret = asAtom::fromObject(format);
+	ret = asAtomHandler::fromObject(format);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_setTextFormat)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	_NR<TextFormat> tf;
 	int beginIndex;
 	int endIndex;
 
-	ARG_UNPACK_ATOM(tf)(beginIndex, -1)(endIndex, -1);
+	if (th->loadedFrom->usesActionScript3 || argslen == 1)
+	{
+		ARG_CHECK(ARG_UNPACK(tf)(beginIndex, -1)(endIndex, -1));
+	}
+	else
+	{
+		if (argslen == 2)
+		{
+			ARG_CHECK(ARG_UNPACK(beginIndex)(tf)(endIndex, -1));
+		}
+		else
+		{
+			ARG_CHECK(ARG_UNPACK(beginIndex)(endIndex)(tf));
+		}
+	}
 
 	if(beginIndex!=-1 || endIndex!=-1)
 		LOG(LOG_NOT_IMPLEMENTED,"setTextFormat with beginIndex or endIndex");
-
-	if(tf->color.type != T_NULL)
-		th->textColor = tf->color.toUInt();
-	if (tf->font != "")
+	if (tf.isNull())
 	{
-		th->font = tf->font;
+		LOG(LOG_NOT_IMPLEMENTED,"setTextFormat with textformat null");
+		return;
+	}
+	if(!asAtomHandler::isNull(tf->color))
+		th->textColor = asAtomHandler::toUInt(tf->color);
+	bool updatesizes = false;
+
+	tiny_string align="left";
+	if (!asAtomHandler::isNull(tf->align))
+		align = asAtomHandler::toString(tf->align,wrk);
+	ALIGNMENT newAlign = th->align;
+	if(align == "none")
+		newAlign = AS_NONE;
+	else if (align == "left")
+		newAlign = AS_LEFT;
+	else if (align == "right")
+		newAlign = AS_RIGHT;
+	else if (align == "center")
+		newAlign = AS_CENTER;
+	if (th->align != newAlign)
+	{
+		th->align = newAlign;
+		updatesizes = true;
+	}
+	if(!asAtomHandler::isNull(tf->font))
+	{
+		tiny_string fnt = asAtomHandler::toString(tf->font,wrk);
+		if (fnt != th->font)
+			updatesizes = true;
+		th->font = fnt;
 		th->fontID = UINT32_MAX;
 	}
-	th->fontSize = tf->size;
+	if (!asAtomHandler::isNull(tf->size) && th->fontSize != asAtomHandler::toUInt(tf->size) && asAtomHandler::toUInt(tf->size)>0)
+	{
+		th->fontSize = asAtomHandler::toUInt(tf->size);
+		updatesizes = true;
+	}
+	if (updatesizes)
+	{
+		th->updateSizes();
+		th->setSizeAndPositionFromAutoSize();
+		th->hasChanged=true;
+		th->setNeedsTextureRecalculation();
+	}
 
 	LOG(LOG_NOT_IMPLEMENTED,"setTextFormat does not read all fields of TextFormat");
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getDefaultTextFormat)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	
-	TextFormat* tf = Class<TextFormat>::getInstanceS(sys);
-	tf->font = th->font;
+	TextFormat* tf = Class<TextFormat>::getInstanceS(wrk);
+	tf->font = asAtomHandler::fromString(wrk->getSystemState(),th->font);
+	tf->bold = th->isBold ? asAtomHandler::trueAtom : asAtomHandler::nullAtom;
+	tf->italic = th->isItalic ? asAtomHandler::trueAtom : asAtomHandler::nullAtom;
 	LOG(LOG_NOT_IMPLEMENTED,"getDefaultTextFormat does not get all fields of TextFormat");
-	ret = asAtom::fromObject(tf);
+	ret = asAtomHandler::fromObject(tf);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_setDefaultTextFormat)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	_NR<TextFormat> tf;
 
-	ARG_UNPACK_ATOM(tf);
+	ARG_CHECK(ARG_UNPACK(tf));
 
-	if(tf->color.type != T_NULL)
-		th->textColor = tf->color.toUInt();
-	if (tf->font != "")
+	if(!asAtomHandler::isNull(tf->color))
+		th->textColor = asAtomHandler::toUInt(tf->color);
+	if(!asAtomHandler::isNull(tf->font))
 	{
-		th->font = tf->font;
+		th->font = asAtomHandler::toString(tf->font,wrk);
 		th->fontID = UINT32_MAX;
 	}
-	th->fontSize = tf->size;
+	if (!asAtomHandler::isNull(tf->size) && asAtomHandler::toUInt(tf->size) > 0)
+		th->fontSize = asAtomHandler::toUInt(tf->size);
+	tiny_string align="left";
+	if (!asAtomHandler::isNull(tf->align))
+		align = asAtomHandler::toString(tf->align,wrk);
+	ALIGNMENT newAlign = th->align;
+	if(align == "none")
+		newAlign = AS_NONE;
+	else if (align == "left")
+		newAlign = AS_LEFT;
+	else if (align == "right")
+		newAlign = AS_RIGHT;
+	else if (align == "center")
+		newAlign = AS_CENTER;
+	th->isBold=asAtomHandler::toInt(tf->bold);
+	th->isItalic=asAtomHandler::toInt(tf->italic);
+	if (th->align != newAlign)
+	{
+		th->align = newAlign;
+		th->updateSizes();
+		th->setSizeAndPositionFromAutoSize();
+		th->hasChanged=true;
+		th->setNeedsTextureRecalculation();
+	}
 	LOG(LOG_NOT_IMPLEMENTED,"setDefaultTextFormat does not set all fields of TextFormat");
 }
 
 ASFUNCTIONBODY_ATOM(TextField, _getter_type)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	if (th->type == ET_READ_ONLY)
-		ret = asAtom::fromString(sys,"dynamic");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"dynamic");
 	else
-		ret = asAtom::fromString(sys,"input");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"input");
 }
 
 ASFUNCTIONBODY_ATOM(TextField, _setter_type)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 
 	tiny_string value;
-	ARG_UNPACK_ATOM(value);
+	ARG_CHECK(ARG_UNPACK(value));
 
 	if (value == "dynamic")
 		th->type = ET_READ_ONLY;
 	else if (value == "input")
 		th->type = ET_EDITABLE;
 	else
-		throwError<ArgumentError>(kInvalidEnumError, "type");
+		createError<ArgumentError>(wrk,kInvalidEnumError, "type");
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getLineIndexAtPoint)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	number_t x;
 	number_t y;
-	ARG_UNPACK_ATOM(x) (y);
+	ARG_CHECK(ARG_UNPACK(x) (y));
 
 	std::vector<LineData> lines = CairoPangoRenderer::getLineData(*th);
 	std::vector<LineData>::const_iterator it;
@@ -541,23 +797,23 @@ ASFUNCTIONBODY_ATOM(TextField,_getLineIndexAtPoint)
 		if (x > it->extents.Xmin && x <= it->extents.Xmax &&
 		    y > it->extents.Ymin && y <= it->extents.Ymax)
 		{
-			ret.setInt(i);
+			asAtomHandler::setInt(ret,wrk,i);
 			return;
 		}
 	}
 
-	ret.setInt(-1);
+	asAtomHandler::setInt(ret,wrk,-1);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getLineIndexOfChar)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	int32_t charIndex;
-	ARG_UNPACK_ATOM(charIndex);
+	ARG_CHECK(ARG_UNPACK(charIndex));
 
 	if (charIndex < 0)
 	{
-		ret.setInt(-1);
+		asAtomHandler::setInt(ret,wrk,-1);
 		return;
 	}
 
@@ -569,40 +825,46 @@ ASFUNCTIONBODY_ATOM(TextField,_getLineIndexOfChar)
 		if (charIndex >= it->firstCharOffset &&
 		    charIndex < it->firstCharOffset + it->length)
 		{
-			ret.setInt(i);
+			asAtomHandler::setInt(ret,wrk,i);
 			return;
 		}
 	}
 
 	// testing shows that returns -1 on invalid index instead of
 	// throwing RangeError
-	ret.setInt(-1);
+	asAtomHandler::setInt(ret,wrk,-1);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getLineLength)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	int32_t  lineIndex;
-	ARG_UNPACK_ATOM(lineIndex);
+	ARG_CHECK(ARG_UNPACK(lineIndex));
 
 	std::vector<LineData> lines = CairoPangoRenderer::getLineData(*th);
-	if (lineIndex < 0 || lineIndex >= (int32_t)lines.size())
-		throwError<RangeError>(kParamRangeError);
+	if ((lineIndex < 0) || (lineIndex >= (int32_t)lines.size()))
+	{
+		createError<RangeError>(wrk,kParamRangeError);
+		return;
+	}
 
-	ret.setInt(lines[lineIndex].length);
+	asAtomHandler::setInt(ret,wrk,lines[lineIndex].length);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getLineMetrics)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	int32_t  lineIndex;
-	ARG_UNPACK_ATOM(lineIndex);
+	ARG_CHECK(ARG_UNPACK(lineIndex));
 
 	std::vector<LineData> lines = CairoPangoRenderer::getLineData(*th);
-	if (lineIndex < 0 || lineIndex >= (int32_t)lines.size())
-		throwError<RangeError>(kParamRangeError);
+	if ((lineIndex < 0) || (lineIndex >= (int32_t)lines.size()))
+	{
+		createError<RangeError>(wrk,kParamRangeError);
+		return;
+	}
 
-	ret = asAtom::fromObject(Class<TextLineMetrics>::getInstanceS(sys,
+	ret = asAtomHandler::fromObject(Class<TextLineMetrics>::getInstanceS(wrk,
 		lines[lineIndex].indent,
 		lines[lineIndex].extents.Xmax - lines[lineIndex].extents.Xmin,
 		lines[lineIndex].extents.Ymax - lines[lineIndex].extents.Ymin,
@@ -613,46 +875,52 @@ ASFUNCTIONBODY_ATOM(TextField,_getLineMetrics)
 
 ASFUNCTIONBODY_ATOM(TextField,_getLineOffset)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	int32_t  lineIndex;
-	ARG_UNPACK_ATOM(lineIndex);
+	ARG_CHECK(ARG_UNPACK(lineIndex));
 
 	std::vector<LineData> lines = CairoPangoRenderer::getLineData(*th);
-	if (lineIndex < 0 || lineIndex >= (int32_t)lines.size())
-		throwError<RangeError>(kParamRangeError);
+	if ((lineIndex < 0) || (lineIndex >= (int32_t)lines.size()))
+	{
+		createError<RangeError>(wrk,kParamRangeError);
+		return;
+	}
 
-	ret.setInt(lines[lineIndex].firstCharOffset);
+	asAtomHandler::setInt(ret,wrk,lines[lineIndex].firstCharOffset);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getLineText)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	int32_t  lineIndex;
-	ARG_UNPACK_ATOM(lineIndex);
+	ARG_CHECK(ARG_UNPACK(lineIndex));
 
 	std::vector<LineData> lines = CairoPangoRenderer::getLineData(*th);
 	if (lineIndex < 0 || lineIndex >= (int32_t)lines.size())
-		throwError<RangeError>(kParamRangeError);
+	{
+		createError<RangeError>(wrk,kParamRangeError);
+		return;
+	}
 
-	tiny_string substr = th->text.substr(lines[lineIndex].firstCharOffset,
+	tiny_string substr = th->getText().substr(lines[lineIndex].firstCharOffset,
 					     lines[lineIndex].length);
-	ret = asAtom::fromObject(abstract_s(sys,substr));
+	ret = asAtomHandler::fromObject(abstract_s(wrk,substr));
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getAntiAliasType)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	if (th->antiAliasType == AA_NORMAL)
-		ret = asAtom::fromString(sys,"normal");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"normal");
 	else
-		ret = asAtom::fromString(sys,"advanced");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"advanced");
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_setAntiAliasType)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	tiny_string value;
-	ARG_UNPACK_ATOM(value);
+	ARG_CHECK(ARG_UNPACK(value));
 
 	if (value == "advanced")
 	{
@@ -665,20 +933,20 @@ ASFUNCTIONBODY_ATOM(TextField,_setAntiAliasType)
 
 ASFUNCTIONBODY_ATOM(TextField,_getGridFitType)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	if (th->gridFitType == GF_NONE)
-		ret = asAtom::fromString(sys,"none");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"none");
 	else if (th->gridFitType == GF_PIXEL)
-		ret = asAtom::fromString(sys,"pixel");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"pixel");
 	else
-		ret = asAtom::fromString(sys,"subpixel");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"subpixel");
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_setGridFitType)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	tiny_string value;
-	ARG_UNPACK_ATOM(value);
+	ARG_CHECK(ARG_UNPACK(value));
 
 	if (value == "none")
 		th->gridFitType = GF_NONE;
@@ -693,83 +961,84 @@ ASFUNCTIONBODY_ATOM(TextField,_setGridFitType)
 
 ASFUNCTIONBODY_ATOM(TextField,_getLength)
 {
-	TextField* th=obj.as<TextField>();
-	ret.setUInt(th->text.numChars());
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	asAtomHandler::setUInt(ret,wrk,th->getText().numChars());
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getNumLines)
 {
-	TextField* th=obj.as<TextField>();
-	ret.setInt((int32_t)CairoPangoRenderer::getLineData(*th).size());
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	asAtomHandler::setInt(ret,wrk,(int32_t)CairoPangoRenderer::getLineData(*th).size());
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getMaxScrollH)
 {
-	TextField* th=obj.as<TextField>();
-	ret.setInt(th->getMaxScrollH());
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	asAtomHandler::setInt(ret,wrk,th->getMaxScrollH());
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getMaxScrollV)
 {
-	TextField* th=obj.as<TextField>();
-	ret.setInt(th->getMaxScrollV());
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	asAtomHandler::setInt(ret,wrk,th->getMaxScrollV());
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getBottomScrollV)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	std::vector<LineData> lines = CairoPangoRenderer::getLineData(*th);
 	for (unsigned int k=0; k<lines.size()-1; k++)
 	{
 		if (lines[k+1].extents.Ymin >= (int)th->height)
 		{
-			ret.setInt((int32_t)k + 1);
+			asAtomHandler::setInt(ret,wrk,(int32_t)k + 1);
 			return;
 		}
 	}
 
-	ret.setInt((int32_t)lines.size() + 1);
+	asAtomHandler::setInt(ret,wrk,(int32_t)lines.size() + 1);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getRestrict)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	if (th->restrictChars.isNull())
 		return;
 	else
 	{
 		th->restrictChars->incRef();
-		ret = asAtom::fromObject(th->restrictChars.getPtr());
+		ret = asAtomHandler::fromObject(th->restrictChars.getPtr());
 	}
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_setRestrict)
 {
-	TextField* th=obj.as<TextField>();
-	ARG_UNPACK_ATOM(th->restrictChars);
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	ARG_CHECK(ARG_UNPACK(th->restrictChars));
 	if (!th->restrictChars.isNull())
 		LOG(LOG_NOT_IMPLEMENTED, "TextField restrict property");
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_getTextInteractionMode)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	if (th->textInteractionMode == TI_NORMAL)
-		ret = asAtom::fromString(sys,"normal");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"normal");
 	else
-		ret = asAtom::fromString(sys,"selection");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"selection");
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_setSelection)
 {
-	TextField* th=obj.as<TextField>();
-	ARG_UNPACK_ATOM(th->selectionBeginIndex) (th->selectionEndIndex);
+	TextField* th=asAtomHandler::as<TextField>(obj);
+	ARG_CHECK(ARG_UNPACK(th->selectionBeginIndex) (th->selectionEndIndex));
 
 	if (th->selectionBeginIndex < 0)
 		th->selectionBeginIndex = 0;
 
-	if (th->selectionEndIndex >= (int32_t)th->text.numChars())
-		th->selectionEndIndex = th->text.numChars()-1;
+	tiny_string text = th->getText();
+	if (th->selectionEndIndex >= (int32_t)text.numChars())
+		th->selectionEndIndex = text.numChars()-1;
 
 	if (th->selectionBeginIndex > th->selectionEndIndex)
 		th->selectionBeginIndex = th->selectionEndIndex;
@@ -782,27 +1051,31 @@ ASFUNCTIONBODY_ATOM(TextField,_setSelection)
 
 ASFUNCTIONBODY_ATOM(TextField,_replaceSelectedText)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	tiny_string newText;
-	ARG_UNPACK_ATOM(newText);
+	ARG_CHECK(ARG_UNPACK(newText));
 	th->replaceText(th->selectionBeginIndex, th->selectionEndIndex, newText);
 }
 
 ASFUNCTIONBODY_ATOM(TextField,_replaceText)
 {
-	TextField* th=obj.as<TextField>();
+	TextField* th=asAtomHandler::as<TextField>(obj);
 	int32_t begin;
 	int32_t end;
 	tiny_string newText;
-	ARG_UNPACK_ATOM(begin) (end) (newText);
+	ARG_CHECK(ARG_UNPACK(begin) (end) (newText));
 	th->replaceText(begin, end, newText);
 }
 
 void TextField::replaceText(unsigned int begin, unsigned int end, const tiny_string& newText)
 {
 	if (!styleSheet.isNull())
-		throw Class<ASError>::getInstanceS(getSystemState(),"Can not replace text on text field with a style sheet");
+	{
+		createError<ASError>(getInstanceWorker(),0,"Can not replace text on text field with a style sheet");
+		return;
+	}
 
+	tiny_string text = getText();
 	if (begin >= text.numChars())
 	{
 		text = text + newText;
@@ -819,7 +1092,55 @@ void TextField::replaceText(unsigned int begin, unsigned int end, const tiny_str
 	{
 		text = text.substr(0, begin) + newText + text.substr(end, text.end());
 	}
+	linemutex->lock();
+	setText(text.raw_buf());
+	linemutex->unlock();
+	textUpdated();
+}
 
+void TextField::getTextBounds(const tiny_string& txt,number_t &xmin,number_t &xmax,number_t &ymin,number_t &ymax)
+{
+	FontTag* embeddedfont = (fontID != UINT32_MAX ? loadedFrom->getEmbeddedFontByID(fontID) : loadedFrom->getEmbeddedFont(font));
+	if (embeddedfont && embeddedfont->hasGlyphs(getText()))
+	{
+		scaling = 1.0f/1024.0f/20.0f;
+		embeddedfont->getTextBounds(txt,fontSize,xmax,ymax);
+		xmin = autosizeposition;
+		xmax += autosizeposition;
+		ymin=0;
+	}
+	else
+		LOG(LOG_NOT_IMPLEMENTED,"TextFields: computing of textbounds not implemented for non-embedded fonts");
+}
+
+ASFUNCTIONBODY_ATOM(TextField,_getCharBoundaries)
+{
+	TextField* th=asAtomHandler::as<TextField>(obj);
+
+	int32_t charIndex;
+	ARG_CHECK(ARG_UNPACK(charIndex));
+
+	Rectangle* rect = Class<Rectangle>::getInstanceSNoArgs(wrk);
+	tiny_string text = th->getText();
+	if (charIndex >= 0 && charIndex < (int32_t)text.numChars())
+	{
+		number_t xmin=0,xmax=0,ymin=0,ymax=0;
+		if (charIndex > 0)
+			th->getTextBounds(text.substr(0,charIndex-1),xmin,xmax,ymin,ymax);
+		number_t xmin2=0,xmax2=0,ymin2=0,ymax2=0;
+		th->getTextBounds(text.substr(0,charIndex),xmin2,xmax2,ymin2,ymax2);
+		rect->x = xmin;
+		rect->y = ymin2;
+		rect->width = xmax2-xmax;
+		rect->height = ymax2-ymin2;
+	}
+	ret = asAtomHandler::fromObjectNoPrimitive(rect);
+}
+
+void TextField::afterSetLegacyMatrix()
+{
+	originalXPosition = getXY().x;
+	originalWidth = width;
 	textUpdated();
 }
 
@@ -839,6 +1160,7 @@ void TextField::validateScrollH(int32_t oldValue)
 	if (scrollH > maxScrollH)
 		scrollH = maxScrollH;
 	hasChanged=true;
+	setNeedsTextureRecalculation();
 
 	if (onStage && (scrollH != oldValue) && isVisible())
 		requestInvalidation(this->getSystemState());
@@ -852,6 +1174,7 @@ void TextField::validateScrollV(int32_t oldValue)
 	else if (scrollV > maxScrollV)
 		scrollV = maxScrollV;
 	hasChanged=true;
+	setNeedsTextureRecalculation();
 
 	if (onStage && (scrollV != oldValue) && isVisible())
 		requestInvalidation(this->getSystemState());
@@ -890,33 +1213,81 @@ int32_t TextField::getMaxScrollV()
 
 void TextField::updateSizes()
 {
-	uint32_t w,h,tw,th;
-	w = width;
-	h = height;
-	tw = textWidth;
-	th = textHeight;
+	Locker l(invalidatemutex);
+	uint32_t tw,th;
+	tw = 0;
+	th = 0;
 	
-	//Compute (text)width, (text)height
-	
-	RootMovieClip* currentRoot=getSystemState()->mainClip;
-	DefineFont3Tag* embeddedfont = (fontID != UINT32_MAX ? currentRoot->getEmbeddedFontByID(fontID) : currentRoot->getEmbeddedFont(font));
-	if (embeddedfont)
+	RootMovieClip* currentRoot=this->loadedFrom;
+	if (!currentRoot) currentRoot=this->getRoot().getPtr();
+	if (!currentRoot) currentRoot = getSystemState()->mainClip;
+	FontTag* embeddedfont = (fontID != UINT32_MAX ? currentRoot->getEmbeddedFontByID(fontID) : currentRoot->getEmbeddedFont(font));
+	bool embedded = embeddedfont && embeddedfont->hasGlyphs(getText());
+	scaling = 1.0f/1024.0f/20.0f;
+	th=0;
+	number_t w=0;
+	number_t h=0;
+	linemutex->lock();
+	auto it = textlines.begin();
+	while (it != textlines.end())
 	{
-		tokens.clear();
-		scaling = 1.0f/1024.0f/20.0f;
-		embeddedfont->fillTextTokens(tokens,text,fontSize,textColor);
-		number_t x1,x2,y1,y2;
-		if (TokenContainer::boundsRect(x1,x2,y1,y2))
+		if (embedded)
+			embeddedfont->getTextBounds((*it).text,fontSize,w,h);
+		else
+			CairoPangoRenderer::getBounds(*this, (*it).text,w, h);
+		(*it).textwidth=w;
+		bool listchanged=false;
+		if (wordWrap && width > TEXTFIELD_PADDING*2 && uint32_t(w) > width-TEXTFIELD_PADDING*2)
 		{
-			tw = x2-x1;
-			th = y2-y1;
+			// calculate lines for wordwrap
+			tiny_string text =(*it).text;
+			uint32_t c= text.rfind(" ");// TODO check for other whitespace characters
+			while (c != tiny_string::npos && c != 0)
+			{
+				if (embedded)
+					embeddedfont->getTextBounds(text.substr(0,c),fontSize,w,h);
+				else
+					CairoPangoRenderer::getBounds(*this,text.substr(0,c), w, h);
+				if (w <= width-TEXTFIELD_PADDING*2)
+				{
+					if(w>tw)
+						tw = w;
+					(*it).textwidth=w;
+					(*it).text = text.substr(0,c);
+					textline t;
+					t.autosizeposition=0;
+					t.text=text.substr(c+1,UINT32_MAX);
+					if (embedded)
+						embeddedfont->getTextBounds(t.text,fontSize,w,h);
+					else
+						CairoPangoRenderer::getBounds(*this,t.text, w, h);
+					t.textwidth=w;
+					it = textlines.insert(++it,t);
+					listchanged=true;
+					text =t.text;
+					if (uint32_t(w) <= width-TEXTFIELD_PADDING*2)
+					{
+						if(w>tw)
+							tw = w;
+						break;
+					}
+					c=text.numChars();
+				}
+				c= text.rfind(" ",c-1);// TODO check for other whitespace characters
+			}
 		}
+		else if (w>tw)
+			tw = w;
+		if (!listchanged)
+			it++;
+		th+=h;
+		if (it != textlines.end())
+			th+=this->leading;
 	}
-	else
-		CairoPangoRenderer::getBounds(*this, w, h, tw, th);
-	//width = w; //TODO: check the case when w,h == 0
+	linemutex->unlock();
+	if(w>tw)
+		tw = w;
 	textWidth=tw;
-	//height = h;
 	textHeight=th;
 }
 
@@ -932,17 +1303,10 @@ tiny_string TextField::toHtmlText()
 	root.append_attribute("face").set_value(font.raw_buf());
 
 	//Split text into paragraphs and wraps them into <p> tags
-	uint32_t para_start = 0;
-	uint32_t para_end;
-	do
+	for (auto it = textlines.begin(); it != textlines.end(); it++)
 	{
-		para_end = text.find("\n", para_start);
-		if (para_end == text.npos)
-			para_end = text.numChars();
-
-		root.append_child("p").set_value(text.substr(para_start, para_end).raw_buf());
-		para_start = para_end + 1;
-	} while (para_end < text.numChars());
+		root.append_child("p").set_value((*it).text.raw_buf());
+	}
 
 	ostringstream buf;
 	doc.print(buf);
@@ -952,6 +1316,8 @@ tiny_string TextField::toHtmlText()
 
 void TextField::setHtmlText(const tiny_string& html)
 {
+	tiny_string oldtext = this->getText();
+	linemutex->lock();
 	HtmlTextParser parser;
 	if (condenseWhite)
 	{
@@ -962,9 +1328,25 @@ void TextField::setHtmlText(const tiny_string& html)
 	{
 		parser.parseTextAndFormating(html, this);
 	}
-	updateSizes();
-	hasChanged=true;
-	textUpdated();
+	linemutex->unlock();
+	if (this->isConstructed() && oldtext != this->getText())
+	{
+		hasChanged=true;
+		setNeedsTextureRecalculation();
+		textUpdated();
+	}
+}
+
+std::string TextField::toDebugString() const
+{
+	std::string res = InteractiveObject::toDebugString();
+	res += " \"";
+	res += this->getText(0);
+	res += "\";";
+	char buf[100];
+	sprintf(buf,"%dx%d %5.2f %d/%d %s",textWidth,textHeight,autosizeposition,autoSize,align,font.raw_buf());
+	res += buf;
+	return res;
 }
 
 tiny_string TextField::compactHTMLWhiteSpace(const tiny_string& html)
@@ -991,30 +1373,188 @@ tiny_string TextField::compactHTMLWhiteSpace(const tiny_string& html)
 
 void TextField::updateText(const tiny_string& new_text)
 {
-	if (text == new_text)
+	if (getText() == new_text)
 		return;
-	text = new_text;
+	linemutex->lock();
+	setText(new_text.raw_buf());
+	linemutex->unlock();
 	textUpdated();
+}
+
+void TextField::avm1SyncTagVar()
+{
+	if (!tagvarname.empty()
+		&& tagvarname != "_url") // "_url" is readonly and always read from root movie, no need to update
+	{
+		if (tagvartarget)
+		{
+			asAtom value=asAtomHandler::invalidAtom;
+			number_t n;
+			if (Integer::fromStringFlashCompatible(getText().raw_buf(),n,10,true))
+				value = asAtomHandler::fromNumber(getInstanceWorker(),n,false);
+			else
+				value = asAtomHandler::fromString(getSystemState(),getText());
+			ASATOM_INCREF(value); // ensure that value is not destructed during AVM1SetVariable
+			tagvartarget->as<MovieClip>()->AVM1SetVariable(tagvarname,value);
+			ASATOM_DECREF(value);
+		}
+	}
+}
+
+void TextField::UpdateVariableBinding(asAtom v)
+{
+	tiny_string s = asAtomHandler::toString(v,getInstanceWorker());
+	if (tag->isHTML())
+		setHtmlText(s);
+	else
+		updateText(s);
+}
+
+void TextField::afterLegacyInsert()
+{
+	if (!tagvarname.empty())
+	{
+		tagvartarget = getParent();
+		uint32_t finddot = tagvarname.rfind(".");
+		if (finddot != tiny_string::npos)
+		{
+			tiny_string path = tagvarname.substr(0,finddot);
+			tagvartarget = tagvartarget->AVM1GetClipFromPath(path);
+			tagvarname = tagvarname.substr(finddot+1,tagvarname.numChars()-(finddot+1));
+		}
+		while (tagvartarget)
+		{
+			if (tagvartarget->is<MovieClip>())
+			{
+				tagvartarget->as<MovieClip>()->setVariableBinding(tagvarname,_MR(this));
+				asAtom value = tagvartarget->as<MovieClip>()->getVariableBindingValue(tagvarname);
+				if (asAtomHandler::isValid(value) && !asAtomHandler::isUndefined(value))
+				{
+					linemutex->lock();
+					this->setText(asAtomHandler::toString(value,getInstanceWorker()).raw_buf());
+					linemutex->unlock();
+				}
+				ASATOM_DECREF(value);
+				break;
+			}
+			tagvartarget = tagvartarget->getParent();
+		}
+	}
+	if (!loadedFrom->usesActionScript3)
+	{
+		setConstructIndicator();
+		constructionComplete();
+		afterConstruction();
+	}
+	avm1SyncTagVar();
+	updateSizes();
+	setSizeAndPositionFromAutoSize();
+	InteractiveObject::afterLegacyInsert();
+}
+
+void TextField::afterLegacyDelete(DisplayObjectContainer *parent,bool inskipping)
+{
+	if (!tagvarname.empty() && !inskipping)
+	{
+		if (tagvartarget)
+		{
+			tagvartarget->as<MovieClip>()->setVariableBinding(tagvarname,NullRef);
+		}
+	}
+}
+
+void TextField::lostFocus()
+{
+	SDL_StopTextInput();
+	getSystemState()->removeJob(this);
+	caretblinkstate = false;
+	hasChanged=true;
+	setNeedsTextureRecalculation();
+	if(onStage && isVisible())
+		requestInvalidation(this->getSystemState());
+	invalidateCachedAsBitmapOf();
+}
+
+void TextField::gotFocus()
+{
+	if (this->type != ET_EDITABLE)
+		return;
+	SDL_StartTextInput();
+	selectionBeginIndex = getText().numChars();
+	selectionEndIndex = selectionBeginIndex;
+	caretIndex=selectionBeginIndex;
+	getSystemState()->addTick(500,this);
+}
+
+void TextField::textInputChanged(const tiny_string &newtext)
+{
+	if (this->type != ET_EDITABLE)
+		return;
+	tiny_string tmptext = getText();
+	if (maxChars == 0 || tmptext.numChars()+newtext.numChars() <= uint32_t(maxChars))
+	{
+		if (caretIndex < tmptext.numChars())
+			tmptext.replace(caretIndex,0,newtext);
+		else
+			tmptext+=newtext;
+		caretIndex+= newtext.numChars();
+	}
+	this->updateText(tmptext);
+}
+
+void TextField::tick()
+{
+	if (this->type != ET_EDITABLE)
+		return;
+	if (this == getSystemState()->stage->getFocusTarget().getPtr())
+		caretblinkstate = !caretblinkstate;
+	else
+		caretblinkstate = false;
+	hasChanged=true;
+	setNeedsTextureRecalculation();
+	
+	if(onStage && isVisible())
+		requestInvalidation(this->getSystemState());
+	invalidateCachedAsBitmapOf();
+}
+
+void TextField::tickFence()
+{
+}
+
+uint32_t TextField::getTagID() const
+{
+	return tag ? tag->getId() : UINT32_MAX;
 }
 
 void TextField::textUpdated()
 {
+	avm1SyncTagVar();
 	scrollH = 0;
 	scrollV = 1;
 	selectionBeginIndex = 0;
 	selectionEndIndex = 0;
 	updateSizes();
 	setSizeAndPositionFromAutoSize();
-	hasChanged=true;
+	FontTag* embeddedfont = (fontID != UINT32_MAX ? this->loadedFrom->getEmbeddedFontByID(fontID) : this->loadedFrom->getEmbeddedFont(font));
+	// TODO implement fast rendering path for not embedded fonts
+	if (computeCacheAsBitmap() || !embeddedfont || !embeddedfont->hasGlyphs(getText()))
+	{
+		hasChanged=true;
+		setNeedsTextureRecalculation();
 
-	if(onStage && isVisible())
-		requestInvalidation(this->getSystemState());
+		if(onStage && isVisible())
+			requestInvalidation(this->getSystemState());
+	}
+	invalidateCachedAsBitmapOf();
 }
 
-void TextField::requestInvalidation(InvalidateQueue* q)
+void TextField::requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh)
 {
+	if (requestInvalidationForCacheAsBitmap(q))
+		return;
 	if (!tokensEmpty())
-		TokenContainer::requestInvalidation(q);
+		TokenContainer::requestInvalidation(q,forceTextureRefresh);
 	else
 	{
 		incRef();
@@ -1023,54 +1563,395 @@ void TextField::requestInvalidation(InvalidateQueue* q)
 	}
 }
 
-IDrawable* TextField::invalidate(DisplayObject* target, const MATRIX& initialMatrix,bool smoothing)
+void TextField::defaultEventBehavior(_R<Event> e)
 {
-	int32_t x,y;
-	uint32_t width,height;
+	if (this->type != ET_EDITABLE)
+		return;
+	if (e->type == "keyDown")
+	{
+		KeyboardEvent* ev = e->as<KeyboardEvent>();
+		uint32_t modifiers = ev->getModifiers() & (KMOD_LSHIFT | KMOD_RSHIFT |KMOD_LCTRL | KMOD_RCTRL | KMOD_LALT | KMOD_RALT);
+		if (modifiers == KMOD_NONE)
+		{
+			switch (ev->getKeyCode())
+			{
+				case AS3KEYCODE_BACKSPACE:
+					if (!this->getText().empty() && caretIndex > 0)
+					{
+						caretIndex--;
+						tiny_string tmptext = getText();
+						if (caretIndex < tmptext.numChars())
+							tmptext.replace(caretIndex,1,"");
+						else
+							tmptext = tmptext.substr(0,tmptext.numChars()-1);
+						linemutex->lock();
+						setText(tmptext.raw_buf());
+						linemutex->unlock();
+						textUpdated();
+					}
+					break;
+				case AS3KEYCODE_LEFT:
+					if (this->caretIndex > 0)
+						this->caretIndex--;
+					break;
+				case AS3KEYCODE_RIGHT:
+					if (this->caretIndex < this->getText().numChars())
+						this->caretIndex++;
+					break;
+				default:
+					break;
+			}
+		}
+		else
+			LOG(LOG_NOT_IMPLEMENTED,"TextField keyDown event handling for modifier "<<modifiers<<" and char code "<<hex<<ev->getSDLScanCode());
+	}
+}
+
+IDrawable* TextField::invalidate(DisplayObject* target, const MATRIX& initialMatrix,bool smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap)
+{
+	Locker l(invalidatemutex);
+	if (cachedBitmap && computeCacheAsBitmap() && (!q || !q->getCacheAsBitmapObject() || q->getCacheAsBitmapObject().getPtr()!=this))
+	{
+		return getCachedBitmapDrawable(target, initialMatrix, cachedBitmap);
+	}
+	number_t x,y,rx,ry;
+	number_t width,height,rwidth,rheight;
 	number_t bxmin,bxmax,bymin,bymax;
 	if(boundsRect(bxmin,bxmax,bymin,bymax)==false)
 	{
 		//No contents, nothing to do
-		return NULL;
+		return nullptr;
 	}
 
-	RootMovieClip* currentRoot=getSystemState()->mainClip;
-	DefineFont3Tag* embeddedfont = (fontID != UINT32_MAX ? currentRoot->getEmbeddedFontByID(fontID) : currentRoot->getEmbeddedFont(font));
+	RootMovieClip* currentRoot=this->loadedFrom;
+	if (!currentRoot) currentRoot=this->getRoot().getPtr();
+	if (!currentRoot) currentRoot = getSystemState()->mainClip;
+	FontTag* embeddedfont = (fontID != UINT32_MAX ? currentRoot->getEmbeddedFontByID(fontID) : currentRoot->getEmbeddedFont(font));
 	tokens.clear();
-	if (embeddedfont)
+	MATRIX totalMatrix;
+	if (embeddedfont && embeddedfont->hasGlyphs(getText()))
 	{
 		scaling = 1.0f/1024.0f/20.0f;
-		embeddedfont->fillTextTokens(tokens,text,fontSize,textColor);
+		if (this->border || this->background)
+		{
+			fillstyleBackgroundColor.FillStyleType=SOLID_FILL;
+			fillstyleBackgroundColor.Color=this->backgroundColor;
+			tokens.filltokens.push_back(GeomToken(SET_FILL).uval);
+			tokens.filltokens.push_back(GeomToken(fillstyleBackgroundColor).uval);
+			tokens.filltokens.push_back(GeomToken(MOVE).uval);
+			tokens.filltokens.push_back(GeomToken(Vector2(bxmin/scaling, bymin/scaling)).uval);
+			tokens.filltokens.push_back(GeomToken(STRAIGHT).uval);
+			tokens.filltokens.push_back(GeomToken(Vector2(bxmin/scaling, (bymax-bymin)/scaling)).uval);
+			tokens.filltokens.push_back(GeomToken(STRAIGHT).uval);
+			tokens.filltokens.push_back(GeomToken(Vector2((bxmax-bxmin)/scaling, (bymax-bymin)/scaling)).uval);
+			tokens.filltokens.push_back(GeomToken(STRAIGHT).uval);
+			tokens.filltokens.push_back(GeomToken(Vector2((bxmax-bxmin)/scaling, bymin/scaling)).uval);
+			tokens.filltokens.push_back(GeomToken(STRAIGHT).uval);
+			tokens.filltokens.push_back(GeomToken(Vector2(bxmin/scaling, bymin/scaling)).uval);
+			tokens.filltokens.push_back(GeomToken(CLEAR_FILL).uval);
+		}
+		if (this->border)
+		{
+			lineStyleBorder.Color=this->borderColor;
+			lineStyleBorder.Width=20;
+			tokens.filltokens.push_back(GeomToken(SET_STROKE).uval);
+			tokens.filltokens.push_back(GeomToken(lineStyleBorder).uval);
+			tokens.filltokens.push_back(GeomToken(MOVE).uval);
+			tokens.filltokens.push_back(GeomToken(Vector2(bxmin/scaling, bymin/scaling)).uval);
+			tokens.filltokens.push_back(GeomToken(STRAIGHT).uval);
+			tokens.filltokens.push_back(GeomToken(Vector2(bxmin/scaling, (bymax-bymin)/scaling)).uval);
+			tokens.filltokens.push_back(GeomToken(STRAIGHT).uval);
+			tokens.filltokens.push_back(GeomToken(Vector2((bxmax-bxmin)/scaling, (bymax-bymin)/scaling)).uval);
+			tokens.filltokens.push_back(GeomToken(STRAIGHT).uval);
+			tokens.filltokens.push_back(GeomToken(Vector2((bxmax-bxmin)/scaling, bymin/scaling)).uval);
+			tokens.filltokens.push_back(GeomToken(STRAIGHT).uval);
+			tokens.filltokens.push_back(GeomToken(Vector2(bxmin/scaling, bymin/scaling)).uval);
+			tokens.filltokens.push_back(GeomToken(CLEAR_STROKE).uval);
+		}
+		if (this->caretblinkstate)
+		{
+			uint32_t tw=0;
+			if (!getText().empty())
+			{
+				tiny_string tmptxt = getText().substr(0,caretIndex);
+				number_t w,h;
+				embeddedfont->getTextBounds(tmptxt,fontSize,w,h);
+				tw = w;
+				tw += autosizeposition/scaling;
+			}
+			else
+			{
+				tw += autosizeposition;
+				tw /=scaling;
+			}
+			lineStyleCaret.Color=RGB(0,0,0);
+			lineStyleCaret.Width=40;
+			int ypadding = (bymax-bymin-2)/scaling;
+			tokens.filltokens.push_back(GeomToken(SET_STROKE).uval);
+			tokens.filltokens.push_back(GeomToken(lineStyleCaret).uval);
+			tokens.filltokens.push_back(GeomToken(MOVE).uval);
+			tokens.filltokens.push_back(GeomToken(Vector2(tw, bymin/scaling+ypadding)).uval);
+			tokens.filltokens.push_back(GeomToken(STRAIGHT).uval);
+			tokens.filltokens.push_back(GeomToken(Vector2(tw, (bymax-bymin)/scaling-ypadding)).uval);
+			tokens.filltokens.push_back(GeomToken(CLEAR_STROKE).uval);
+		}
+		fillstyleTextColor.front().FillStyleType=SOLID_FILL;
+		fillstyleTextColor.front().Color= RGBA(textColor.Red,textColor.Green,textColor.Blue,255);
+		int32_t startposy = TEXTFIELD_PADDING;
+		linemutex->lock();
+		for (auto it = textlines.begin(); it != textlines.end(); it++)
+		{
+			if (isPassword)
+			{
+				tiny_string pwtxt;
+				for (uint32_t i = 0; i < (*it).text.numChars(); i++)
+					pwtxt+="*";
+				embeddedfont->fillTextTokens(tokens,pwtxt,fontSize,fillstyleTextColor,leading,TEXTFIELD_PADDING+autosizeposition+(*it).autosizeposition,startposy);
+			}
+			else
+				embeddedfont->fillTextTokens(tokens,(*it).text,fontSize,fillstyleTextColor,leading,TEXTFIELD_PADDING+autosizeposition+(*it).autosizeposition,startposy);
+			startposy += this->leading+(embeddedfont->getAscent()+embeddedfont->getDescent()+embeddedfont->getLeading())*fontSize/1024;
+		}
+		linemutex->unlock();
+		if (tokens.empty())
+			return nullptr;
+		return TokenContainer::invalidate(target, initialMatrix,SMOOTH_MODE::SMOOTH_SUBPIXEL,q,cachedBitmap,false);
 	}
-	if (!tokensEmpty())
-		return TokenContainer::invalidate(target, initialMatrix,smoothing);
-	
-	MATRIX totalMatrix;
+	if (computeCacheAsBitmap() && (!q || !q->getCacheAsBitmapObject() || q->getCacheAsBitmapObject().getPtr()!=this))
+	{
+		return getCachedBitmapDrawable(target, initialMatrix, cachedBitmap);
+	}
 	std::vector<IDrawable::MaskData> masks;
-	computeMasksAndMatrix(target, masks, totalMatrix);
-	totalMatrix=initialMatrix.multiplyMatrix(totalMatrix);
+	bool isMask;
+	_NR<DisplayObject> mask;
+	computeMasksAndMatrix(target, masks, totalMatrix,false,isMask,mask);
+	MATRIX initialNoRotation(initialMatrix.getScaleX(), initialMatrix.getScaleY());
+	totalMatrix=initialNoRotation.multiplyMatrix(totalMatrix);
+	totalMatrix.xx = abs(totalMatrix.xx);
+	totalMatrix.yy = abs(totalMatrix.yy);
+	totalMatrix.x0 = 0;
+	totalMatrix.y0 = 0;
+	
 	computeBoundsForTransformedRect(bxmin,bxmax,bymin,bymax,x,y,width,height,totalMatrix);
+	MATRIX totalMatrix2;
+	owner->computeMasksAndMatrix(target,masks,totalMatrix2,true,isMask,mask);
+	totalMatrix2=initialMatrix.multiplyMatrix(totalMatrix2);
+	computeBoundsForTransformedRect(bxmin,bxmax,bymin,bymax,rx,ry,rwidth,rheight,totalMatrix2);
+	if (this->type != ET_EDITABLE)
+	{
+		if (getText().empty())
+			return nullptr;
+	}
 	if(width==0 || height==0)
-		return NULL;
+		return nullptr;
 	if(totalMatrix.getScaleX() != 1 || totalMatrix.getScaleY() != 1)
-		LOG(LOG_NOT_IMPLEMENTED, "TextField when scaled is not correctly implemented");
+		LOG(LOG_NOT_IMPLEMENTED, "TextField when scaled is not correctly implemented:"<<x<<"/"<<y<<" "<<width<<"x"<<height<<" "<<totalMatrix.getScaleX()<<" "<<totalMatrix.getScaleY()<<" "<<this->getText());
+	float rotation = getConcatenatedMatrix().getRotation();
+	float xscale = getConcatenatedMatrix().getScaleX();
+	float yscale = getConcatenatedMatrix().getScaleY();
 	// use specialized Renderer from EngineData, if available, otherwise fallback to Pango
-	IDrawable* res = this->getSystemState()->getEngineData()->getTextRenderDrawable(*this,totalMatrix, x, y, width, height, 1.0f,getConcatenatedAlpha(), masks,smoothing);
-	if (res != NULL)
+	IDrawable* res = this->getSystemState()->getEngineData()->getTextRenderDrawable(*this,totalMatrix, x, y, ceil(width), ceil(height),
+																					rx, ry, ceil(rwidth), ceil(rheight), rotation,xscale,yscale,isMask,mask, 1.0f,getConcatenatedAlpha(), masks,
+																					1.0f,1.0f,1.0f,1.0f,
+																					0.0f,0.0f,0.0f,0.0f,
+																					smoothing ? SMOOTH_MODE::SMOOTH_SUBPIXEL : SMOOTH_MODE::SMOOTH_NONE);
+	if (res != nullptr)
 		return res;
 	/**  TODO: The scaling is done differently for textfields : height changes are applied directly
 		on the font size. In some cases, it can change the width (if autosize is on and wordwrap off).
 		Width changes do not change the font size, and do nothing when autosize is on and wordwrap off.
 		Currently, the TextField is stretched in case of scaling.
 	*/
-	return new CairoPangoRenderer(*this,
-				totalMatrix, x, y, width, height, 1.0f,
-				getConcatenatedAlpha(), masks,smoothing);
+	cachedSurface.isValid=true;
+	return new CairoPangoRenderer(*this,totalMatrix2,
+				x, y, ceil(width), ceil(height),
+				rx, ry, ceil(rwidth), ceil(rheight), rotation,
+				xscale,yscale,
+				isMask,mask,
+				1.0f, getConcatenatedAlpha(), masks,
+				1.0f,1.0f,1.0f,1.0f,
+				0.0f,0.0f,0.0f,0.0f,
+				smoothing ? SMOOTH_MODE::SMOOTH_SUBPIXEL : SMOOTH_MODE::SMOOTH_NONE,caretIndex);
 }
 
-void TextField::renderImpl(RenderContext& ctxt) const
+bool TextField::renderImpl(RenderContext& ctxt)
 {
-	defaultRender(ctxt);
+	if (computeCacheAsBitmap() && ctxt.contextType == RenderContext::GL)
+	{
+		_NR<DisplayObject> d=getCachedBitmap(); // this ensures bitmap is not destructed during rendering
+		if (d)
+			d->Render(ctxt);
+		return false;
+	}
+	if (getText().empty() && !this->border && !this->background && !this->caretblinkstate)
+		return false;
+	FontTag* embeddedfont = (fontID != UINT32_MAX ? this->loadedFrom->getEmbeddedFontByID(fontID) : this->loadedFrom->getEmbeddedFont(font));
+	if (!computeCacheAsBitmap() && (ctxt.contextType == RenderContext::GL) && embeddedfont && embeddedfont->hasGlyphs(getText()))
+	{
+		// fast rendering path using pre-generated textures for every glyph
+		float xscale = abs(getConcatenatedMatrix().getScaleX());
+		float yscale = abs(getConcatenatedMatrix().getScaleY());
+		float redMultiplier=1.0;
+		float greenMultiplier=1.0;
+		float blueMultiplier=1.0;
+		float alphaMultiplier=1.0;
+		float redOffset=0.0;
+		float greenOffset=0.0;
+		float blueOffset=0.0;
+		float alphaOffset=0.0;
+		RGB tcolor = this->textColor;
+		ColorTransform* ct = colorTransform.getPtr();
+		DisplayObjectContainer* p = getParent();
+		while (!ct && p)
+		{
+			ct = p->colorTransform.getPtr();
+			p = p->getParent();
+		}
+		if (ct)
+		{
+			redMultiplier=ct->redMultiplier;
+			greenMultiplier=ct->greenMultiplier;
+			blueMultiplier=ct->blueMultiplier;
+			alphaMultiplier=ct->alphaMultiplier;
+			redOffset=ct->redOffset;
+			greenOffset=ct->greenOffset;
+			blueOffset=ct->blueOffset;
+			alphaOffset=ct->alphaOffset;
+			float r,g,b,a;
+			RGBA tmp;
+			tmp = tcolor;
+			ct->applyTransformation(tmp,r,g,b,a);
+			tcolor.Red=r*255.0;
+			tcolor.Green=g*255.0;
+			tcolor.Blue=b*255.0;
+		}
+		AS_BLENDMODE bl = this->blendMode;
+		if (bl == BLENDMODE_NORMAL)
+		{
+			DisplayObject* obj = this->getParent();
+			while (obj && bl == BLENDMODE_NORMAL)
+			{
+				bl = obj->getBlendMode();
+				obj = obj->getParent();
+			}
+		}
+
+		float scalex;
+		float scaley;
+		int offx,offy;
+		getSystemState()->stageCoordinateMapping(getSystemState()->getRenderThread()->windowWidth,getSystemState()->getRenderThread()->windowHeight,offx,offy, scalex,scaley);
+
+		uint32_t codetableindex;
+		if (this->border || this->background || this->caretblinkstate)
+		{
+			number_t bxmin,bxmax,bymin,bymax;
+			boundsRect(bxmin,bxmax,bymin,bymax);
+			TextureChunk tex=getSystemState()->getRenderThread()->allocateTexture(1, 1, true);
+
+			bool isMask;
+			_NR<DisplayObject> mask;
+			MATRIX totalMatrix2;
+			std::vector<IDrawable::MaskData> masks2;
+			totalMatrix2=getConcatenatedMatrix(true);
+			computeMasksAndMatrix(this,masks2,totalMatrix2,true,isMask,mask);
+			if (this->border)
+			{
+				MATRIX m = totalMatrix2.multiplyMatrix(MATRIX(bxmax-bxmin, bymax-bymin));
+				m.scale(scalex, scaley);
+				ctxt.renderTextured(tex, getConcatenatedAlpha(), RenderContext::RGB_MODE,
+						redMultiplier, greenMultiplier, blueMultiplier, alphaMultiplier,
+						redOffset, greenOffset, blueOffset, alphaOffset,
+						isMask, mask,3.0, this->borderColor,SMOOTH_MODE::SMOOTH_NONE, m,nullptr,bl);
+				m = totalMatrix2.multiplyMatrix(MATRIX(bxmax-bxmin-2, bymax-bymin-2, 0, 0, 1, 1));
+				m.scale(scalex, scaley);
+				ctxt.renderTextured(tex, getConcatenatedAlpha(), RenderContext::RGB_MODE,
+						redMultiplier, greenMultiplier, blueMultiplier, alphaMultiplier,
+						redOffset, greenOffset, blueOffset, alphaOffset,
+						isMask, mask,3.0, this->backgroundColor,SMOOTH_MODE::SMOOTH_NONE, m,nullptr,bl);
+			}
+			else if (this->background)
+			{
+				MATRIX m = totalMatrix2.multiplyMatrix(MATRIX(bxmax-bxmin, bymax-bymin));
+				m.scale(scalex, scaley);
+				ctxt.renderTextured(tex, getConcatenatedAlpha(), RenderContext::RGB_MODE,
+						redMultiplier, greenMultiplier, blueMultiplier, alphaMultiplier,
+						redOffset, greenOffset, blueOffset, alphaOffset,
+						isMask, mask,3.0, this->backgroundColor,SMOOTH_MODE::SMOOTH_NONE, m,nullptr,bl);
+			}
+
+			if (this->caretblinkstate)
+			{
+				int ypadding = (bymax-bymin-4);
+				uint32_t tw=autosizeposition;
+				if (!getText().empty())
+				{
+					tiny_string tmptxt = getText().substr(0,caretIndex);
+					number_t w,h;
+					embeddedfont->getTextBounds(tmptxt,fontSize,w,h);
+					tw += w;
+				}
+				MATRIX totalMatrix2;
+				std::vector<IDrawable::MaskData> masks2;
+				totalMatrix2=getConcatenatedMatrix(true);
+				computeMasksAndMatrix(this,masks2,totalMatrix2,true,isMask,mask);
+				MATRIX m = totalMatrix2.multiplyMatrix(MATRIX(2, bymax-bymin-ypadding*2, 0, 0, tw, ypadding));
+				m.scale(scalex, scaley);
+				ctxt.renderTextured(tex, getConcatenatedAlpha(), RenderContext::RGB_MODE,
+						redMultiplier, greenMultiplier, blueMultiplier, alphaMultiplier,
+						redOffset, greenOffset, blueOffset, alphaOffset,
+						isMask, mask,3.0, tcolor,SMOOTH_MODE::SMOOTH_NONE, m,nullptr,bl);
+			}
+		}
+		number_t ypos=-TEXTFIELD_PADDING/yscale;
+		linemutex->lock();
+		for (auto itl = textlines.begin(); itl != textlines.end(); itl++)
+		{
+			number_t xpos = (tag ? tag->Bounds.Xmin/20.0f : 0.0f)+autosizeposition+(*itl).autosizeposition;
+			for (auto it = (*itl).text.begin(); it!= (*itl).text.end(); it++)
+			{
+				const TextureChunk* tex = embeddedfont->getCharTexture(it,this->fontSize*yscale*scaley,codetableindex);
+				number_t adv = embeddedfont->getRenderCharAdvance(codetableindex)*fontSize;
+				if (tex)
+				{
+					number_t x,y,rx,ry;
+					number_t width,height;
+					number_t rwidth,rheight;
+					number_t bxmin=xpos;
+					number_t bxmax=xpos+tex->width/xscale;
+					number_t bymin=ypos;
+					number_t bymax=ypos+tex->height/yscale;
+					//Compute the matrix and the masks that are relevant
+					MATRIX totalMatrix;
+					std::vector<IDrawable::MaskData> masks;
+
+					bool isMask;
+					_NR<DisplayObject> mask;
+					totalMatrix=getConcatenatedMatrix(true);
+					computeMasksAndMatrix(this,masks,totalMatrix,false,isMask,mask);
+					computeBoundsForTransformedRect(bxmin,bxmax,bymin,bymax,x,y,width,height,totalMatrix);
+					MATRIX totalMatrix2;
+					std::vector<IDrawable::MaskData> masks2;
+					totalMatrix2=getConcatenatedMatrix(true);
+					computeMasksAndMatrix(this,masks2,totalMatrix2,true,isMask,mask);
+					computeBoundsForTransformedRect(bxmin,bxmax,bymin,bymax,rx,ry,rwidth,rheight,totalMatrix2);
+					MATRIX m = totalMatrix2.multiplyMatrix(MATRIX(1 / (xscale*scalex), 1 / (yscale*scaley), 0, 0, xpos, ypos));
+					m.scale(scalex, scaley);
+					ctxt.renderTextured(*tex, getConcatenatedAlpha(), RenderContext::RGB_MODE,
+										redMultiplier, greenMultiplier, blueMultiplier, alphaMultiplier,
+										redOffset, greenOffset, blueOffset, alphaOffset,
+										isMask, mask,2.0, tcolor,SMOOTH_MODE::SMOOTH_NONE, m,nullptr,bl);
+					xpos += adv ? adv : bxmax-bxmin;
+				}
+				else
+					xpos += adv ? adv : fontSize/2;
+			}
+			ypos += this->leading+(embeddedfont->getAscent()+embeddedfont->getDescent()+embeddedfont->getLeading())*fontSize/1024;
+		}
+		linemutex->unlock();
+		return false;
+	}
+	else
+		return defaultRender(ctxt);
 }
 
 void TextField::HtmlTextParser::parseTextAndFormating(const tiny_string& html,
@@ -1080,9 +1961,13 @@ void TextField::HtmlTextParser::parseTextAndFormating(const tiny_string& html,
 	if (!textdata)
 		return;
 
-	textdata->text = "";
+	textdata->setText("");
 
 	tiny_string rooted = tiny_string("<root>") + html + tiny_string("</root>");
+	uint32_t pos=0;
+	// ensure <br> tags are properly parsed
+	while ((pos = rooted.find("<br>",pos)) != tiny_string::npos)
+		rooted.replace_bytes(pos,4,"<br />");
 	pugi::xml_document doc;
 	if (doc.load_buffer(rooted.raw_buf(),rooted.numBytes()).status == pugi::status_ok)
 	{
@@ -1090,7 +1975,7 @@ void TextField::HtmlTextParser::parseTextAndFormating(const tiny_string& html,
 	}
 	else
 	{
-		LOG(LOG_ERROR, "TextField HTML parser error");
+		LOG(LOG_ERROR, "TextField HTML parser error:"<<rooted);
 		return;
 	}
 }
@@ -1101,33 +1986,45 @@ bool TextField::HtmlTextParser::for_each(pugi::xml_node &node)
 	if (!textdata)
 		return true;
 	tiny_string name = node.name();
-	textdata->text += node.value();
-	if (name == "br")
+	name = name.lowercase();
+	tiny_string v = node.value();
+	tiny_string newtext=textdata->getText();
+	uint32_t index =v.find("&nbsp;");
+	while (index != tiny_string::npos)
+	{
+		v.replace(index,6," ");
+		index =v.find("&nbsp;",index);
+	}
+	newtext += v;
+	if (name == "br" || name == "sbr") // adobe seems to interpret the unknown tag <sbr /> as <br> ?
 	{
 		if (textdata->multiline)
-			textdata->text += "\n";
+			newtext += "\n";
 			
 	}
 	else if (name == "p")
 	{
 		if (textdata->multiline)
 		{
-			if (!textdata->text.empty() && 
-			    !textdata->text.endsWith("\n"))
-				textdata->text += "\n";
+			if (!newtext.empty() &&
+				!newtext.endsWith("\n"))
+				newtext += "\n";
+			if (node.children().begin() ==node.children().end()) // empty paragraph
+				newtext += "\n";
 		}
 		for (auto it=node.attributes_begin(); it!=node.attributes_end(); ++it)
 		{
 			tiny_string attrname = it->name();
+			attrname = attrname.lowercase();
 			tiny_string value = it->value();
 			if (attrname == "align")
 			{
 				if (value == "left")
-					textdata->autoSize = TextData::AS_LEFT;
+					textdata->align = TextData::AS_LEFT;
 				if (value == "center")
-					textdata->autoSize = TextData::AS_CENTER;
+					textdata->align = TextData::AS_CENTER;
 				if (value == "right")
-					textdata->autoSize = TextData::AS_RIGHT;
+					textdata->align = TextData::AS_RIGHT;
 			}
 			else
 			{
@@ -1138,20 +2035,17 @@ bool TextField::HtmlTextParser::for_each(pugi::xml_node &node)
 	}
 	else if (name == "font")
 	{
-//		if (!textdata->text.empty())
-//		{
-//			LOG(LOG_NOT_IMPLEMENTED, "Font can be defined only in the beginning");
-//			return false;
-//		}
-
 		for (auto it=node.attributes_begin(); it!=node.attributes_end(); ++it)
 		{
 			tiny_string attrname = it->name();
+			attrname = attrname.lowercase();
 			if (attrname == "face")
 			{
-				textdata->font = it->value();
-				textdata->fontID = UINT32_MAX;
-				
+				if (textdata->font != it->value())
+				{
+					textdata->font = it->value();
+					textdata->fontID = UINT32_MAX;
+				}
 			}
 			else if (attrname == "size")
 			{
@@ -1166,24 +2060,26 @@ bool TextField::HtmlTextParser::for_each(pugi::xml_node &node)
 		}
 	}
 	else if (name == "" || name == "root" || name == "body")
-		return true;
+	{
+		// normal entry
+	}
 	else if (name == "a" || name == "img" || name == "u" ||
 		 name == "li" || name == "b" || name == "i" ||
 		 name == "span" || name == "textformat" || name == "tab")
 	{
-		LOG(LOG_NOT_IMPLEMENTED, _("Unsupported tag in TextField: ") << name);
+		LOG(LOG_NOT_IMPLEMENTED, "Unsupported tag in TextField: " << name);
 	}
 	else
 	{
-		LOG(LOG_NOT_IMPLEMENTED, _("Unknown tag in TextField: ") << name);
+		LOG(LOG_NOT_IMPLEMENTED, "Unknown tag in TextField: " << name);
 	}
+	textdata->setText(newtext.raw_buf());
 	return true;
 }
 
-uint32_t TextField::HtmlTextParser::parseFontSize(const Glib::ustring& sizestr,
+uint32_t TextField::HtmlTextParser::parseFontSize(const char* s,
 						  uint32_t currentFontSize)
 {
-	const char *s = sizestr.c_str();
 	if (!s)
 		return currentFontSize;
 
@@ -1209,34 +2105,35 @@ uint32_t TextField::HtmlTextParser::parseFontSize(const Glib::ustring& sizestr,
 void TextFieldAutoSize::sinit(Class_base* c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_FINAL | CLASS_SEALED);
-	c->setVariableAtomByQName("CENTER",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"center"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("LEFT",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"left"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("NONE",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"none"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("RIGHT",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"right"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("CENTER",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"center"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("LEFT",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"left"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("NONE",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"none"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("RIGHT",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"right"),CONSTANT_TRAIT);
 }
 
 void TextFieldType::sinit(Class_base* c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_FINAL | CLASS_SEALED);
-	c->setVariableAtomByQName("DYNAMIC",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"dynamic"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("INPUT",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"input"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("DYNAMIC",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"dynamic"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("INPUT",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"input"),CONSTANT_TRAIT);
 }
 
 void TextFormatAlign::sinit(Class_base* c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_FINAL | CLASS_SEALED);
 	c->isReusable = true;
-	c->setVariableAtomByQName("CENTER",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"center"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("END",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"end"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("JUSTIFY",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"justify"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("LEFT",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"left"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("RIGHT",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"right"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("START",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"start"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("CENTER",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"center"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("END",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"end"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("JUSTIFY",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"justify"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("LEFT",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"left"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("RIGHT",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"right"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("START",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"start"),CONSTANT_TRAIT);
 }
 
 void TextFormat::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_SEALED);
+	c->isReusable=true;
 	REGISTER_GETTER_SETTER(c,align);
 	REGISTER_GETTER_SETTER(c,blockIndent);
 	REGISTER_GETTER_SETTER(c,bold);
@@ -1259,80 +2156,167 @@ void TextFormat::sinit(Class_base* c)
 	REGISTER_GETTER_SETTER(c,display);
 }
 
+void TextFormat::finalize()
+{
+	ASATOM_REMOVESTOREDMEMBER(blockIndent);
+	ASATOM_REMOVESTOREDMEMBER(bold);
+	ASATOM_REMOVESTOREDMEMBER(bullet);
+	ASATOM_REMOVESTOREDMEMBER(color);
+	ASATOM_REMOVESTOREDMEMBER(indent);
+	ASATOM_REMOVESTOREDMEMBER(italic);
+	ASATOM_REMOVESTOREDMEMBER(kerning);
+	ASATOM_REMOVESTOREDMEMBER(leading);
+	ASATOM_REMOVESTOREDMEMBER(leftMargin);
+	ASATOM_REMOVESTOREDMEMBER(letterSpacing);
+	ASATOM_REMOVESTOREDMEMBER(rightMargin);
+	if (tabStops)
+		tabStops->removeStoredMember();
+	tabStops.reset();
+	ASATOM_REMOVESTOREDMEMBER(underline);
+	ASATOM_REMOVESTOREDMEMBER(display);
+	ASATOM_REMOVESTOREDMEMBER(align);
+	ASATOM_REMOVESTOREDMEMBER(url);
+	ASATOM_REMOVESTOREDMEMBER(target);
+	ASATOM_REMOVESTOREDMEMBER(font);
+	ASATOM_REMOVESTOREDMEMBER(size);
+}
+
 bool TextFormat::destruct()
 {
-	blockIndent = asAtom::nullAtom;
-	bold = asAtom::nullAtom;
-	bullet = asAtom::nullAtom;
-	color = asAtom::nullAtom;
-	indent = asAtom::nullAtom;
-	italic = asAtom::nullAtom;
-	kerning = asAtom::nullAtom;
-	leading = asAtom::nullAtom;
-	leftMargin = asAtom::nullAtom;
-	letterSpacing = asAtom::nullAtom;
-	rightMargin = asAtom::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(blockIndent);
+	blockIndent = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(bold);
+	bold = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(bullet);
+	bullet = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(color);
+	color = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(indent);
+	indent = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(italic);
+	italic = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(kerning);
+	kerning = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(leading);
+	leading = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(leftMargin);
+	leftMargin = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(letterSpacing);
+	letterSpacing = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(rightMargin);
+	rightMargin = asAtomHandler::nullAtom;
+	if (tabStops)
+		tabStops->removeStoredMember();
 	tabStops.reset();
-	underline = asAtom::nullAtom;
-	display = "";
-	align="";
-	url="";
-	target="";
-	font="";
-	size=12;
-	return ASObject::destruct();
+	ASATOM_REMOVESTOREDMEMBER(underline);
+	underline = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(display);
+	display = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(align);
+	align = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(url);
+	url = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(target);
+	target = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(font);
+	font = asAtomHandler::nullAtom;
+	ASATOM_REMOVESTOREDMEMBER(size);
+	size=asAtomHandler::nullAtom;
+	return destructIntern();
+}
+void TextFormat::prepareShutdown()
+{
+	if (this->preparedforshutdown)
+		return;
+	ASObject::prepareShutdown();
+	ASATOM_PREPARESHUTDOWN(blockIndent);
+	ASATOM_PREPARESHUTDOWN(bold);
+	ASATOM_PREPARESHUTDOWN(bullet);
+	ASATOM_PREPARESHUTDOWN(color);
+	ASATOM_PREPARESHUTDOWN(indent);
+	ASATOM_PREPARESHUTDOWN(italic);
+	ASATOM_PREPARESHUTDOWN(kerning);
+	ASATOM_PREPARESHUTDOWN(leading);
+	ASATOM_PREPARESHUTDOWN(leftMargin);
+	ASATOM_PREPARESHUTDOWN(letterSpacing);
+	ASATOM_PREPARESHUTDOWN(rightMargin);
+	if (tabStops)
+		tabStops->prepareShutdown();
+	ASATOM_PREPARESHUTDOWN(underline);
+	ASATOM_PREPARESHUTDOWN(display);
+	ASATOM_PREPARESHUTDOWN(align);
+	ASATOM_PREPARESHUTDOWN(url);
+	ASATOM_PREPARESHUTDOWN(target);
+	ASATOM_PREPARESHUTDOWN(font);
+	ASATOM_PREPARESHUTDOWN(size);
 }
 
 ASFUNCTIONBODY_ATOM(TextFormat,_constructor)
 {
-	TextFormat* th=obj.as<TextFormat>();
-	ARG_UNPACK_ATOM (th->font, "")
-		(th->size, 12)
-		(th->color,asAtom::nullAtom)
-		(th->bold,asAtom::nullAtom)
-		(th->italic,asAtom::nullAtom)
-		(th->underline,asAtom::nullAtom)
-		(th->url,"")
-		(th->target,"")
-		(th->align,"left")
-		(th->leftMargin,asAtom::nullAtom)
-		(th->rightMargin,asAtom::nullAtom)
-		(th->indent,asAtom::nullAtom)
-		(th->leading,asAtom::nullAtom);
+	TextFormat* th=asAtomHandler::as<TextFormat>(obj);
+	ARG_CHECK(ARG_UNPACK (th->font, asAtomHandler::nullAtom)
+		(th->size,asAtomHandler::nullAtom)
+		(th->color,asAtomHandler::nullAtom)
+		(th->bold,asAtomHandler::nullAtom)
+		(th->italic,asAtomHandler::nullAtom)
+		(th->underline,asAtomHandler::nullAtom)
+		(th->url,asAtomHandler::nullAtom)
+		(th->target,asAtomHandler::nullAtom)
+		(th->align,asAtomHandler::nullAtom)
+		(th->leftMargin,asAtomHandler::nullAtom)
+		(th->rightMargin,asAtomHandler::nullAtom)
+		(th->indent,asAtomHandler::nullAtom)
+		(th->leading,asAtomHandler::nullAtom));
+	ASATOM_ADDSTOREDMEMBER(th->font);
+	ASATOM_ADDSTOREDMEMBER(th->size);
+	ASATOM_ADDSTOREDMEMBER(th->color);
+	ASATOM_ADDSTOREDMEMBER(th->bold);
+	ASATOM_ADDSTOREDMEMBER(th->italic);
+	ASATOM_ADDSTOREDMEMBER(th->underline);
+	ASATOM_ADDSTOREDMEMBER(th->url);
+	ASATOM_ADDSTOREDMEMBER(th->target);
+	ASATOM_ADDSTOREDMEMBER(th->align);
+	ASATOM_ADDSTOREDMEMBER(th->leftMargin);
+	ASATOM_ADDSTOREDMEMBER(th->rightMargin);
+	ASATOM_ADDSTOREDMEMBER(th->indent);
+	ASATOM_ADDSTOREDMEMBER(th->leading);
 }
 
-ASFUNCTIONBODY_GETTER_SETTER_CB(TextFormat,align,onAlign);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,blockIndent);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,bold);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,bullet);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,color);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,font);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,indent);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,italic);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,kerning);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,leading);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,leftMargin);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,letterSpacing);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,rightMargin);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,size);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,tabStops);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,target);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,underline);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,url);
-ASFUNCTIONBODY_GETTER_SETTER(TextFormat,display);
+ASFUNCTIONBODY_GETTER_SETTER_CB(TextFormat,align,onAlign)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,blockIndent)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,bold)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,bullet)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,color)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,font)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,indent)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,italic)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,kerning)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,leading)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,leftMargin)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,letterSpacing)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,rightMargin)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,size)
+ASFUNCTIONBODY_GETTER_SETTER_NOT_IMPLEMENTED(TextFormat,tabStops)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,target)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,underline)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,url)
+ASFUNCTIONBODY_GETTER_SETTER(TextFormat,display)
 
-void TextFormat::buildTraits(ASObject* o)
+void TextFormat::onAlign(const asAtom& old)
 {
-}
-
-void TextFormat::onAlign(const tiny_string& old)
-{
-	if (align != "" && align != "center" && align != "end" && align != "justify" && 
-	    align != "left" && align != "right" && align != "start")
+	if (asAtomHandler::isNull(align)) // null is also allowed
+		return;
+	tiny_string a = asAtomHandler::toString(align,getInstanceWorker());
+	if (a != "" && a != "center" && a != "end" && a != "justify" && 
+	    a != "left" && a != "right" && a != "start")
 	{
 		align = old;
-		throwError<ArgumentError>(kInvalidEnumError, "align");
+		createError<ArgumentError>(getInstanceWorker(),kInvalidEnumError, "align");
 	}
+}
+
+TextFormat::TextFormat(ASWorker* wrk, Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_TEXTFORMAT)
+{
 }
 
 void StyleSheet::finalize()
@@ -1356,9 +2340,9 @@ void StyleSheet::buildTraits(ASObject* o)
 
 ASFUNCTIONBODY_ATOM(StyleSheet,setStyle)
 {
-	StyleSheet* th=obj.as<StyleSheet>();
+	StyleSheet* th=asAtomHandler::as<StyleSheet>(obj);
 	assert_and_throw(argslen==2);
-	const tiny_string& arg0=args[0].toString(sys);
+	const tiny_string& arg0=asAtomHandler::toString(args[0],wrk);
 	ASATOM_INCREF(args[1]); //TODO: should make a copy, see reference
 	map<tiny_string, asAtom>::iterator it=th->styles.find(arg0);
 	//NOTE: we cannot use the [] operator as References cannot be non initialized
@@ -1370,9 +2354,9 @@ ASFUNCTIONBODY_ATOM(StyleSheet,setStyle)
 
 ASFUNCTIONBODY_ATOM(StyleSheet,getStyle)
 {
-	StyleSheet* th=obj.as<StyleSheet>();
+	StyleSheet* th=asAtomHandler::as<StyleSheet>(obj);
 	assert_and_throw(argslen==1);
-	const tiny_string& arg0=args[0].toString(sys);
+	const tiny_string& arg0=asAtomHandler::toString(args[0],wrk);
 	map<tiny_string, asAtom>::iterator it=th->styles.find(arg0);
 	if(it!=th->styles.end()) //Style already exists
 	{
@@ -1384,26 +2368,26 @@ ASFUNCTIONBODY_ATOM(StyleSheet,getStyle)
 	{
 		// Tested behaviour is to return an empty ASObject
 		// instead of Null as is said in the documentation
-		ret = asAtom::fromObject(Class<ASObject>::getInstanceS(sys));
+		ret = asAtomHandler::fromObject(Class<ASObject>::getInstanceS(wrk));
 	}
 }
 
 ASFUNCTIONBODY_ATOM(StyleSheet,_getStyleNames)
 {
-	StyleSheet* th=obj.as<StyleSheet>();
+	StyleSheet* th=asAtomHandler::as<StyleSheet>(obj);
 	assert_and_throw(argslen==0);
-	Array* res=Class<Array>::getInstanceSNoArgs(sys);
+	Array* res=Class<Array>::getInstanceSNoArgs(wrk);
 	map<tiny_string, asAtom>::const_iterator it=th->styles.begin();
 	for(;it!=th->styles.end();++it)
-		res->push(asAtom::fromObject(abstract_s(sys,it->first)));
-	ret = asAtom::fromObject(res);
+		res->push(asAtomHandler::fromObject(abstract_s(wrk,it->first)));
+	ret = asAtomHandler::fromObject(res);
 }
 
 ASFUNCTIONBODY_ATOM(StyleSheet,parseCSS)
 {
-	//StyleSheet* th=obj.as<StyleSheet>();
+	//StyleSheet* th=asAtomHandler::as<StyleSheet>(obj);
 	tiny_string css;
-	ARG_UNPACK_ATOM(css);
+	ARG_CHECK(ARG_UNPACK(css));
 	LOG(LOG_NOT_IMPLEMENTED,"StyleSheet.parseCSS does nothing");
 }
 
@@ -1416,57 +2400,94 @@ void StaticText::sinit(Class_base* c)
 	c->setDeclaredMethodByQName("text","",Class<IFunction>::getFunction(c->getSystemState(),_getText),GETTER_METHOD,true);
 }
 
+IDrawable* StaticText::invalidate(DisplayObject* target, const MATRIX& initialMatrix, bool smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap)
+{
+	return TokenContainer::invalidate(target, initialMatrix,smoothing ? SMOOTH_MODE::SMOOTH_SUBPIXEL : SMOOTH_MODE::SMOOTH_NONE,q,cachedBitmap,false);
+}
+bool StaticText::boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax)
+{
+	xmin=bounds.Xmin/20.0;
+	xmax=bounds.Xmax/20.0;
+	ymin=bounds.Ymin/20.0;
+	ymax=bounds.Ymax/20.0;
+	return true;
+}
+
+bool StaticText::renderImpl(RenderContext& ctxt)
+{
+	if (computeCacheAsBitmap() && ctxt.contextType == RenderContext::GL)
+	{
+		_NR<DisplayObject> d=getCachedBitmap(); // this ensures bitmap is not destructed during rendering
+		if (d)
+			d->Render(ctxt);
+		return false;
+	}
+	return TokenContainer::renderImpl(ctxt);
+}
+
+_NR<DisplayObject> StaticText::hitTestImpl(number_t x, number_t y, DisplayObject::HIT_TYPE type, bool interactiveObjectsOnly)
+{
+	number_t xmin,xmax,ymin,ymax;
+	boundsRect(xmin,xmax,ymin,ymax);
+	if( xmin <= x && x <= xmax && ymin <= y && y <= ymax)
+	{
+		incRef();
+		return _MNR(this);
+	}
+	else
+		return NullRef;
+}
 ASFUNCTIONBODY_ATOM(StaticText,_getText)
 {
 	LOG(LOG_NOT_IMPLEMENTED,"flash.display.StaticText.text is not implemented");
-	ret = asAtom::fromString(sys,"");
+	ret = asAtomHandler::fromString(wrk->getSystemState(),"");
 }
 
 void FontStyle::sinit(Class_base* c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_FINAL | CLASS_SEALED);
-	c->setVariableAtomByQName("BOLD",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"bold"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("BOLD_ITALIC",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"boldItalic"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("ITALIC",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"italic"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("REGULAR",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"regular"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("BOLD",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"bold"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("BOLD_ITALIC",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"boldItalic"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("ITALIC",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"italic"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("REGULAR",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"regular"),CONSTANT_TRAIT);
 }
 
 void FontType::sinit(Class_base* c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_FINAL | CLASS_SEALED);
-	c->setVariableAtomByQName("DEVICE",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"device"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("EMBEDDED",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"embedded"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("EMBEDDED_CFF",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"embeddedCFF"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("DEVICE",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"device"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("EMBEDDED",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"embedded"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("EMBEDDED_CFF",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"embeddedCFF"),CONSTANT_TRAIT);
 }
 
 void TextDisplayMode::sinit(Class_base* c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_FINAL | CLASS_SEALED);
-	c->setVariableAtomByQName("CRT",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"crt"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("DEFAULT",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"default"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("LCD",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"lcd"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("CRT",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"crt"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("DEFAULT",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"default"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("LCD",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"lcd"),CONSTANT_TRAIT);
 }
 
 void TextColorType::sinit(Class_base* c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_FINAL | CLASS_SEALED);
-	c->setVariableAtomByQName("DARK_COLOR",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"dark"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("LIGHT_COLOR",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"light"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("DARK_COLOR",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"dark"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("LIGHT_COLOR",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"light"),CONSTANT_TRAIT);
 }
 
 void GridFitType::sinit(Class_base* c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_FINAL | CLASS_SEALED);
-	c->setVariableAtomByQName("NONE",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"none"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("PIXEL",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"pixel"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("SUBPIXEL",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"subpixel"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("NONE",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"none"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("PIXEL",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"pixel"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("SUBPIXEL",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"subpixel"),CONSTANT_TRAIT);
 }
 
 void TextInteractionMode::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_FINAL | CLASS_SEALED);
-	c->setVariableAtomByQName("NORMAL",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"normal"),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("SELECTION",nsNameAndKind(),asAtom::fromString(c->getSystemState(),"selection"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("NORMAL",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"normal"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("SELECTION",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"selection"),CONSTANT_TRAIT);
 }
 
 void TextLineMetrics::sinit(Class_base* c)
@@ -1489,8 +2510,8 @@ ASFUNCTIONBODY_ATOM(TextLineMetrics,_constructor)
 		return;
 	}
 
-	TextLineMetrics* th=obj.as<TextLineMetrics>();
-	ARG_UNPACK_ATOM (th->x) (th->width) (th->height) (th->ascent) (th->descent) (th->leading);
+	TextLineMetrics* th=asAtomHandler::as<TextLineMetrics>(obj);
+	ARG_CHECK(ARG_UNPACK (th->x) (th->width) (th->height) (th->ascent) (th->descent) (th->leading));
 }
 
 ASFUNCTIONBODY_GETTER_SETTER(TextLineMetrics, ascent);

@@ -22,6 +22,7 @@
 
 #include "compat.h"
 #include "swftypes.h"
+#include "threading.h"
 #include "scripting/flash/utils/flashutils.h"
 
 namespace lightspark
@@ -33,6 +34,7 @@ friend class LoaderThread;
 friend class URLLoader;
 friend class ApplicationDomain;
 friend class LoaderInfo;
+friend class ASWorker;
 protected:
 	bool littleEndian;
 	uint8_t objectEncoding;
@@ -41,39 +43,108 @@ protected:
 	uint8_t* bytes;
 	uint32_t real_len;
 	uint32_t len;
-	void compress_zlib();
-	void uncompress_zlib();
+	void compress_zlib(bool raw);
+	void uncompress_zlib(bool raw);
 	Mutex mutex;
+	uint8_t* getBufferIntern(unsigned int size, bool enableResize);
 public:
-	void lock();
-	void unlock();
-	ByteArray(Class_base* c, uint8_t* b = NULL, uint32_t l = 0);
+	FORCE_INLINE void lock()
+	{
+		if (shareable) mutex.lock();
+	}
+	FORCE_INLINE void unlock()
+	{
+		if (shareable) mutex.unlock();
+	}
+	ByteArray(ASWorker* wrk,Class_base* c, uint8_t* b = nullptr, uint32_t l = 0);
 	~ByteArray();
+	bool destruct() override;
+	void finalize() override;
 	//Helper interface for serialization
 	bool peekByte(uint8_t& b);
-	bool readByte(uint8_t& b);
+	FORCE_INLINE bool readByte(uint8_t& b)
+	{
+		if (len <= position)
+		{
+			b=0;
+			return false;
+		}
+		b=bytes[position++];
+		return true;
+	}
 	bool readShort(uint16_t& ret);
 	bool readUnsignedInt(uint32_t& ret);
 	bool readU29(uint32_t& ret);
 	bool readUTF(tiny_string& ret);
 	bool readUTFBytes(uint32_t length,tiny_string& ret);
 	bool readBytes(uint32_t offset, uint32_t length, uint8_t* ret);
-	void writeByte(uint8_t b);
-	void writeBytes(uint8_t* data, int length);
+	inline bool readFloat(float& ret, uint32_t pos)
+	{
+		if(len < pos+4)
+			return false;
+		union
+		{
+			uint32_t u;
+			float f;
+		} res;
+		memcpy(&res,bytes+pos,4);
+		res.u = endianOut(res.u);
+		ret=res.f;
+		return true;
+	}
+	inline bool readDouble(number_t& ret, uint32_t pos)
+	{
+		if(len < pos+8)
+			return false;
+	
+		union
+		{
+			uint64_t u;
+			double d;
+		} res;
+		memcpy(&res,bytes+pos,8);
+		pos+=8;
+		res.u = endianOut(res.u);
+		ret=res.d;
+		return true;
+	}
+	
+	asAtom readObject();
+	ASObject* readSharedObject();
+	FORCE_INLINE void writeByte(uint8_t b)
+	{
+		getBuffer(position+1,true);
+		bytes[position++] = b;
+	}
+	FORCE_INLINE void writeBytes(uint8_t* data, int length)
+	{
+		getBuffer(position+length,true);
+		memcpy(bytes+position,data,length);
+		position+=length;
+	}
 	void writeShort(uint16_t val);
 	void writeUnsignedInt(uint32_t val);
 	void writeUTF(const tiny_string& str);
-	uint32_t writeObject(ASObject* obj);
+	uint32_t writeObject(ASObject* obj,ASWorker* wrk);
+	uint32_t writeAtomObject(asAtom obj,ASWorker* wrk);
+	void writeSharedObject(ASObject* obj, const tiny_string& name, ASWorker* wrk);
 	void writeStringVR(std::map<tiny_string, uint32_t>& stringMap, const tiny_string& s);
 	void writeStringAMF0(const tiny_string& s);
 	void writeXMLString(std::map<const ASObject*, uint32_t>& objMap, ASObject *xml, const tiny_string& s);
 	void writeU29(uint32_t val);
-
 	void serializeDouble(number_t val);
 
 	void setLength(uint32_t newLen);
-	uint32_t getPosition() const;
-	void setPosition(uint32_t p);
+	FORCE_INLINE uint32_t getPosition() const
+	{
+		return position;
+	}
+	FORCE_INLINE void setPosition(uint32_t p)
+	{
+		lock();
+		position=p;
+		unlock();
+	}
 	
 	void append(std::streambuf* data, int length);
 	/**
@@ -150,28 +221,77 @@ public:
 		@pre buf must be allocated using new[]
 	*/
 	void acquireBuffer(uint8_t* buf, int bufLen);
-	uint8_t* getBuffer(unsigned int size, bool enableResize);
+	inline uint8_t* getBufferNoCheck() const { return bytes; }
+	inline uint8_t* getBuffer(unsigned int size, bool enableResize)
+	{
+		if (size <= real_len && size > 0)
+		{
+			if(len<size)
+			{
+				len=size;
+			}
+			return bytes;
+		}
+		return getBufferIntern(size,enableResize);
+	}
 	uint32_t getLength() const { return len; }
 
-	uint16_t endianIn(uint16_t value);
-	uint32_t endianIn(uint32_t value);
-	uint64_t endianIn(uint64_t value);
+	FORCE_INLINE uint16_t endianIn(uint16_t value)
+	{
+		if(littleEndian)
+			return GUINT16_TO_LE(value);
+		else
+			return GUINT16_TO_BE(value);
+	}
+	FORCE_INLINE uint32_t endianIn(uint32_t value)
+	{
+		if(littleEndian)
+			return GUINT32_TO_LE(value);
+		else
+			return GUINT32_TO_BE(value);
+	}
+	FORCE_INLINE uint64_t endianIn(uint64_t value)
+	{
+		if(littleEndian)
+			return GUINT64_TO_LE(value);
+		else
+			return GUINT64_TO_BE(value);
+	}
 
-	uint16_t endianOut(uint16_t value);
-	uint32_t endianOut(uint32_t value);
-	uint64_t endianOut(uint64_t value);
+	FORCE_INLINE uint16_t endianOut(uint16_t value)
+	{
+		if(littleEndian)
+			return GUINT16_FROM_LE(value);
+		else
+			return GUINT16_FROM_BE(value);
+	}
+	FORCE_INLINE uint32_t endianOut(uint32_t value)
+	{
+		if(littleEndian)
+			return GUINT32_FROM_LE(value);
+		else
+			return GUINT32_FROM_BE(value);
+	}
+	FORCE_INLINE uint64_t endianOut(uint64_t value)
+	{
+		if(littleEndian)
+			return GUINT64_FROM_LE(value);
+		else
+			return GUINT64_FROM_BE(value);
+	}
 
 	static void sinit(Class_base* c);
-	static void buildTraits(ASObject* o);
-	GET_VARIABLE_RESULT getVariableByMultiname(asAtom &ret, const multiname& name,GET_VARIABLE_OPTION opt=NONE);
-	int32_t getVariableByMultiname_i(const multiname& name);
-	void setVariableByMultiname(const multiname& name, asAtom& o, CONST_ALLOWED_FLAG allowConst);
-	void setVariableByMultiname_i(const multiname& name, int32_t value);
-	bool hasPropertyByMultiname(const multiname& name, bool considerDynamic, bool considerPrototype);
+	GET_VARIABLE_RESULT getVariableByMultiname(asAtom &ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	GET_VARIABLE_RESULT getVariableByInteger(asAtom& ret, int index, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	int32_t getVariableByMultiname_i(const multiname& name, ASWorker* wrk) override;
+	multiname* setVariableByMultiname(multiname& name, asAtom& o, CONST_ALLOWED_FLAG allowConst, bool *alreadyset, ASWorker* wrk) override;
+	void setVariableByInteger(int index, asAtom& o, CONST_ALLOWED_FLAG allowConst,bool *alreadyset,ASWorker* wrk) override;
+	void setVariableByMultiname_i(multiname& name, int32_t value,ASWorker* wrk) override;
+	bool hasPropertyByMultiname(const multiname& name, bool considerDynamic, bool considerPrototype, ASWorker* wrk) override;
 
 	void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap);
+				std::map<const Class_base*, uint32_t>& traitsMap, ASWorker* wrk) override;
 };
 
 }

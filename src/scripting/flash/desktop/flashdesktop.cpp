@@ -22,6 +22,8 @@
 
 #include "scripting/flash/desktop/flashdesktop.h"
 #include "scripting/argconv.h"
+#include "scripting/flash/filesystem/flashfilesystem.h"
+#include "scripting/toplevel/Vector.h"
 
 using namespace std;
 using namespace lightspark;
@@ -39,23 +41,23 @@ void NativeApplication::buildTraits(ASObject* o)
 
 ASFUNCTIONBODY_ATOM(NativeApplication,_constructor)
 {
-	EventDispatcher::_constructor(ret,sys,obj, NULL, 0);
+	EventDispatcher::_constructor(ret,wrk,obj, nullptr, 0);
 }
 
 //  Should actually be a Singleton
 ASFUNCTIONBODY_ATOM(NativeApplication, _getNativeApplication)
 {
-	ret = asAtom::fromObject(Class<NativeApplication>::getInstanceS(sys));
+	ret = asAtomHandler::fromObject(Class<NativeApplication>::getInstanceS(wrk));
 }
 
 ASFUNCTIONBODY_ATOM(NativeApplication, addEventListener)
 {
-	EventDispatcher* th = obj.as<EventDispatcher>();
-	EventDispatcher::addEventListener(ret,sys,obj, args, argslen);
-	if (args[0].toString(sys) == "invoke")
+	EventDispatcher* th = asAtomHandler::as<EventDispatcher>(obj);
+	EventDispatcher::addEventListener(ret,wrk,obj, args, argslen);
+	if (asAtomHandler::toString(args[0],wrk) == "invoke")
 	{
 		th->incRef();
-		getVm(th->getSystemState())->addEvent(_MR(th), _MR(Class<InvokeEvent>::getInstanceS(sys)));
+		getVm(th->getSystemState())->addEvent(_MR(th), _MR(Class<InvokeEvent>::getInstanceS(wrk)));
 	}
 }
 
@@ -64,5 +66,41 @@ void NativeDragManager::sinit(Class_base* c)
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_FINAL | CLASS_SEALED);
 	REGISTER_GETTER(c,isSupported);
 }
-ASFUNCTIONBODY_GETTER(NativeDragManager,isSupported);
+ASFUNCTIONBODY_GETTER(NativeDragManager,isSupported)
 
+
+void NativeProcess::sinit(Class_base* c)
+{
+	CLASS_SETUP(c, EventDispatcher, _constructor, CLASS_SEALED);
+	c->setDeclaredMethodByQName("start", "", Class<IFunction>::getFunction(c->getSystemState(),start), NORMAL_METHOD, true);
+	REGISTER_GETTER_RESULTTYPE(c,isSupported,Boolean);
+}
+ASFUNCTIONBODY_GETTER(NativeProcess,isSupported)
+
+ASFUNCTIONBODY_ATOM(NativeProcess,_constructor)
+{
+	EventDispatcher::_constructor(ret,wrk,obj, nullptr, 0);
+}
+ASFUNCTIONBODY_ATOM(NativeProcess, start)
+{
+	LOG(LOG_NOT_IMPLEMENTED,"NativeProcess.start does nothing");
+}
+
+NativeProcessStartupInfo::NativeProcessStartupInfo(ASWorker* wrk, Class_base* c):ASObject(wrk,c)
+{
+}
+
+void NativeProcessStartupInfo::sinit(Class_base* c)
+{
+	CLASS_SETUP(c, EventDispatcher, _constructor, CLASS_SEALED);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,arguments,Vector);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,executable,ASFile);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,workingDirectory,ASFile);
+	
+}
+ASFUNCTIONBODY_ATOM(NativeProcessStartupInfo,_constructor)
+{
+}
+ASFUNCTIONBODY_GETTER_SETTER(NativeProcessStartupInfo,arguments)
+ASFUNCTIONBODY_GETTER_SETTER(NativeProcessStartupInfo,executable)
+ASFUNCTIONBODY_GETTER_SETTER(NativeProcessStartupInfo,workingDirectory)

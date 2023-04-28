@@ -25,16 +25,16 @@
 
 namespace lightspark
 {
+class BitmapContainer;
 
 class Rectangle: public ASObject
 {
 public:
-	Rectangle(Class_base* c):ASObject(c,T_OBJECT,SUBTYPE_RECTANGLE),x(0),y(0),width(0),height(0){}
+	Rectangle(ASWorker* wrk,Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_RECTANGLE),x(0),y(0),width(0),height(0){}
 	number_t x,y,width,height;
 	static void sinit(Class_base* c);
-	static void buildTraits(ASObject* o);
 	const RECT getRect() const;
-	bool destruct();
+	bool destruct() override;
 	// properties
 	ASFUNCTION_ATOM(_getBottom);
 	ASFUNCTION_ATOM(_setBottom);
@@ -73,6 +73,7 @@ public:
 	ASFUNCTION_ATOM(setTo);
 	ASFUNCTION_ATOM(_toString);
 	ASFUNCTION_ATOM(_union);
+	ASFUNCTION_ATOM(copyFrom);
 };
 
 class Point: public ASObject
@@ -81,9 +82,9 @@ private:
 	number_t x,y;
 	static number_t lenImpl(number_t x, number_t y);
 public:
-	Point(Class_base* c,number_t _x = 0, number_t _y = 0):ASObject(c,T_OBJECT,SUBTYPE_POINT),x(_x),y(_y){}
+	Point(ASWorker* wrk,Class_base* c,number_t _x = 0, number_t _y = 0):ASObject(wrk,c,T_OBJECT,SUBTYPE_POINT),x(_x),y(_y){}
+	bool destruct() override;
 	static void sinit(Class_base* c);
-	static void buildTraits(ASObject* o);
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(_getX);
 	ASFUNCTION_ATOM(_getY);
@@ -101,7 +102,8 @@ public:
 	ASFUNCTION_ATOM(polar);
 	ASFUNCTION_ATOM(_toString);
 	ASFUNCTION_ATOM(setTo);
-	
+	ASFUNCTION_ATOM(copyFrom);
+
 	number_t len() const;
 	number_t getX() const { return x; }
 	number_t getY() const { return y; }
@@ -109,17 +111,28 @@ public:
 
 class ColorTransform: public ASObject
 {
+friend class Bitmap;
 friend class BitmapData;
 friend class DisplayObject;
+friend class AVM1Color;
+friend class TokenContainer;
+friend class TextField;
 protected:
 	number_t redMultiplier,greenMultiplier,blueMultiplier,alphaMultiplier;
 	number_t redOffset,greenOffset,blueOffset,alphaOffset;
 public:
-	ColorTransform(Class_base* c):ASObject(c,T_OBJECT,SUBTYPE_COLORTRANSFORM){}
-	ColorTransform(Class_base* c, const CXFORMWITHALPHA& cx);
+	ColorTransform(ASWorker* wrk,Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_COLORTRANSFORM)
+	  ,redMultiplier(1.0),greenMultiplier(1.0),blueMultiplier(1.0),alphaMultiplier(1.0)
+	  ,redOffset(0.0),greenOffset(0.0),blueOffset(0.0),alphaOffset(0.0)
+	{}
+	ColorTransform(ASWorker* wrk,Class_base* c, const CXFORMWITHALPHA& cx);
+	// returning r,g,b,a values are between 0.0 and 1.0
+	void applyTransformation(const RGBA &color, float& r, float& g, float& b, float &a);
+	uint8_t* applyTransformation(BitmapContainer* bm);
+	void applyTransformation(uint8_t* bm, uint32_t size);
 	void setProperties(const CXFORMWITHALPHA& cx);
 	static void sinit(Class_base* c);
-	static void buildTraits(ASObject* o);
+	bool destruct() override;
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(setColor);
 	ASFUNCTION_ATOM(getColor);
@@ -152,13 +165,12 @@ friend class DisplayObject;
 private:
 	MATRIX matrix;
 public:
-	Matrix(Class_base* c);
-	Matrix(Class_base* c,const MATRIX& m);
+	Matrix(ASWorker* wrk,Class_base* c);
+	Matrix(ASWorker* wrk,Class_base* c,const MATRIX& m);
 	static void sinit(Class_base* c);
-	static void buildTraits(ASObject* o);
 	void _createBox(number_t scaleX, number_t scaleY, number_t angle, number_t x, number_t y);
 	MATRIX getMATRIX() const;
-	bool destruct();
+	bool destruct() override;
 	ASFUNCTION_ATOM(_constructor);
 	
 	//Methods
@@ -200,13 +212,16 @@ class Transform: public ASObject
 friend class DisplayObject;
 private:
 	_NR<DisplayObject> owner;
+	void onSetMatrix3D(_NR<Matrix3D> oldValue);
 public:
-	Transform(Class_base* c);
-	Transform(Class_base* c, _R<DisplayObject> o);
+	Transform(ASWorker* wrk,Class_base* c);
+	Transform(ASWorker* wrk, Class_base* c, _R<DisplayObject> o);
 	ASFUNCTION_ATOM(_constructor);
 	static void sinit(Class_base* c);
-	static void buildTraits(ASObject* o);
-	bool destruct();
+	bool destruct() override;
+	void finalize() override;
+	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
 	ASFUNCTION_ATOM(_getColorTransform);
 	ASFUNCTION_ATOM(_setColorTransform);
 	ASFUNCTION_ATOM(_getMatrix);
@@ -220,11 +235,10 @@ public:
 class Vector3D: public ASObject
 {
 public:
-	Vector3D(Class_base* c):ASObject(c,T_OBJECT,SUBTYPE_VECTOR3D),w(0),x(0),y(0),z(0){}
+	Vector3D(ASWorker* wrk,Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_VECTOR3D),w(0),x(0),y(0),z(0){}
 	number_t w, x, y, z;
 	static void sinit(Class_base* c);
-	static void buildTraits(ASObject* o);
-	bool destruct();
+	bool destruct() override;
 	ASFUNCTION_ATOM(_constructor);
 	
 	//Methods
@@ -244,7 +258,8 @@ public:
 	ASFUNCTION_ATOM(scaleBy);
 	ASFUNCTION_ATOM(subtract);
 	ASFUNCTION_ATOM(setTo);
-	
+	ASFUNCTION_ATOM(copyFrom);
+
 	//Properties
 	ASFUNCTION_ATOM(_get_w);
 	ASFUNCTION_ATOM(_get_x);
@@ -267,13 +282,16 @@ private:
 	void append(number_t* otherdata);
 	void prepend(number_t *otherdata);
 	number_t getDeterminant();
+	void identity();
 public:
-	Matrix3D(Class_base* c):ASObject(c,T_OBJECT,SUBTYPE_MATRIX3D){}
+	Matrix3D(ASWorker* wrk,Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_MATRIX3D){}
 	static void sinit(Class_base* c);
-	bool destruct();
+	bool destruct() override;
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(clone);
+	ASFUNCTION_ATOM(decompose);
 	ASFUNCTION_ATOM(recompose);
+	ASFUNCTION_ATOM(deltaTransformVector);
 	ASFUNCTION_ATOM(prepend);
 	ASFUNCTION_ATOM(prependScale);
 	ASFUNCTION_ATOM(prependTranslation);
@@ -286,7 +304,7 @@ public:
 	ASFUNCTION_ATOM(copyRawDataTo);
 	ASFUNCTION_ATOM(copyFrom);
 	ASFUNCTION_ATOM(copyToMatrix3D);
-	ASFUNCTION_ATOM(identity);
+	ASFUNCTION_ATOM(_identity);
 	ASFUNCTION_ATOM(invert);
 	ASFUNCTION_ATOM(_get_rawData);
 	ASFUNCTION_ATOM(_set_rawData);
@@ -301,9 +319,11 @@ public:
 class PerspectiveProjection: public ASObject
 {
 public:
-	PerspectiveProjection(Class_base* c):ASObject(c),fieldOfView(0),focalLength(0) {}
+	PerspectiveProjection(ASWorker* wrk,Class_base* c):ASObject(wrk,c),fieldOfView(0),focalLength(0) {}
 	static void sinit(Class_base* c);
-	bool destruct();
+	bool destruct() override;
+	void finalize() override;
+	void prepareShutdown() override;
 	ASFUNCTION_ATOM(_constructor);
 	ASPROPERTY_GETTER_SETTER(number_t, fieldOfView);
 	ASPROPERTY_GETTER_SETTER(number_t, focalLength);

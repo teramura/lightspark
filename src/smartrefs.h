@@ -31,54 +31,66 @@ private:
 	ATOMIC_INT32(ref_count);
 	bool isConstant:1;
 	bool inDestruction:1;
+	bool cached:1;
 protected:
-	RefCountable() : ref_count(1),isConstant(false),inDestruction(false) {}
+	RefCountable() : ref_count(1),isConstant(false),inDestruction(false),cached(false) {}
 
 public:
 	virtual ~RefCountable() {}
 
 	int getRefCount() const { return ref_count; }
-	inline bool isLastRef() const { return !isConstant && ref_count == 1; }
+	inline bool isLastRef() const { return !isConstant && ref_count==1; }
 	inline void setConstant()
 	{
 		isConstant=true;
 	}
 	inline bool getConstant() const { return isConstant; }
 	inline bool getInDestruction() const { return inDestruction; }
+	inline void resetInDestruction() { inDestruction=false; }
+	inline bool getCached() const { return cached; }
+	inline void setCached() { cached=true; }
+	inline void resetCached() { cached=false; }
 	inline void incRef()
 	{
 		if (!isConstant)
 			++ref_count;
 	}
+	bool handleDestruction()
+	{
+		if (inDestruction)
+			return true;
+		inDestruction = true;
+		ref_count=1;
+		if (destruct())
+		{
+			//Let's make refcount very invalid
+			ref_count=-1024;
+			inDestruction = false;
+			delete this;
+		}
+		else
+			inDestruction = false;
+		return true;
+	}
 	inline bool decRef()
 	{
-		assert(ref_count>0);
-		if (!isConstant)
+		if (!isConstant && !cached)
 		{
+			assert(ref_count>0);
 			if (ref_count == 1)
-			{
-				if (inDestruction)
-					return true;
-				inDestruction = true;
-				if (destruct())
-				{
-					//Let's make refcount very invalid
-					ref_count=-1024;
-					inDestruction = false;
-					delete this;
-				}
-				else
-					inDestruction = false;
-				return true;
-			}
+				return handleDestruction();
 			else
 				--ref_count;
 		}
-		return false;
+		return cached;
 	}
 	virtual bool destruct()
 	{
 		return true;
+	}
+	inline void resetRefCount()
+	{
+		ref_count=1;
 	}
 };
 
@@ -200,9 +212,9 @@ class NullableRef
 private:
 	T* m;
 public:
-	NullableRef(): m(NULL) {}
+	NullableRef(): m(nullptr) {}
 	explicit NullableRef(T* o):m(o){}
-	NullableRef(NullRef_t):m(NULL){}
+	NullableRef(NullRef_t):m(nullptr){}
 	NullableRef(const NullableRef& r):m(r.m)
 	{
 		if(m)
@@ -266,7 +278,7 @@ public:
 	}
 	inline bool operator==(NullRef_t) const
 	{
-		return m==NULL;
+		return m==nullptr;
 	}
 	template<class D> inline bool operator!=(const NullableRef<D>& r) const
 	{
@@ -283,11 +295,11 @@ public:
 	}
 	inline bool operator!=(NullRef_t) const
 	{
-		return m!=NULL;
+		return m!=nullptr;
 	}
 	/*explicit*/ operator bool() const
 	{
-		return m != NULL;
+		return m != nullptr;
 	}
 	~NullableRef()
 	{
@@ -296,30 +308,23 @@ public:
 	}
 	inline T* operator->() const
 	{
-		if(m != NULL)
+		if(m != nullptr)
 			return m;
 		else
 			throw std::runtime_error("LS smart pointer: NULL pointer access");
 	}
 	inline T* getPtr() const { return m; }
-	inline bool isNull() const { return m==NULL; }
+	inline bool isNull() const { return m==nullptr; }
 	inline void reset()
 	{
 		T* old=m;
-		m=NULL;
+		m=nullptr;
 		if(old)
 			old->decRef();
 	}
 	inline void fakeRelease()
 	{
-		m=NULL;
-	}
-	inline void forceDestruct()
-	{
-		assert(m->getConstant());
-		if (m)
-			delete m;
-		m = NULL;
+		m=nullptr;
 	}
 	template<class D> inline NullableRef<D> cast() const
 	{
@@ -367,6 +372,6 @@ template<class T> template<class D> bool Ref<T>::operator==(const NullableRef<D>
 	return m==r.getPtr();
 }
 
-};
+}
 
 #endif /* SMARTREFS_H */

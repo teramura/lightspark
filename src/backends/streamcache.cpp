@@ -26,6 +26,7 @@
 #include "logger.h"
 #include "netutils.h"
 #include "swf.h"
+#include <SDL2/SDL.h>
 
 using namespace std;
 using namespace lightspark;
@@ -106,7 +107,7 @@ MemoryChunk::~MemoryChunk()
 }
 
 MemoryStreamCache::MemoryStreamCache(SystemState* _sys):StreamCache(_sys),
-	writeChunk(NULL), nextChunkSize(0)
+	writeChunk(nullptr), nextChunkSize(0)
 {
 }
 
@@ -129,15 +130,13 @@ void MemoryStreamCache::allocateChunk(size_t minLength)
 	assert(len >= minLength);
 	nextChunkSize = len;
 
-	{
-		Locker locker(chunkListMutex);
-		writeChunk = new MemoryChunk(len);
-		chunks.push_back(writeChunk);
-	}
+	writeChunk = new MemoryChunk(len);
+	chunks.push_back(writeChunk);
 }
 
 void MemoryStreamCache::handleAppend(const unsigned char* data, size_t length)
 {
+	Locker locker(chunkListMutex);
 	assert(length > 0);
 
 	if (!writeChunk || (ACQUIRE_READ(writeChunk->used) >= writeChunk->capacity))
@@ -195,7 +194,7 @@ void MemoryStreamCache::openForWriting()
 MemoryStreamCache::Reader::Reader(_R<MemoryStreamCache> b) :
 	buffer(b), chunkIndex(0), chunkStartOffset(0)
 {
-	setg(NULL, NULL, NULL);
+	setg(nullptr, nullptr, nullptr);
 }
 
 /**
@@ -232,7 +231,7 @@ int MemoryStreamCache::Reader::underflow()
 	unsigned char *cursor;
 	unsigned char *end = chunk->buffer + used;
 
-	if (gptr() == NULL)
+	if (gptr() == nullptr)
 	{
 		// On the first call gptr() is NULL (as set in the
 		// constructor). Nothing has been read yet.
@@ -384,11 +383,11 @@ void FileStreamCache::openCache()
 	if (cache.is_open())
 	{
 		markFinished(true);
-		throw RunTimeException(_("FileStreamCache::openCache called twice"));
+		throw RunTimeException("FileStreamCache::openCache called twice");
 	}
 
 	//Create a temporary file(name)
-	std::string cacheFilenameS = Config::getConfig()->getCacheDirectory() + "/" + Config::getConfig()->getCachePrefix() + "XXXXXX";
+	std::string cacheFilenameS = Config::getConfig()->getCacheDirectory() + G_DIR_SEPARATOR_S + Config::getConfig()->getCachePrefix() + "XXXXXX";
 	char* cacheFilenameC = g_newa(char,cacheFilenameS.length()+1);
 	strncpy(cacheFilenameC, cacheFilenameS.c_str(), cacheFilenameS.length());
 	cacheFilenameC[cacheFilenameS.length()] = '\0';
@@ -396,7 +395,7 @@ void FileStreamCache::openCache()
 	if(fd == -1)
 	{
 		markFinished(true);
-		throw RunTimeException(_("FileStreamCache::openCache: cannot create temporary file"));
+		throw RunTimeException("FileStreamCache::openCache: cannot create temporary file");
 	}
 
 	//We are using fstream to read/write to the cache, so we don't need this FD
@@ -420,7 +419,7 @@ void FileStreamCache::openExistingCache(const tiny_string& filename, bool forWri
 	if (cache.is_open())
 	{
 		markFinished(true);
-		throw RunTimeException(_("FileStreamCache::openCache called twice"));
+		throw RunTimeException("FileStreamCache::openCache called twice");
 	}
 
 	cacheFilename = filename;
@@ -435,10 +434,10 @@ void FileStreamCache::openExistingCache(const tiny_string& filename, bool forWri
 	if (!cache.is_open())
 	{
 		markFinished(true);
-		throw RunTimeException(_("FileStreamCache::openCache: cannot open temporary cache file"));
+		throw RunTimeException("FileStreamCache::openCache: cannot open temporary cache file");
 	}
 
-	LOG(LOG_INFO, _("NET: Downloading to cache file: ") << cacheFilename);
+	LOG(LOG_INFO, "NET: Downloading to cache file: " << cacheFilename);
 }
 
 void FileStreamCache::useExistingFile(const tiny_string& filename)
@@ -524,4 +523,52 @@ streamsize FileStreamCache::Reader::xsgetn(char* s, streamsize n)
 	}
 
 	return read;
+}
+
+streamsize lsfilereader::xsgetn(char *s, streamsize n)
+{
+	return SDL_RWread(filehandler,s,1,n);
+}
+
+streampos lsfilereader::seekoff(streamoff off, ios_base::seekdir way, ios_base::openmode which)
+{
+	if (!filehandler)
+	{
+		LOG(LOG_ERROR,"lsfilereader without file");
+		return streampos(streamoff(-1));
+	}
+	switch (way)
+	{
+		case ios_base::beg:
+			return SDL_RWseek(filehandler,off,RW_SEEK_SET);
+		case ios_base::cur:
+			return SDL_RWseek(filehandler,off,RW_SEEK_CUR);
+		case ios_base::end:
+			return SDL_RWseek(filehandler,off,RW_SEEK_END);
+		default:
+			LOG(LOG_ERROR,"unhandled value in lsfilereader.seekoff:"<<way);
+			return streampos(streamoff(-1));
+	}
+}
+
+streampos lsfilereader::seekpos(streampos pos, ios_base::openmode)
+{
+	if (!filehandler)
+	{
+		LOG(LOG_ERROR,"lsfilereader without file");
+		return streampos(streamoff(-1));
+	}
+	return SDL_RWseek(filehandler,pos,RW_SEEK_SET);
+}
+
+lsfilereader::lsfilereader(const char *filepath)
+{
+	filehandler = SDL_RWFromFile(filepath, "rb");
+}
+
+lsfilereader::~lsfilereader()
+{
+	if (filehandler)
+		SDL_RWclose(filehandler);
+	filehandler=nullptr;
 }

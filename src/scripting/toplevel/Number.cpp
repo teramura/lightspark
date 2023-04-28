@@ -20,8 +20,11 @@
 #include "parsing/amf3_generator.h"
 #include "scripting/argconv.h"
 #include "scripting/toplevel/Number.h"
+#include "scripting/toplevel/Integer.h"
+#include "scripting/toplevel/UInteger.h"
 #include "scripting/toplevel/Math.h"
 #include "scripting/flash/utils/ByteArray.h"
+#include "3rdparty/avmplus/core/d2a.h"
 
 using namespace std;
 using namespace lightspark;
@@ -49,9 +52,13 @@ number_t ASObject::toNumber()
 	default:
 		{
 			//everything else is an Object regarding to the spec
-			asAtom val2p;
-			toPrimitive(val2p,NUMBER_HINT);
-			return val2p.toNumber();
+			asAtom val2p=asAtomHandler::invalidAtom;
+			bool isrefcounted;
+			toPrimitive(val2p,isrefcounted,NUMBER_HINT);
+			number_t res = asAtomHandler::toNumber(val2p);
+			if (isrefcounted)
+				ASATOM_DECREF(val2p);
+			return res;
 		}
 	}
 }
@@ -118,169 +125,409 @@ TRISTATE Number::isLess(ASObject* o)
 			return (ival<0)?TTRUE:TFALSE;
 		default:
 		{
-			asAtom val2p;
-			o->toPrimitive(val2p,NUMBER_HINT);
-			double val2=val2p.toNumber();
+			asAtom val2p=asAtomHandler::invalidAtom;
+			bool isrefcounted;
+			o->toPrimitive(val2p,isrefcounted,NUMBER_HINT);
+			double val2=asAtomHandler::toNumber(val2p);
+			if (isrefcounted)
+				ASATOM_DECREF(val2p);
 			if(std::isnan(val2)) return TUNDEFINED;
 			return (toNumber()<val2)?TTRUE:TFALSE;
 		}
 	}
 }
 
-/*
- * This purges trailing zeros from the right, i.e.
- * "144124.45600" -> "144124.456"
- * "144124.000" -> "144124"
- * "144124.45600e+12" -> "144124.456e+12"
- * "144124.45600e+07" -> 144124.456e+7"
- * and it transforms the ',' into a '.' if found.
- */
-void Number::purgeTrailingZeroes(char* buf)
-{
-	int i=strlen(buf)-1;
-	int Epos = 0;
-	if(i>4 && buf[i-3] == 'e')
-	{
-		Epos = i-3;
-		i=i-4;
-	}
-	for(;i>0;i--)
-	{
-		if(buf[i]!='0')
-			break;
-	}
-	bool commaFound=false;
-	if(buf[i]==',' || buf[i]=='.')
-	{
-		i--;
-		commaFound=true;
-	}
-	if(Epos)
-	{
-		//copy e+12 to the current place
-		strncpy(buf+i+1,buf+Epos,5);
-		if(buf[i+3] == '0')
-		{
-			//this looks like e+07, so turn it into e+7
-			buf[i+3] = buf[i+4];
-			buf[i+4] = '\0';
-		}
-	}
-	else
-		buf[i+1]='\0';
-
-	if(commaFound)
-		return;
-
-	//Also change the comma to the point if needed
-	for(;i>0;i--)
-	{
-		if(buf[i]==',')
-		{
-			buf[i]='.';
-			break;
-		}
-	}
-}
-
 ASFUNCTIONBODY_ATOM(Number,_toString)
 {
-	if(Class<Number>::getClass(sys)->prototype->getObj() == obj.getObject())
+	if(Class<Number>::getClass(wrk->getSystemState())->prototype->getObj() == asAtomHandler::getObject(obj))
 	{
-		ret = asAtom::fromString(sys,"0");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"0");
 		return;
 	}
-	if(!obj.isNumeric())
-		throwError<TypeError>(kInvokeOnIncompatibleObjectError, "Number.toString");
+	if(!asAtomHandler::isNumeric(obj))
+	{
+		createError<TypeError>(wrk,kInvokeOnIncompatibleObjectError, "Number.toString");
+		return;
+	}
 	int radix=10;
-	ARG_UNPACK_ATOM (radix,10);
+	ARG_CHECK(ARG_UNPACK (radix,10));
 
-	if((radix==10) || (obj.is<Number>() &&
-					   (std::isnan(obj.toNumber()) ||
-					   (std::isinf(obj.toNumber())))))
+	if((radix==10) || (asAtomHandler::is<Number>(obj) &&
+					   (std::isnan(asAtomHandler::toNumber(obj)) ||
+					   (std::isinf(asAtomHandler::toNumber(obj))))))
 	{
 		//see e 15.7.4.2
-		ret = asAtom::fromObject(abstract_s(sys,obj.toString(sys)));
+		ret = asAtomHandler::fromObject(abstract_s(wrk,asAtomHandler::toString(obj,wrk)));
 	}
 	else
 	{
-		ret = asAtom::fromObject(abstract_s(sys,Number::toStringRadix(obj.toNumber(), radix)));
+		ret = asAtomHandler::fromObject(abstract_s(wrk,Number::toStringRadix(asAtomHandler::toNumber(obj), radix)));
 	}
 }
 ASFUNCTIONBODY_ATOM(Number,_toLocaleString)
 {
-	if(Class<Number>::getClass(sys)->prototype->getObj() == obj.getObject())
+	if(Class<Number>::getClass(wrk->getSystemState())->prototype->getObj() == asAtomHandler::getObject(obj))
 	{
-		ret = asAtom::fromString(sys,"0");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"0");
 		return;
 	}
-	if(!obj.isNumeric())
+	if(!asAtomHandler::isNumeric(obj))
 	{
-		ret = asAtom::fromString(sys,"0");
+		ret = asAtomHandler::fromString(wrk->getSystemState(),"0");
 		return;
 	}
 	int radix=10;
 
-	if((radix==10) || (obj.is<Number>() &&
-					   (std::isnan(obj.toNumber()) ||
-					   (std::isinf(obj.toNumber())))))
+	if((radix==10) || (asAtomHandler::is<Number>(obj) &&
+					   (std::isnan(asAtomHandler::toNumber(obj)) ||
+					   (std::isinf(asAtomHandler::toNumber(obj))))))
 	{
 		//see e 15.7.4.2
-		ret = asAtom::fromObject(abstract_s(sys,obj.toString(sys)));
+		ret = asAtomHandler::fromObject(abstract_s(wrk,asAtomHandler::toString(obj,wrk)));
 	}
 	else
 	{
-		ret = asAtom::fromObject(abstract_s(sys,Number::toStringRadix(obj.toNumber(), radix)));
+		ret = asAtomHandler::fromObject(abstract_s(wrk,Number::toStringRadix(asAtomHandler::toNumber(obj), radix)));
 	}
 }
 
 ASFUNCTIONBODY_ATOM(Number,generator)
 {
 	if(argslen==0)
-		ret.setNumber(0.);
+		asAtomHandler::setNumber(ret,wrk,0.);
 	else
-		ret.setNumber(args[0].toNumber());
+		asAtomHandler::setNumber(ret,wrk,asAtomHandler::toNumber(args[0]));
 }
 
-tiny_string Number::toString()
+tiny_string Number::toString() const
 {
 	return Number::toString(isfloat ? dval : ival);
 }
 
-/* static helper function */
-tiny_string Number::toString(number_t val)
+// doubletostring algorithm taken from https://github.com/adobe/avmplus/core/MathUtils.cpp
+tiny_string Number::toString(number_t value, DTOSTRMODE mode, int32_t precision)
 {
-	if(std::isnan(val))
+	if(std::isnan(value))
 		return "NaN";
-	if(std::isinf(val))
+	if(std::isinf(value))
 	{
-		if(val > 0)
+		if(value > 0)
 			return "Infinity";
 		else
 			return "-Infinity";
 	}
-	if(val == 0) //this also handles the case '-0'
-		return "0";
 
-	//See ecma3 8.9.1
-	char buf[40];
-	if (val==(int)(val))
-		snprintf(buf,40,"%d",(int)(val));
-	else
-	{
-		if(fabs(val) >= 1e+21 || fabs(val) <= 1e-6)
-			snprintf(buf,40,"%.15e",val);
-		else
-			snprintf(buf,40,"%.14f",val);
-		purgeTrailingZeroes(buf);
+	char buffer[500];
+	if (mode == DTOSTR_NORMAL) {
+		int32_t intValue = int32_t(value);
+		if ((value == (double)(intValue)) && ((uint32_t)intValue != 0x80000000))
+		{
+			snprintf(buffer,40,"%d",(int)(value));
+			return tiny_string(buffer,true);
+		}
 	}
-	return tiny_string(buf,true);
+
+	const bool negative = value < 0.0;
+	const bool zero = value == 0.0;
+	bool round = true;
+	// Pointer to the next available character
+	char *s = buffer;
+
+	// Negate negative numbers and make space for the sign.  The sign
+	// has to be placed just before we finish because we don't know yet
+	// if it will be in buffer[0] or buffer[1].
+
+	if (negative) {
+		value = -value;
+		s++;
+	}
+
+	// Set up the digit generator.
+	avmplus::D2A d2a(value, mode != DTOSTR_NORMAL, precision);
+	int32_t exp10 = d2a.expBase10()-1;     // Why "-1"?
+
+	// Sentinel is used for rounding - points to the first digit
+	char* const sentinel = s;
+
+	// Format type selection.
+
+	enum FormatType {
+		kNormal,
+		kExponential,
+		kFraction,
+		kFixedFraction
+	};
+
+	FormatType format;
+
+	switch (mode) {
+	case DTOSTR_FIXED:
+		{
+			if (exp10 < 0) {
+				format = kFixedFraction;
+			} else {
+				format = kNormal;
+				precision++;
+			}
+		}
+		break;
+	case DTOSTR_PRECISION:
+		{
+			// FIXME: Bugzilla 442974: This is simply not according to spec,
+			// the canonical test case is Number.MIN_VALUE.toPrecision(21), which
+			// formats as a 346-character string.
+			if (exp10 < 0) {
+				format = kFraction;
+			} else if (exp10 >= precision) {
+				format = kExponential;
+			} else {
+				format = kNormal;
+			}
+		}
+		break;
+	case DTOSTR_EXPONENTIAL:
+		format = kExponential;
+		precision++;
+		break;
+	default:
+		if (exp10 < 0 && exp10 > -7) {
+			// Number is of form 0.######
+			if (exp10 < -precision) {
+				exp10 = -precision-1;
+			}
+			format = kFraction;
+		} else if (exp10 > 20) { // ECMA spec 9.8.1
+			format = kExponential;
+		} else {
+			format = kNormal;
+		}
+	}
+
+	// Digit generation.
+
+	bool wroteDecimal = false;
+	switch (format) {
+	case kNormal:
+		{
+			int32_t digits = 0;
+			int32_t digit;
+			*s++ = '0';
+			digit = d2a.nextDigit();
+			if (digit > 0) {
+				*s++ = (char)(digit + '0');
+			}
+			while (exp10 > 0) {
+				digit = (d2a.finished) ? 0 : d2a.nextDigit();
+				*s++ = (char)(digit + '0');
+				exp10--;
+				digits++;
+			}
+			if (mode == DTOSTR_FIXED) {
+				digits = 0;
+			}
+			if (mode == DTOSTR_NORMAL) {
+				if (!d2a.finished) {
+					*s++ = '.';
+					wroteDecimal = true;
+					while( !d2a.finished ) {
+						*s++ = (char)(d2a.nextDigit() + '0');
+					}
+				}
+			}
+			else if (digits < precision-1)
+			{
+				*s++ = '.';
+				wroteDecimal = true;
+				for (; digits < precision-1; digits++) {
+					digit = d2a.finished ? 0 : d2a.nextDigit();
+					*s++ = (char)(digit + '0');
+				}
+			}
+		}
+		break;
+	case kFixedFraction:
+		{
+			*s++ = '0'; // Sentinel
+			*s++ = '0';
+			*s++ = '.';
+			wroteDecimal = true;
+			// Write out leading zeroes
+			int32_t digits = 0;
+			if (exp10 > 0) {
+				while (++exp10 < 10 && digits < precision) {
+					*s++ = '0';
+					digits++;
+				}
+			} else if (exp10 < 0) {
+				while ((++exp10 < 0) && (precision-- > 0))
+					*s++ = '0';
+			}
+
+			// Write out significand
+			for ( ; digits<precision; digits++) {
+				if (d2a.finished)
+				{
+					if (mode == DTOSTR_NORMAL)
+						break;
+					*s++ = '0';
+				} else {
+					*s++ = (char)(d2a.nextDigit() + '0');
+				}
+			}
+			exp10 = 0;
+		}
+		break;
+	case kFraction:
+		{
+			*s++ = '0'; // Sentinel
+			*s++ = '0';
+			*s++ = '.';
+			wroteDecimal = true;
+
+			// Write out leading zeros
+			if (!zero)
+			{
+				for (int32_t i=exp10; i<-1; i++) {
+					*s++ = '0';
+				}
+			}
+
+			// Write out significand
+			int32_t i=0;
+			while (!d2a.finished)
+			{
+				*s++ = (char)(d2a.nextDigit() + '0');
+				if (mode != DTOSTR_NORMAL && ++i >= precision)
+					break;
+			}
+			if (mode == DTOSTR_PRECISION)
+			{
+				while(i++ < precision)
+					*s++ = (char)(d2a.finished ? '0' : d2a.nextDigit() + '0');
+			}
+			exp10 = 0;
+		}
+		break;
+	case kExponential:
+		{
+			int32_t digit;
+			digit = d2a.finished ? 0 : d2a.nextDigit();
+			*s++ = (char)(digit + '0');
+			if ( ((mode == DTOSTR_NORMAL) && !d2a.finished) ||
+				 ((mode != DTOSTR_NORMAL) && precision > 1) ) {
+				*s++ = '.';
+				wroteDecimal = true;
+				for (int32_t i=0; i<precision-1; i++) {
+					if (d2a.finished)
+					{
+						if (mode == DTOSTR_NORMAL)
+							break;
+						*s++ = '0';
+					} else {
+						*s++ = (char)(d2a.nextDigit() + '0');
+					}
+				}
+			}
+		}
+		break;
+	}
+
+	// Rounding and truncation.
+
+	if (round && (d2a.bFastEstimateOk || mode == DTOSTR_FIXED || mode == DTOSTR_PRECISION))
+	{
+		if (d2a.nextDigit() > 4) {
+			// Round the value up.
+			
+			for ( char* ptr=s-1 ; ptr >= sentinel ; ptr-- ) {
+				// Skip the decimal point
+				if (*ptr == '.')
+					continue;
+				
+				// Carry in
+				*ptr = *ptr + 1;
+
+				// Done if there's no carry out
+				if (*ptr != ('9'+1))
+					break;
+				
+				// Carry out
+				*ptr = '0';
+			}
+		}
+
+		if (mode == DTOSTR_NORMAL && wroteDecimal) {
+			// Remove trailing zeroes, and if necessary the decimal point.
+			while (*(s-1) == '0') {
+				s--;
+			}
+			if (*(s-1) == '.') {
+				s--;
+			}
+		}
+	}
+
+	// Clean up zeroes, and place the exponent
+	if (exp10) {
+
+		// Handle the case where all digits ended up zero.
+		// FIXME: Bugzilla 442974: This code is broken, it will find the decimal point.
+
+		char *firstNonZero = sentinel;
+		while (firstNonZero < s && *firstNonZero == '0') {
+			firstNonZero++;
+		}
+		if (s == firstNonZero) {
+			// FIXME: Bugzilla 442974:  This seems wrong, because it places the '1' at
+			// the end of the string, not at the beginning.  Also it is arguably wrong
+			// if the value is zero, and I don't have any proof that that can't happen.
+			*s++ = '1';
+			exp10++;
+		}
+		else if (!zero) {
+			// Remove trailing zeroes, as might appear in 10e+95
+			char *lastNonZero = s;
+			while (lastNonZero > firstNonZero && *--lastNonZero == '0')
+				;
+
+			if (firstNonZero == lastNonZero) {
+				exp10 += (int32_t) (s - firstNonZero - 1);  // What if exp10 is already the negative of that?
+				s = lastNonZero+1;
+			}
+		}
+		
+		// Place the exponent
+		*s++ = 'e';
+		if (exp10 > 0) {
+			*s++ = '+';
+		}
+		tiny_string e = Integer::toString(exp10);
+		char* t = (char*)e.raw_buf();
+		while (*t) { *s++ = *t++; }
+	}
+
+	int32_t len = (int32_t)(s-buffer);
+	*s = 0;
+	s = sentinel;
+	
+	// Deal with the sentinel introduced for the kFraction case: we might have a leading '00.'
+	
+	if (sentinel[0] == '0' && sentinel[1] != '.') {
+		s = sentinel + 1;
+		len--;
+	}
+	if (negative)
+		*--s = '-';
+	return tiny_string(s,true);
 }
 
 tiny_string Number::toStringRadix(number_t val, int radix)
 {
-	if(radix < 2 || radix > 36)
-		throwError<RangeError>(kInvalidRadixError, Integer::toString(radix));
+	if((radix < 2) || (radix > 36))
+	{
+		createError<RangeError>(getWorker(),kInvalidRadixError, Integer::toString(radix));
+		return "";
+	}
 
 	if(std::isnan(val) || std::isinf(val))
 		return Number::toString(val);
@@ -307,59 +554,70 @@ void Number::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_SEALED | CLASS_FINAL);
 	c->isReusable = true;
-	c->setVariableAtomByQName("NEGATIVE_INFINITY",nsNameAndKind(),asAtom(-numeric_limits<double>::infinity()),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("POSITIVE_INFINITY",nsNameAndKind(),asAtom(numeric_limits<double>::infinity()),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("MAX_VALUE",nsNameAndKind(),asAtom(numeric_limits<double>::max()),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("MIN_VALUE",nsNameAndKind(),asAtom(numeric_limits<double>::min()),CONSTANT_TRAIT);
-	c->setVariableAtomByQName("NaN",nsNameAndKind(),asAtom(numeric_limits<double>::quiet_NaN()),CONSTANT_TRAIT);
-	c->setDeclaredMethodByQName("toString",AS3,Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("toFixed",AS3,Class<IFunction>::getFunction(c->getSystemState(),toFixed,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("toExponential",AS3,Class<IFunction>::getFunction(c->getSystemState(),toExponential,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("toPrecision",AS3,Class<IFunction>::getFunction(c->getSystemState(),toPrecision,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("valueOf",AS3,Class<IFunction>::getFunction(c->getSystemState(),_valueOf),NORMAL_METHOD,true);
-	c->prototype->setVariableByQName("toString","",Class<IFunction>::getFunction(c->getSystemState(),Number::_toString),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("toLocaleString","",Class<IFunction>::getFunction(c->getSystemState(),Number::_toLocaleString),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("toFixed","",Class<IFunction>::getFunction(c->getSystemState(),Number::toFixed, 1),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("toExponential","",Class<IFunction>::getFunction(c->getSystemState(),Number::toExponential, 1),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("toPrecision","",Class<IFunction>::getFunction(c->getSystemState(),Number::toPrecision, 1),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("valueOf","",Class<IFunction>::getFunction(c->getSystemState(),_valueOf),DYNAMIC_TRAIT);
+	c->setVariableAtomByQName("NEGATIVE_INFINITY",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),-numeric_limits<double>::infinity(),true),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("POSITIVE_INFINITY",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),numeric_limits<double>::infinity(),true),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("MAX_VALUE",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),numeric_limits<double>::max(),true),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("MIN_VALUE",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),numeric_limits<double>::min(),true),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("NaN",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),numeric_limits<double>::quiet_NaN(),true),CONSTANT_TRAIT);
+	c->setDeclaredMethodByQName("toString",AS3,Class<IFunction>::getFunction(c->getSystemState(),_toString,1,Class<ASString>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("toFixed",AS3,Class<IFunction>::getFunction(c->getSystemState(),toFixed,1,Class<ASString>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("toExponential",AS3,Class<IFunction>::getFunction(c->getSystemState(),toExponential,1,Class<ASString>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("toPrecision",AS3,Class<IFunction>::getFunction(c->getSystemState(),toPrecision,1,Class<ASString>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("valueOf",AS3,Class<IFunction>::getFunction(c->getSystemState(),_valueOf,0,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->prototype->setVariableByQName("toString","",Class<IFunction>::getFunction(c->getSystemState(),Number::_toString,1,Class<ASString>::getRef(c->getSystemState()).getPtr()),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("toLocaleString","",Class<IFunction>::getFunction(c->getSystemState(),Number::_toLocaleString,1,Class<ASString>::getRef(c->getSystemState()).getPtr()),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("toFixed","",Class<IFunction>::getFunction(c->getSystemState(),Number::toFixed,1,Class<ASString>::getRef(c->getSystemState()).getPtr()),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("toExponential","",Class<IFunction>::getFunction(c->getSystemState(),Number::toExponential,1,Class<ASString>::getRef(c->getSystemState()).getPtr()),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("toPrecision","",Class<IFunction>::getFunction(c->getSystemState(),Number::toPrecision,1,Class<ASString>::getRef(c->getSystemState()).getPtr()),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("valueOf","",Class<IFunction>::getFunction(c->getSystemState(),_valueOf,0,Class<Number>::getRef(c->getSystemState()).getPtr()),DYNAMIC_TRAIT);
 
 	// if needed add AVMPLUS definitions
 	if(c->getSystemState()->flashMode==SystemState::AVMPLUS)
 	{
-		c->setVariableAtomByQName("E",nsNameAndKind(),asAtom(2.71828182845905),CONSTANT_TRAIT,false);
-		c->setVariableAtomByQName("LN10",nsNameAndKind(),asAtom(2.302585092994046),CONSTANT_TRAIT,false);
-		c->setVariableAtomByQName("LN2",nsNameAndKind(),asAtom(0.6931471805599453),CONSTANT_TRAIT,false);
-		c->setVariableAtomByQName("LOG10E",nsNameAndKind(),asAtom(0.4342944819032518),CONSTANT_TRAIT,false);
-		c->setVariableAtomByQName("LOG2E",nsNameAndKind(),asAtom(1.442695040888963387),CONSTANT_TRAIT,false);
-		c->setVariableAtomByQName("PI",nsNameAndKind(),asAtom(3.141592653589793),CONSTANT_TRAIT,false);
-		c->setVariableAtomByQName("SQRT1_2",nsNameAndKind(),asAtom(0.7071067811865476),CONSTANT_TRAIT,false);
-		c->setVariableAtomByQName("SQRT2",nsNameAndKind(),asAtom(1.4142135623730951),CONSTANT_TRAIT,false);
+		c->setVariableAtomByQName("E",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),2.71828182845905,true),CONSTANT_TRAIT,false);
+		c->setVariableAtomByQName("LN10",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),2.302585092994046,true),CONSTANT_TRAIT,false);
+		c->setVariableAtomByQName("LN2",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),0.6931471805599453,true),CONSTANT_TRAIT,false);
+		c->setVariableAtomByQName("LOG10E",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),0.4342944819032518,true),CONSTANT_TRAIT,false);
+		c->setVariableAtomByQName("LOG2E",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),1.442695040888963387,true),CONSTANT_TRAIT,false);
+		c->setVariableAtomByQName("PI",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),3.141592653589793,true),CONSTANT_TRAIT,false);
+		c->setVariableAtomByQName("SQRT1_2",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),0.7071067811865476,true),CONSTANT_TRAIT,false);
+		c->setVariableAtomByQName("SQRT2",nsNameAndKind(),asAtomHandler::fromNumber(c->getInstanceWorker(),1.4142135623730951,true),CONSTANT_TRAIT,false);
 		
-		c->setDeclaredMethodByQName("abs","",Class<IFunction>::getFunction(c->getSystemState(),Math::abs,1),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("acos","",Class<IFunction>::getFunction(c->getSystemState(),Math::acos,1),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("asin","",Class<IFunction>::getFunction(c->getSystemState(),Math::asin,1),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("atan","",Class<IFunction>::getFunction(c->getSystemState(),Math::atan,1),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("atan2","",Class<IFunction>::getFunction(c->getSystemState(),Math::atan2,2),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("ceil","",Class<IFunction>::getFunction(c->getSystemState(),Math::ceil,1),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("cos","",Class<IFunction>::getFunction(c->getSystemState(),Math::cos,1),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("exp","",Class<IFunction>::getFunction(c->getSystemState(),Math::exp,1),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("floor","",Class<IFunction>::getFunction(c->getSystemState(),Math::floor,1),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("log","",Class<IFunction>::getFunction(c->getSystemState(),Math::log,1),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("max","",Class<IFunction>::getFunction(c->getSystemState(),Math::_max,2),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("min","",Class<IFunction>::getFunction(c->getSystemState(),Math::_min,2),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("pow","",Class<IFunction>::getFunction(c->getSystemState(),Math::pow,2),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("random","",Class<IFunction>::getFunction(c->getSystemState(),Math::random),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("round","",Class<IFunction>::getFunction(c->getSystemState(),Math::round,1),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("sin","",Class<IFunction>::getFunction(c->getSystemState(),Math::sin,1),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("sqrt","",Class<IFunction>::getFunction(c->getSystemState(),Math::sqrt,1),NORMAL_METHOD,false,false);
-		c->setDeclaredMethodByQName("tan","",Class<IFunction>::getFunction(c->getSystemState(),Math::tan,1),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("abs","",Class<IFunction>::getFunction(c->getSystemState(),Math::abs,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("acos","",Class<IFunction>::getFunction(c->getSystemState(),Math::acos,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("asin","",Class<IFunction>::getFunction(c->getSystemState(),Math::asin,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("atan","",Class<IFunction>::getFunction(c->getSystemState(),Math::atan,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("atan2","",Class<IFunction>::getFunction(c->getSystemState(),Math::atan2,2,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("ceil","",Class<IFunction>::getFunction(c->getSystemState(),Math::ceil,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("cos","",Class<IFunction>::getFunction(c->getSystemState(),Math::cos,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("exp","",Class<IFunction>::getFunction(c->getSystemState(),Math::exp,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("floor","",Class<IFunction>::getFunction(c->getSystemState(),Math::floor,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("log","",Class<IFunction>::getFunction(c->getSystemState(),Math::log,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("max","",Class<IFunction>::getFunction(c->getSystemState(),Math::_max,2,Class<Number>::getRef(c->getSystemState()).getPtr(),Class<Integer>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("min","",Class<IFunction>::getFunction(c->getSystemState(),Math::_min,2,Class<Number>::getRef(c->getSystemState()).getPtr(),Class<Integer>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("pow","",Class<IFunction>::getFunction(c->getSystemState(),Math::pow,2,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("random","",Class<IFunction>::getFunction(c->getSystemState(),Math::random,0,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("round","",Class<IFunction>::getFunction(c->getSystemState(),Math::round,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("sin","",Class<IFunction>::getFunction(c->getSystemState(),Math::sin,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("sqrt","",Class<IFunction>::getFunction(c->getSystemState(),Math::sqrt,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
+		c->setDeclaredMethodByQName("tan","",Class<IFunction>::getFunction(c->getSystemState(),Math::tan,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false,false);
 	}
+}
+
+string Number::toDebugString() const
+{
+	string ret = toString()+(isfloat ? "d" : "di");
+#ifndef NDEBUG
+	char buf[300];
+	sprintf(buf,"(%p/%d/%d/%d)",this,this->getRefCount(),this->storedmembercount,this->getConstant());
+	ret += buf;
+#endif
+	return ret;
 }
 
 ASFUNCTIONBODY_ATOM(Number,_constructor)
 {
-	Number* th=obj.as<Number>();
+	Number* th=asAtomHandler::as<Number>(obj);
 	if(argslen==0)
 	{
 		// not constructed Numbers are set to NaN, so we have to set it to the default value during dynamic construction
@@ -370,16 +628,16 @@ ASFUNCTIONBODY_ATOM(Number,_constructor)
 		}
 		return;
 	}
-	switch (args[0].type)
+	switch (asAtomHandler::getObjectType(args[0]))
 	{
 		case T_INTEGER:
 		case T_BOOLEAN:
 		case T_UINTEGER:
-			th->ival = args[0].toInt();
+			th->ival = asAtomHandler::toInt(args[0]);
 			th->isfloat = false;
 			break;
 		default:
-			th->dval=args[0].toNumber();
+			th->dval=asAtomHandler::toNumber(args[0]);
 			th->isfloat = true;
 			break;
 	}
@@ -387,76 +645,40 @@ ASFUNCTIONBODY_ATOM(Number,_constructor)
 
 ASFUNCTIONBODY_ATOM(Number,toFixed)
 {
-	number_t val = obj.toNumber();
+	number_t val = asAtomHandler::toNumber(obj);
 	int fractiondigits;
-	ARG_UNPACK_ATOM (fractiondigits,0);
-	ret = asAtom::fromObject(abstract_s(sys,toFixedString(val, fractiondigits)));
+	ARG_CHECK(ARG_UNPACK (fractiondigits,0));
+	ret = asAtomHandler::fromObject(abstract_s(wrk,toFixedString(val, fractiondigits)));
 }
 
-tiny_string Number::toFixedString(double v, int32_t fractiondigits)
+tiny_string Number::toFixedString(double v, int32_t fractionDigits)
 {
-	if (fractiondigits < 0 || fractiondigits > 20)
-		throwError<RangeError>(kInvalidPrecisionError);
-	if (std::isnan(v))
-		return  "NaN";
-	if (v >= pow(10., 21))
-		return toString(v);
-	number_t fractpart, intpart;
-	double rounded = v + 0.5*pow(10., -fractiondigits);
-	fractpart = modf(rounded , &intpart);
-
-	tiny_string res("");
-	char buf[40];
-	snprintf(buf,40,"%ld",int64_t(fabs(intpart)));
-	res += buf;
-	
-	if (fractiondigits > 0)
+	if ((fractionDigits < 0) || (fractionDigits > 20))
 	{
-		number_t x = fractpart;
-		res += ".";
-		for (int i=0; i<fractiondigits; i++)
-		{
-			x*=10.0;
-			int n = (int)x;
-			x -= n;
-			res += tiny_string::fromChar('0' + n);
-		}
+		createError<RangeError>(getWorker(),kInvalidPrecisionError);
+		return "";
 	}
-	if ( v < 0)
-		res = tiny_string::fromChar('-')+res;
-	return res;
+	return toString(v,DTOSTR_FIXED,fractionDigits);
 }
 
 ASFUNCTIONBODY_ATOM(Number,toExponential)
 {
-	double v = obj.toNumber();
+	double v = asAtomHandler::toNumber(obj);
 	int32_t fractionDigits;
-	ARG_UNPACK_ATOM(fractionDigits, 0);
-	if (argslen == 0 || args[0].is<Undefined>())
+	ARG_CHECK(ARG_UNPACK(fractionDigits, 0));
+	if (argslen == 0 || asAtomHandler::is<Undefined>(args[0]))
 		fractionDigits = imin(imax(Number::countSignificantDigits(v)-1, 1), 20);
-	ret =asAtom::fromObject(abstract_s(sys,toExponentialString(v, fractionDigits)));
+	ret =asAtomHandler::fromObject(abstract_s(wrk,toExponentialString(v, fractionDigits)));
 }
 
 tiny_string Number::toExponentialString(double v, int32_t fractionDigits)
 {
-	if (std::isnan(v) || std::isinf(v))
-		return toString(v);
-
-	tiny_string res;
-	if (v < 0)
+	if ((fractionDigits < 0) || (fractionDigits > 20))
 	{
-		res = "-";
-		v = -v;
+		createError<RangeError>(getWorker(),kInvalidPrecisionError);
+		return "";
 	}
-
-	if (fractionDigits < 0 || fractionDigits > 20)
-		throwError<RangeError>(kInvalidPrecisionError);
-	
-	char buf[40];
-	snprintf(buf,40,"%.*e", fractionDigits, v);
-	res += buf;
-	res = purgeExponentLeadingZeros(res);
-	return res;
+	return toString(v,DTOSTR_EXPONENTIAL,fractionDigits);
 }
 
 tiny_string Number::purgeExponentLeadingZeros(const tiny_string& exponentialForm)
@@ -535,66 +757,50 @@ int32_t Number::countSignificantDigits(double v) {
 
 ASFUNCTIONBODY_ATOM(Number,toPrecision)
 {
-	double v = obj.toNumber();
-	if (argslen == 0 || args[0].is<Undefined>())
+	double v = asAtomHandler::toNumber(obj);
+	if (argslen == 0 || asAtomHandler::is<Undefined>(args[0]))
 	{
-		ret = asAtom::fromObject(abstract_s(sys,toString(v)));
+		ret = asAtomHandler::fromObject(abstract_s(wrk,toString(v)));
 		return;
 	}
 
 	int32_t precision;
-	ARG_UNPACK_ATOM(precision);
-	ret = asAtom::fromObject(abstract_s(sys,toPrecisionString(v, precision)));
+	ARG_CHECK(ARG_UNPACK(precision));
+	ret = asAtomHandler::fromObject(abstract_s(wrk,toPrecisionString(v, precision)));
 }
 
 tiny_string Number::toPrecisionString(double v, int32_t precision)
 {
-	if (precision < 1 || precision > 21)
+	if ((precision < 1) || (precision > 21))
 	{
-		throwError<RangeError>(kInvalidPrecisionError);
-		return NULL;
+		createError<RangeError>(getWorker(),kInvalidPrecisionError);
+		return "";
 	}
-	else if (std::isnan(v) || std::isinf(v))
-		return toString(v);
-	else if (::fabs(v) > pow(10., precision))
-		return toExponentialString(v, precision-1);
-	else if (v == 0)
-	{
-		tiny_string zero = "0.";
-		for (int i=0; i<precision; i++)
-			zero += "0";
-		return zero;
-	}
-	else
-	{
-		int n = (int)::ceil(::log10(::fabs(v)));
-		if (n < 0)
-			return toExponentialString(v, precision-1);
-		else
-			return toFixedString(v, precision-n);
-	}
+	return toString(v,DTOSTR_PRECISION,precision);
 }
 
 ASFUNCTIONBODY_ATOM(Number,_valueOf)
 {
-	if(Class<Number>::getClass(sys)->prototype->getObj() == obj.getObject())
+	if(Class<Number>::getClass(wrk->getSystemState())->prototype->getObj() == asAtomHandler::getObject(obj))
 	{
-		ret.setInt(0);
+		asAtomHandler::setInt(ret,wrk,0);
 		return;
 	}
 
-	if(!obj.isNumeric())
-		throwError<TypeError>(kInvokeOnIncompatibleObjectError);
-
+	if(!asAtomHandler::isNumeric(obj))
+	{
+		createError<TypeError>(wrk,kInvokeOnIncompatibleObjectError);
+		return;
+	}
 	ASATOM_INCREF(obj);
 	ret = obj;
 }
 
 void Number::serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap)
+				std::map<const Class_base*, uint32_t>& traitsMap,ASWorker* wrk)
 {
-	if (out->getObjectEncoding() == ObjectEncoding::AMF0)
+	if (out->getObjectEncoding() == OBJECT_ENCODING::AMF0)
 	{
 		out->writeByte(amf0_number_marker);
 		out->serializeDouble(toNumber());

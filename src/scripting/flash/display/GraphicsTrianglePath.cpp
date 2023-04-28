@@ -25,8 +25,8 @@
 
 using namespace lightspark;
 
-GraphicsTrianglePath::GraphicsTrianglePath(Class_base* c):
-	ASObject(c), culling("none")
+GraphicsTrianglePath::GraphicsTrianglePath(ASWorker* wrk, Class_base* c):
+	ASObject(wrk,c), culling("none")
 {
 }
 
@@ -54,19 +54,19 @@ void GraphicsTrianglePath::finalize()
 
 ASFUNCTIONBODY_ATOM(GraphicsTrianglePath,_constructor)
 {
-	GraphicsTrianglePath* th = obj.as<GraphicsTrianglePath>();
-	ARG_UNPACK_ATOM (th->vertices, NullRef)
+	GraphicsTrianglePath* th = asAtomHandler::as<GraphicsTrianglePath>(obj);
+	ARG_CHECK(ARG_UNPACK (th->vertices, NullRef)
 		(th->indices, NullRef)
 		(th->uvtData, NullRef)
-		(th->culling, "none");
+		(th->culling, "none"));
 }
 
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsTrianglePath, culling);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsTrianglePath, indices);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsTrianglePath, uvtData);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsTrianglePath, vertices);
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsTrianglePath, culling)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsTrianglePath, indices)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsTrianglePath, uvtData)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsTrianglePath, vertices)
 
-void GraphicsTrianglePath::appendToTokens(tokensVector& tokens)
+void GraphicsTrianglePath::appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics)
 {
 	Graphics::drawTrianglesToTokens(vertices, indices, uvtData, culling, tokens);
 }

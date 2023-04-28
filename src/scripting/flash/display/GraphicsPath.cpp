@@ -17,16 +17,19 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 **************************************************************************/
 
+#include "scripting/toplevel/Number.h"
+#include "scripting/toplevel/Integer.h"
 #include "scripting/toplevel/Vector.h"
 #include "scripting/flash/display/GraphicsPath.h"
 #include "scripting/flash/display/Graphics.h"
+#include "scripting/flash/system/flashsystem.h"
 #include "scripting/argconv.h"
 #include "scripting/class.h"
 
 using namespace lightspark;
 
-GraphicsPath::GraphicsPath(Class_base* c):
-	ASObject(c), winding("evenOdd")
+GraphicsPath::GraphicsPath(ASWorker* wrk, Class_base* c):
+	ASObject(wrk,c), winding("evenOdd")
 {
 }
 
@@ -48,16 +51,16 @@ void GraphicsPath::sinit(Class_base* c)
 	IGraphicsData::linkTraits(c);
 }
 
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsPath, commands);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsPath, data);
-ASFUNCTIONBODY_GETTER_SETTER(GraphicsPath, winding);
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsPath, commands)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsPath, data)
+ASFUNCTIONBODY_GETTER_SETTER(GraphicsPath, winding)
 
 ASFUNCTIONBODY_ATOM(GraphicsPath,_constructor)
 {
 	_NR<Vector> commands;
 	_NR<Vector> data;
-	GraphicsPath* th = obj.as<GraphicsPath>();
-	ARG_UNPACK_ATOM(commands, NullRef)(data, NullRef)(th->winding, "evenOdd");
+	GraphicsPath* th = asAtomHandler::as<GraphicsPath>(obj);
+	ARG_CHECK(ARG_UNPACK(commands, NullRef)(data, NullRef)(th->winding, "evenOdd"));
 
 	if (!commands.isNull())
 		th->commands = commands;
@@ -74,101 +77,118 @@ void GraphicsPath::finalize()
 
 void GraphicsPath::ensureValid()
 {
+	RootMovieClip* root = getInstanceWorker()->rootClip.getPtr();
 	if (commands.isNull())
 	{
-		asAtom v;
-		Template<Vector>::getInstanceS(v,getSystemState(),Class<Integer>::getClass(getSystemState()),NullRef);
-		commands = _MNR(v.as<Vector>());
+		asAtom v=asAtomHandler::invalidAtom;
+		Template<Vector>::getInstanceS(getInstanceWorker(),v,root,Class<Integer>::getClass(getSystemState()),NullRef);
+		commands = _MNR(asAtomHandler::as<Vector>(v));
 	}
 	if (data.isNull())
 	{
-		asAtom v;
-		Template<Vector>::getInstanceS(v,getSystemState(),Class<Number>::getClass(getSystemState()),NullRef);
-		data = _MNR(v.as<Vector>());
+		asAtom v=asAtomHandler::invalidAtom;
+		Template<Vector>::getInstanceS(getInstanceWorker(),v,root,Class<Number>::getClass(getSystemState()),NullRef);
+		data = _MNR(asAtomHandler::as<Vector>(v));
 	}
 }
 
 ASFUNCTIONBODY_ATOM(GraphicsPath, curveTo)
 {
-	GraphicsPath* th=obj.as<GraphicsPath>();
-	asAtom cx(T_NUMBER);
-	asAtom cy(T_NUMBER);
-	asAtom ax(T_NUMBER);
-	asAtom ay(T_NUMBER);
-	ARG_UNPACK_ATOM (cx) (cy) (ax) (ay);
+	GraphicsPath* th=asAtomHandler::as<GraphicsPath>(obj);
+	asAtom cx = asAtomHandler::fromType(T_NUMBER);
+	asAtom cy = asAtomHandler::fromType(T_NUMBER);
+	asAtom ax = asAtomHandler::fromType(T_NUMBER);
+	asAtom ay = asAtomHandler::fromType(T_NUMBER);
+	ARG_CHECK(ARG_UNPACK (cx) (cy) (ax) (ay));
 
 	th->ensureValid();
-	asAtom v((int32_t)GraphicsPathCommand::CURVE_TO);
+	asAtom v = asAtomHandler::fromInt((int32_t)GraphicsPathCommand::CURVE_TO);
 	th->commands->append(v);
+	ASATOM_INCREF(ax);
 	th->data->append(ax);
+	ASATOM_INCREF(ay);
 	th->data->append(ay);
+	ASATOM_INCREF(cx);
 	th->data->append(cx);
+	ASATOM_INCREF(cy);
 	th->data->append(cy);
 }
 
 ASFUNCTIONBODY_ATOM(GraphicsPath, lineTo)
 {
-	GraphicsPath* th=obj.as<GraphicsPath>();
-	asAtom x(T_NUMBER);
-	asAtom y(T_NUMBER);
-	ARG_UNPACK_ATOM (x) (y);
+	GraphicsPath* th=asAtomHandler::as<GraphicsPath>(obj);
+	asAtom x = asAtomHandler::fromType(T_NUMBER);
+	asAtom y = asAtomHandler::fromType(T_NUMBER);
+	ARG_CHECK(ARG_UNPACK (x) (y));
 
 	th->ensureValid();
-	asAtom v((int32_t)(GraphicsPathCommand::LINE_TO));
+	asAtom v = asAtomHandler::fromInt((int32_t)(GraphicsPathCommand::LINE_TO));
 	th->commands->append(v);
+	ASATOM_INCREF(x);
 	th->data->append(x);
+	ASATOM_INCREF(y);
 	th->data->append(y);
 }
 
 ASFUNCTIONBODY_ATOM(GraphicsPath, moveTo)
 {
-	GraphicsPath* th=obj.as<GraphicsPath>();
-	asAtom x(T_NUMBER);
-	asAtom y(T_NUMBER);
-	ARG_UNPACK_ATOM (x) (y);
+	GraphicsPath* th=asAtomHandler::as<GraphicsPath>(obj);
+	asAtom x = asAtomHandler::fromType(T_NUMBER);
+	asAtom y = asAtomHandler::fromType(T_NUMBER);
+	ARG_CHECK(ARG_UNPACK (x) (y));
 
 	th->ensureValid();
-	asAtom v((int32_t)(GraphicsPathCommand::MOVE_TO));
+	asAtom v = asAtomHandler::fromInt((int32_t)(GraphicsPathCommand::MOVE_TO));
 	th->commands->append(v);
+	ASATOM_INCREF(x);
 	th->data->append(x);
+	ASATOM_INCREF(y);
 	th->data->append(y);
 }
 
 ASFUNCTIONBODY_ATOM(GraphicsPath, wideLineTo)
 {
-	GraphicsPath* th=obj.as<GraphicsPath>();
-	asAtom x(T_NUMBER);
-	asAtom y(T_NUMBER);
-	ARG_UNPACK_ATOM (x) (y);
+	GraphicsPath* th=asAtomHandler::as<GraphicsPath>(obj);
+	asAtom x = asAtomHandler::fromType(T_NUMBER);
+	asAtom y = asAtomHandler::fromType(T_NUMBER);
+	ARG_CHECK(ARG_UNPACK (x) (y));
 
 	th->ensureValid();
-	asAtom v((int32_t)(GraphicsPathCommand::LINE_TO));
+	asAtom v = asAtomHandler::fromInt((int32_t)(GraphicsPathCommand::LINE_TO));
 	th->commands->append(v);
-	asAtom n(0.0);
+	asAtom n = asAtomHandler::fromNumber(wrk,0.0,false);
+	ASATOM_INCREF(n);
 	th->data->append(n);
+	ASATOM_INCREF(n);
 	th->data->append(n);
+	ASATOM_INCREF(x);
 	th->data->append(x);
+	ASATOM_INCREF(y);
 	th->data->append(y);
 }
 
 ASFUNCTIONBODY_ATOM(GraphicsPath, wideMoveTo)
 {
-	GraphicsPath* th=obj.as<GraphicsPath>();
-	asAtom x(T_NUMBER);
-	asAtom y(T_NUMBER);
-	ARG_UNPACK_ATOM (x) (y);
+	GraphicsPath* th=asAtomHandler::as<GraphicsPath>(obj);
+	asAtom x = asAtomHandler::fromType(T_NUMBER);
+	asAtom y = asAtomHandler::fromType(T_NUMBER);
+	ARG_CHECK(ARG_UNPACK (x) (y));
 
 	th->ensureValid();
-	asAtom v((int32_t)(GraphicsPathCommand::MOVE_TO));
+	asAtom v = asAtomHandler::fromInt((int32_t)(GraphicsPathCommand::MOVE_TO));
 	th->commands->append(v);
-	asAtom n(0.0);
+	asAtom n = asAtomHandler::fromNumber(wrk,0.0,false);
+	ASATOM_INCREF(n);
 	th->data->append(n);
+	ASATOM_INCREF(n);
 	th->data->append(n);
+	ASATOM_INCREF(x);
 	th->data->append(x);
+	ASATOM_INCREF(y);
 	th->data->append(y);
 }
 
-void GraphicsPath::appendToTokens(tokensVector& tokens)
+void GraphicsPath::appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics)
 {
 	Graphics::pathToTokens(commands, data, winding, tokens);
 }

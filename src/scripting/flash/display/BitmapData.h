@@ -35,25 +35,30 @@ class BitmapData: public ASObject, public IBitmapDrawable
 private:
 	_NR<BitmapContainer> pixels;
 	int locked;
+	bool needsupload;
 	//Avoid cycles by not using automatic references
 	//Bitmap will take care of removing itself when needed
 	std::set<Bitmap*> users;
-	void notifyUsers() const;
+	void notifyUsers();
 public:
-	BitmapData(Class_base* c);
-	BitmapData(Class_base* c, _R<BitmapContainer> b);
-	BitmapData(Class_base* c, const BitmapData& other);
-	BitmapData(Class_base* c, uint32_t width, uint32_t height);
+	BitmapData(ASWorker* wrk,Class_base* c);
+	BitmapData(ASWorker* wrk,Class_base* c, _R<BitmapContainer> b);
+	BitmapData(ASWorker* wrk, Class_base* c, const BitmapData& other);
+	BitmapData(ASWorker* wrk,Class_base* c, uint32_t width, uint32_t height);
 	static void sinit(Class_base* c);
+	bool destruct() override;
+	void finalize() override;
+	void prepareShutdown() override;
 	_NR<BitmapContainer> getBitmapContainer() const { return pixels; }
 	int getWidth() const { return pixels->getWidth(); }
 	int getHeight() const { return pixels->getHeight(); }
-	void addUser(Bitmap* b);
+	void addUser(Bitmap* b, bool startupload=true);
 	void removeUser(Bitmap* b);
+	void checkForUpload();
 	/*
 	 * Utility method to draw a DisplayObject on the surface
 	 */
-	void drawDisplayObject(DisplayObject* d, const MATRIX& initialMatrix,bool smoothing);
+	void drawDisplayObject(DisplayObject* d, const MATRIX& initialMatrix, bool smoothing, bool forCachedBitmap, AS_BLENDMODE blendMode);
 	ASPROPERTY_GETTER(bool, transparent);
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(dispose);
@@ -88,7 +93,8 @@ public:
 	ASFUNCTION_ATOM(perlinNoise);
 	ASFUNCTION_ATOM(threshold);
 	ASFUNCTION_ATOM(merge);
+	ASFUNCTION_ATOM(paletteMap);
 };
 
-};
+}
 #endif /* SCRIPTING_FLASH_DISPLAY_BITMAPDATA_H */

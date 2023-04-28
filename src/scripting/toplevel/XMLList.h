@@ -28,7 +28,7 @@ class XMLList: public ASObject
 {
 friend class XML;
 public:
-	typedef std::vector<_R<XML>, reporter_allocator<_R<XML>>> XMLListVector;
+	typedef std::vector<_NR<XML>, reporter_allocator<_NR<XML>>> XMLListVector;
 private:
 	XMLListVector nodes;
 	bool constructed;
@@ -36,25 +36,26 @@ private:
 	multiname targetproperty;
 
 	tiny_string toString_priv();
-	void buildFromString(const tiny_string& str);
+	void buildFromString(ASWorker* wrk, const tiny_string& str);
 	std::string extractXMLDeclaration(const std::string& xml, std::string& xmldecl_out);
-	void appendSingleNode(ASObject *x);
-	void replace(unsigned int i, ASObject *x, const XML::XMLVector& retnodes, CONST_ALLOWED_FLAG allowConst, bool replacetext);
+	bool appendSingleNode(asAtom x);
+	void replace(unsigned int i, asAtom x, const XML::XMLVector& retnodes, CONST_ALLOWED_FLAG allowConst, bool replacetext, bool* alreadyset, ASWorker* wrk);
 	void getTargetVariables(const multiname& name, XML::XMLVector& retnodes);
 public:
-	XMLList(Class_base* c);
+	XMLList(ASWorker* wrk,Class_base* c);
 	/*
 	   Special constructor to build empty XMLList out of AS code
 	*/
-	XMLList(Class_base* cb,bool c);
-	XMLList(Class_base* c,const XML::XMLVector& r);
-	XMLList(Class_base* c,const XML::XMLVector& r,XMLList* targetobject,const multiname& targetproperty);
-	XMLList(Class_base* c,const std::string& str);
-	bool destruct();
+	XMLList(ASWorker* wrk,Class_base* cb,bool c);
+	XMLList(ASWorker* wrk,Class_base* c,const XML::XMLVector& r);
+	XMLList(ASWorker* wrk,Class_base* c,const XML::XMLVector& r,XMLList* targetobject,const multiname& targetproperty);
+	XMLList(ASWorker* wrk,Class_base* c,const std::string& str);
+	void finalize() override;
+	bool destruct() override;
+	void prepareShutdown() override;
 	
-	static void buildTraits(ASObject* o){}
 	static void sinit(Class_base* c);
-	static XMLList* create(SystemState *sys, const XML::XMLVector& r, XMLList *targetobject, const multiname &targetproperty);
+	static XMLList* create(ASWorker* wrk, const XML::XMLVector& r, XMLList *targetobject, const multiname &targetproperty);
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(_getLength);
 	ASFUNCTION_ATOM(attribute);
@@ -95,29 +96,32 @@ public:
 	ASFUNCTION_ATOM(_propertyIsEnumerable);
 	ASFUNCTION_ATOM(_prependChild);
 	ASFUNCTION_ATOM(_hasOwnProperty);
-	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt);
-	void setVariableByMultiname(const multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst);
-	void setVariableByMultinameIntern(const multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst, bool replacetext);
-	bool hasPropertyByMultiname(const multiname& name, bool considerDynamic, bool considerPrototype);
-	bool deleteVariableByMultiname(const multiname& name);
-	void getDescendantsByQName(const tiny_string& name, uint32_t ns, bool bIsAttribute, XML::XMLVector& ret);
+	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	GET_VARIABLE_RESULT getVariableByInteger(asAtom &ret, int index, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	multiname* setVariableByMultiname(multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst, bool* alreadyset, lightspark::ASWorker* wrk) override;
+	void setVariableByInteger(int index, asAtom &o, ASObject::CONST_ALLOWED_FLAG allowConst, bool* alreadyset,ASWorker* wrk) override;
+	multiname *setVariableByMultinameIntern(multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst, bool replacetext, bool* alreadyset, ASWorker* wrk);
+	bool hasPropertyByMultiname(const multiname& name, bool considerDynamic, bool considerPrototype, ASWorker* wrk) override;
+	bool deleteVariableByMultiname(const multiname& name, ASWorker* wrk) override;
+	void getDescendantsByQName(const multiname& name, XML::XMLVector& ret);
 	_NR<XML> convertToXML() const;
 	bool hasSimpleContent() const;
 	bool hasComplexContent() const;
-	void append(_R<XML> x);
-	void append(_R<XMLList> x);
-	void prepend(_R<XML> x);
-	void prepend(_R<XMLList> x);
+	void append(_NR<XML> x);
+	void append(_NR<XMLList> x);
+	void prepend(_NR<XML> x);
+	void prepend(_NR<XMLList> x);
 	tiny_string toString();
 	tiny_string toXMLString_internal(bool pretty=true);
-	int32_t toInt();
-	int64_t toInt64();
-	number_t toNumber();
-	bool isEqual(ASObject* r);
-	uint32_t nextNameIndex(uint32_t cur_index);
-	void nextName(asAtom &ret, uint32_t index);
-	void nextValue(asAtom &ret, uint32_t index);
-	_R<XML> reduceToXML() const;
+	int32_t toInt() override;
+	int64_t toInt64() override;
+	number_t toNumber() override;
+	number_t toNumberForComparison() override;
+	bool isEqual(ASObject* r) override;
+	uint32_t nextNameIndex(uint32_t cur_index) override;
+	void nextName(asAtom &ret, uint32_t index) override;
+	void nextValue(asAtom &ret, uint32_t index) override;
+	_NR<XML> reduceToXML() const;
 	void appendNodesTo(XML *dest) const;
 	void prependNodesTo(XML *dest) const;
 	void normalize();

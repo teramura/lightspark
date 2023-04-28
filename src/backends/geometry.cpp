@@ -41,208 +41,136 @@ void ShapesBuilder::clear()
 	strokeShapesMap.clear();
 }
 
-void ShapesBuilder::joinOutlines()
+static void mmremove(multimap<uint64_t, int>& map, uint64_t pos, int idx)
 {
-	map< unsigned int, vector< vector <ShapePathSegment> > >::iterator it=filledShapesMap.begin();
-	for(;it!=filledShapesMap.end();++it)
+	auto itpair = map.equal_range(pos);
+	while (itpair.first != itpair.second) {
+		if (itpair.first->second == idx) {
+			map.erase(itpair.first);
+			return;
+		}
+		++itpair.first;
+	}
+}
+
+static void joinOutlines(vector<ShapePathSegment>& segments)
+{
+	// Greedily reassemble paths from individual edges
+	// For some malformed files, this is ambiguous, and the order of selection
+	// of candidate edges matters.
+
+	assert(!segments.empty());
+
+	set<int> unconsumed;
+	multimap<uint64_t, int> byStartPos;
+	multimap<uint64_t, int> byEndPos;
+	for (int i = 0; i < (int)segments.size(); ++i)
 	{
-		vector< vector<ShapePathSegment> >& outlinesForColor=it->second;
-		//Repack outlines of the same color, avoiding excessive copying
-		for(int i=0;i<int(outlinesForColor.size());i++)
+		auto s = segments[i];
+		unconsumed.insert(i);
+		byStartPos.insert(make_pair(s.from, i));
+		byEndPos.insert(make_pair(s.to, i));
+	}
+
+	vector<ShapePathSegment> res;
+	int i = -1;
+	ShapePathSegment prev(0, 0, 0);
+	while (!unconsumed.empty())
+	{
+		bool reverse = false;
+		if (i != -1)
 		{
-			assert_and_throw(outlinesForColor[i].size()>=2);
-			//Already closed paths are ok
-			if(outlinesForColor[i].front()==outlinesForColor[i].back())
-				continue;
-			for(int j=outlinesForColor.size()-1;j>=0;j--)
-			{
-				if(j==i || outlinesForColor[j].empty())
-					continue;
-				if(outlinesForColor[i].front()==outlinesForColor[j].back())
-				{
-					//Copy all the vertex but the origin in this one
-					outlinesForColor[j].insert(outlinesForColor[j].end(),
-									outlinesForColor[i].begin()+1,
-									outlinesForColor[i].end());
-					//Invalidate the origin, but not the high level vector
-					outlinesForColor[i].clear();
-					break;
-				}
-				else if(outlinesForColor[i].back()==outlinesForColor[j].back())
-				{
-					//CHECK: this works for adjacent shapes of the same color?
-					//Copy all the vertex but the origin in this one
-					for (int k = outlinesForColor[i].size()-2; k >= 0; k--)
-						outlinesForColor[j].emplace_back(ShapePathSegment(outlinesForColor[i][k+1].type, outlinesForColor[i][k].i));
-					//Invalidate the origin, but not the high level vector
-					outlinesForColor[i].clear();
-					break;
-				}
+			multimap<uint64_t, int>::const_iterator it;
+			auto next_it = unconsumed.upper_bound(i);
+			if (next_it != unconsumed.end() && segments[*next_it].from == prev.to)
+				i = *next_it;
+			else if ((it = byStartPos.find(prev.to)) != byStartPos.end())
+				i = it->second;
+			else if ((it = byEndPos.find(prev.to)) != byEndPos.end()) {
+				i = it->second;
+				reverse = true;
+			}
+			else
+				i = -1;
+		}
+
+		if (i == -1)
+			i = *unconsumed.begin();
+
+		prev = segments[i];
+		mmremove(byStartPos, prev.from, i);
+		mmremove(byEndPos, prev.to, i);
+		if (reverse)
+			prev = prev.reverse();
+		res.push_back(prev);
+		unconsumed.erase(i);
+	}
+
+	segments = res;
+}
+
+void ShapesBuilder::extendOutline(const Vector2& v1, const Vector2& v2)
+{
+	uint64_t v1Index = makeVertex(v1);
+	uint64_t v2Index = makeVertex(v2);
+
+	currentSubpath.emplace_back(v1Index, v2Index, v2Index);
+}
+
+void ShapesBuilder::extendOutlineCurve(const Vector2& v1, const Vector2& v2, const Vector2& v3)
+{
+	uint64_t v1Index = makeVertex(v1);
+	uint64_t v2Index = makeVertex(v2);
+	uint64_t v3Index = makeVertex(v3);
+
+	currentSubpath.emplace_back(v1Index, v2Index, v3Index);
+}
+
+void ShapesBuilder::endSubpathForStyles(unsigned fill0, unsigned fill1, unsigned stroke, bool formorphing)
+{
+	if (currentSubpath.empty())
+		return;
+
+	// Seems important :
+	// 'natural' order of edges in file affects output of path reconstruction
+	if (fill0)
+	{
+		auto& segments = filledShapesMap[fill0];
+		if (!formorphing || !segments.empty())
+		{
+			for (int i = currentSubpath.size()-1; i >= 0; --i) {
+				segments.push_back(currentSubpath[i].reverse());
 			}
 		}
+		else // it seems that for morphshapes the first subpath has to be added in "normal" order
+			segments.insert(segments.end(), currentSubpath.begin(), currentSubpath.end());
 		
-		//Kill all the empty outlines
-		outlinesForColor.erase(remove_if(outlinesForColor.begin(),outlinesForColor.end(), isOutlineEmpty),
-				       outlinesForColor.end());
 	}
-}
 
-unsigned int ShapesBuilder::makeVertex(const Vector2& v) {
-	map<Vector2, unsigned int>::const_iterator it=verticesMap.find(v);
-	if(it!=verticesMap.end())
-		return it->second;
-
-	unsigned int i = verticesMap.size();
-	verticesMap.insert(make_pair(v, i));
-	verticesVector.push_back(v);
-	return i;
-}
-
-void ShapesBuilder::extendFilledOutlineForColor(unsigned int color, const Vector2& v1, const Vector2& v2)
-{
-	assert_and_throw(color);
-	//Find the indices of the vertex
-	unsigned int v1Index = makeVertex(v1);
-	unsigned int v2Index = makeVertex(v2);
-
-	vector< vector<ShapePathSegment> >& outlinesForColor=filledShapesMap[color];
-	//Search a suitable outline to attach this new vertex
-	for(unsigned int i=0;i<outlinesForColor.size();i++)
-	{
-		assert_and_throw(outlinesForColor[i].size()>=2);
-		if(outlinesForColor[i].front()==outlinesForColor[i].back())
-			continue;
-		if(outlinesForColor[i].back().i==v1Index)
-		{
-			outlinesForColor[i].push_back(ShapePathSegment(PATH_STRAIGHT, v2Index));
-			return;
-		}
+	if (fill1) {
+		auto& segments = filledShapesMap[fill1];
+		segments.insert(segments.end(), currentSubpath.begin(), currentSubpath.end());
 	}
-	//No suitable outline found, create one
-	vector<ShapePathSegment> vertices;
-	vertices.reserve(2);
-	vertices.push_back(ShapePathSegment(PATH_START, v1Index));
-	vertices.push_back(ShapePathSegment(PATH_STRAIGHT, v2Index));
-	outlinesForColor.push_back(vertices);
-}
 
-void ShapesBuilder::extendFilledOutlineForColorCurve(unsigned int color, const Vector2& v1, const Vector2& v2, const Vector2& v3)
-{
-	assert_and_throw(color);
-	//Find the indices of the vertex
-	unsigned int v1Index = makeVertex(v1);
-	unsigned int v2Index = makeVertex(v2);
-	unsigned int v3Index = makeVertex(v3);
-
-	vector< vector<ShapePathSegment> >& outlinesForColor=filledShapesMap[color];
-	//Search a suitable outline to attach this new vertex
-	for(unsigned int i=0;i<outlinesForColor.size();i++)
-	{
-		assert_and_throw(outlinesForColor[i].size()>=2);
-		if(outlinesForColor[i].front()==outlinesForColor[i].back())
-			continue;
-		if(outlinesForColor[i].back().i==v1Index)
-		{
-			outlinesForColor[i].emplace_back(ShapePathSegment(PATH_CURVE_QUADRATIC, v2Index));
-			outlinesForColor[i].emplace_back(ShapePathSegment(PATH_CURVE_QUADRATIC, v3Index));
-			return;
-		}
+	if (stroke) {
+		auto& segments = strokeShapesMap[stroke];
+		segments.insert(segments.end(), currentSubpath.begin(), currentSubpath.end());
 	}
-	//No suitable outline found, create one
-	vector<ShapePathSegment> vertices;
-	vertices.reserve(2);
-	vertices.emplace_back(ShapePathSegment(PATH_START, v1Index));
-	vertices.emplace_back(ShapePathSegment(PATH_CURVE_QUADRATIC, v2Index));
-	vertices.emplace_back(ShapePathSegment(PATH_CURVE_QUADRATIC, v3Index));
-	outlinesForColor.push_back(vertices);
+
+	currentSubpath.clear();
 }
 
-void ShapesBuilder::extendStrokeOutline(unsigned int stroke, const Vector2 &v1, const Vector2 &v2)
+void ShapesBuilder::outputTokens(const std::list<FILLSTYLE> &styles, const std::list<LINESTYLE2> &linestyles, tokensVector& tokens)
 {
-	assert_and_throw(stroke);
-	//Find the indices of the vertex
-	unsigned int v1Index = makeVertex(v1);
-	unsigned int v2Index = makeVertex(v2);
-
-	vector< vector<ShapePathSegment> >& outlinesForStroke=strokeShapesMap[stroke];
-	//Search a suitable outline to attach this new vertex
-	for(unsigned int i=0;i<outlinesForStroke.size();i++)
-	{
-		assert_and_throw(outlinesForStroke[i].size()>=2);
-		if(outlinesForStroke[i].front()==outlinesForStroke[i].back())
-			continue;
-		if(outlinesForStroke[i].back().i==v1Index)
-		{
-			outlinesForStroke[i].push_back(ShapePathSegment(PATH_STRAIGHT, v2Index));
-			return;
-		}
-	}
-	//No suitable outline found, create one
-	vector<ShapePathSegment> vertices;
-	vertices.reserve(2);
-	vertices.push_back(ShapePathSegment(PATH_START, v1Index));
-	vertices.push_back(ShapePathSegment(PATH_STRAIGHT, v2Index));
-	outlinesForStroke.push_back(vertices);
-}
-
-void ShapesBuilder::extendStrokeOutlineCurve(unsigned int color, const Vector2& v1, const Vector2& v2, const Vector2& v3)
-{
-	assert_and_throw(color);
-	//Find the indices of the vertex
-	unsigned int v1Index = makeVertex(v1);
-	unsigned int v2Index = makeVertex(v2);
-	unsigned int v3Index = makeVertex(v3);
-
-	vector< vector<ShapePathSegment> >& outlinesForColor=strokeShapesMap[color];
-	//Search a suitable outline to attach this new vertex
-	for(unsigned int i=0;i<outlinesForColor.size();i++)
-	{
-		assert_and_throw(outlinesForColor[i].size()>=2);
-		if(outlinesForColor[i].front()==outlinesForColor[i].back())
-			continue;
-		if(outlinesForColor[i].back().i==v1Index)
-		{
-			outlinesForColor[i].emplace_back(ShapePathSegment(PATH_CURVE_QUADRATIC, v2Index));
-			outlinesForColor[i].emplace_back(ShapePathSegment(PATH_CURVE_QUADRATIC, v3Index));
-			return;
-		}
-	}
-	//No suitable outline found, create one
-	vector<ShapePathSegment> vertices;
-	vertices.reserve(2);
-	vertices.emplace_back(ShapePathSegment(PATH_START, v1Index));
-	vertices.emplace_back(ShapePathSegment(PATH_CURVE_QUADRATIC, v2Index));
-	vertices.emplace_back(ShapePathSegment(PATH_CURVE_QUADRATIC, v3Index));
-	outlinesForColor.push_back(vertices);
-}
-
-const Vector2& ShapesBuilder::getVertex(unsigned int index)
-{
-	if (index < verticesVector.size())
-		return verticesVector[index];
-	/*
-	//Linear lookup
-	map<Vector2, unsigned int>::const_iterator it=verticesMap.begin();
-	for(;it!=verticesMap.end();++it)
-	{
-		if(it->second==index)
-			return it->first;
-	}
-	*/
-	::abort();
-}
-
-void ShapesBuilder::outputTokens(const std::list<FILLSTYLE>& styles,const std::list<LINESTYLE2>& linestyles, tokensVector& tokens)
-{
-	joinOutlines();
-	//Try to greedily condense as much as possible the output
-	map< unsigned int, vector< vector<ShapePathSegment> > >::iterator it=filledShapesMap.begin();
+	assert(currentSubpath.empty());
+	auto it=filledShapesMap.begin();
 	//For each color
 	for(;it!=filledShapesMap.end();++it)
 	{
-		assert(!it->second.empty());
+		joinOutlines(it->second);
+
 		//Find the style given the index
-		std::list<FILLSTYLE>::const_iterator stylesIt=styles.begin();
+		auto stylesIt=styles.begin();
 		assert(it->first);
 		for(unsigned int i=0;i<it->first-1;i++)
 		{
@@ -250,33 +178,49 @@ void ShapesBuilder::outputTokens(const std::list<FILLSTYLE>& styles,const std::l
 			assert(stylesIt!=styles.end());
 		}
 		//Set the fill style
-		tokens.emplace_back(GeomToken(SET_FILL,*stylesIt));
-		vector<vector<ShapePathSegment> >& outlinesForColor=it->second;
-		for(unsigned int i=0;i<outlinesForColor.size();i++)
+		tokens.filltokens.push_back(GeomToken(SET_FILL).uval);
+		tokens.filltokens.push_back(GeomToken(*stylesIt).uval);
+		switch ((*stylesIt).FillStyleType)
 		{
-			vector<ShapePathSegment>& segments=outlinesForColor[i];
-			assert (segments[0].type == PATH_START);
-			tokens.push_back(GeomToken(MOVE, getVertex(segments[0].i)));
-			for(unsigned int j=1;j<segments.size();j++) {
-				ShapePathSegment segment = segments[j];
-				assert(segment.type != PATH_START);
-				if (segment.type == PATH_STRAIGHT)
-					tokens.push_back(GeomToken(STRAIGHT, getVertex(segment.i)));
-				if (segment.type == PATH_CURVE_QUADRATIC)
-					tokens.push_back(GeomToken(CURVE_QUADRATIC, getVertex(segment.i), getVertex(segments[++j].i)));
+			case LINEAR_GRADIENT:
+			case RADIAL_GRADIENT:
+			case FOCAL_RADIAL_GRADIENT:
+				// TODO gradient fillstyles not yet implemented for nanoGL
+				tokens.canRenderToGL=false;
+				break;
+			default:
+				break;
+		}
+		vector<ShapePathSegment>& segments = it->second;
+		for (size_t j = 0; j < segments.size(); ++j)
+		{
+			ShapePathSegment segment = segments[j];
+			if (j == 0 || segment.from != segments[j-1].to) {
+				tokens.filltokens.push_back(GeomToken(MOVE).uval);
+				tokens.filltokens.push_back(GeomToken(segment.from,true).uval);
+			}
+			if (segment.quadctrl == segment.from || segment.quadctrl == segment.to) {
+				tokens.filltokens.push_back(GeomToken(STRAIGHT).uval);
+				tokens.filltokens.push_back(GeomToken(segment.to,true).uval);
+			}
+			else {
+				tokens.filltokens.push_back(GeomToken(CURVE_QUADRATIC).uval);
+				tokens.filltokens.push_back(GeomToken(segment.quadctrl,true).uval);
+				tokens.filltokens.push_back(GeomToken(segment.to,true).uval);
 			}
 		}
 	}
 	if (strokeShapesMap.size() > 0)
 	{
-		tokens.emplace_back(GeomToken(CLEAR_FILL));
+		tokens.stroketokens.push_back(GeomToken(CLEAR_FILL).uval);
 		it=strokeShapesMap.begin();
 		//For each stroke
 		for(;it!=strokeShapesMap.end();++it)
 		{
-			assert(!it->second.empty());
+			joinOutlines(it->second);
+
 			//Find the style given the index
-			std::list<LINESTYLE2>::const_iterator stylesIt=linestyles.begin();
+			auto stylesIt=linestyles.begin();
 			assert(it->first);
 			for(unsigned int i=0;i<it->first-1;i++)
 			{
@@ -284,37 +228,43 @@ void ShapesBuilder::outputTokens(const std::list<FILLSTYLE>& styles,const std::l
 				assert(stylesIt!=linestyles.end());
 			}
 			//Set the line style
-			vector<vector<ShapePathSegment> >& outlinesForStroke=it->second;
-			tokens.emplace_back(GeomToken(SET_STROKE,*stylesIt));
-			for(unsigned int i=0;i<outlinesForStroke.size();i++)
+			vector<ShapePathSegment>& segments = it->second;
+			tokens.stroketokens.push_back(GeomToken(SET_STROKE).uval);
+			tokens.stroketokens.push_back(GeomToken(*stylesIt).uval);
+			if ((*stylesIt).HasFillFlag) // TODO linestyles with fill flag not yet implemented for nanoGL
+				tokens.canRenderToGL=false;
+			for (size_t j = 0; j < segments.size(); ++j)
 			{
-				vector<ShapePathSegment>& segments=outlinesForStroke[i];
-				assert (segments[0].type == PATH_START);
-				tokens.push_back(GeomToken(MOVE, getVertex(segments[0].i)));
-				for(unsigned int j=1;j<segments.size();j++) {
-					ShapePathSegment segment = segments[j];
-					assert(segment.type != PATH_START);
-					if (segment.type == PATH_STRAIGHT)
-						tokens.push_back(GeomToken(STRAIGHT, getVertex(segment.i)));
-					if (segment.type == PATH_CURVE_QUADRATIC)
-						tokens.push_back(GeomToken(CURVE_QUADRATIC, getVertex(segment.i), getVertex(segments[++j].i)));
+				ShapePathSegment segment = segments[j];
+				if (j == 0 || segment.from != segments[j - 1].to) {
+					tokens.stroketokens.push_back(GeomToken(MOVE).uval);
+					tokens.stroketokens.push_back(GeomToken(segment.from,true).uval);
+				}
+				if (segment.quadctrl == segment.from || segment.quadctrl == segment.to) {
+					tokens.stroketokens.push_back(GeomToken(STRAIGHT).uval);
+					tokens.stroketokens.push_back(GeomToken(segment.to,true).uval);
+				}
+				else {
+					tokens.stroketokens.push_back(GeomToken(CURVE_QUADRATIC).uval);
+					tokens.stroketokens.push_back(GeomToken(segment.quadctrl,true).uval);
+					tokens.stroketokens.push_back(GeomToken(segment.to,true).uval);
 				}
 			}
 		}
 	}
 }
 
-void ShapesBuilder::outputMorphTokens(const std::list<MORPHFILLSTYLE> &styles, const std::list<MORPHLINESTYLE2> &linestyles, tokensVector &tokens, uint16_t ratio)
+void ShapesBuilder::outputMorphTokens(std::list<MORPHFILLSTYLE>& styles, std::list<MORPHLINESTYLE2> &linestyles, tokensVector &tokens, uint16_t ratio, const RECT& boundsrc)
 {
-	joinOutlines();
-	//Try to greedily condense as much as possible the output
-	map< unsigned int, vector< vector<ShapePathSegment> > >::iterator it=filledShapesMap.begin();
+	assert(currentSubpath.empty());
+	auto it=filledShapesMap.begin();
 	//For each color
 	for(;it!=filledShapesMap.end();++it)
 	{
-		assert(!it->second.empty());
+		joinOutlines(it->second);
+
 		//Find the style given the index
-		std::list<MORPHFILLSTYLE>::const_iterator stylesIt=styles.begin();
+		auto stylesIt=styles.begin();
 		assert(it->first);
 		for(unsigned int i=0;i<it->first-1;i++)
 		{
@@ -322,126 +272,265 @@ void ShapesBuilder::outputMorphTokens(const std::list<MORPHFILLSTYLE> &styles, c
 			assert(stylesIt!=styles.end());
 		}
 		//Set the fill style
-		FILLSTYLE f = *stylesIt;
-		switch (stylesIt->FillStyleType)
+		auto itfs =stylesIt->fillstylecache.find(ratio);
+		if (itfs == stylesIt->fillstylecache.end())
 		{
-			case LINEAR_GRADIENT:
+			FILLSTYLE f = *stylesIt;
+			switch (stylesIt->FillStyleType)
 			{
-				f.Matrix = stylesIt->StartGradientMatrix;
-				f.Gradient.GradientRecords.reserve(stylesIt->StartColors.size());
-				GRADRECORD gr(0xff);
+				case LINEAR_GRADIENT:
+				case RADIAL_GRADIENT:
+				case FOCAL_RADIAL_GRADIENT:
+				{
+					tokens.canRenderToGL=false;//  TODO fillstyles other than solid fill not yet implemented for nanoGL
+					number_t gradratio = float(ratio)/65535.0;
+					MATRIX ratiomatrix;
+
+					ratiomatrix.scale(stylesIt->StartGradientMatrix.getScaleX()+(stylesIt->EndGradientMatrix.getScaleX()-stylesIt->StartGradientMatrix.getScaleX())*gradratio,
+									  stylesIt->StartGradientMatrix.getScaleY()+(stylesIt->EndGradientMatrix.getScaleY()-stylesIt->StartGradientMatrix.getScaleY())*gradratio);
+					ratiomatrix.rotate((stylesIt->StartGradientMatrix.getRotation()+(stylesIt->EndGradientMatrix.getRotation()-stylesIt->StartGradientMatrix.getRotation())*gradratio)*180.0/M_PI);
+					ratiomatrix.translate(stylesIt->StartGradientMatrix.getTranslateX() +(stylesIt->EndGradientMatrix.getTranslateX()-stylesIt->StartGradientMatrix.getTranslateX())*gradratio,
+										  stylesIt->StartGradientMatrix.getTranslateY() +(stylesIt->EndGradientMatrix.getTranslateY()-stylesIt->StartGradientMatrix.getTranslateY())*gradratio);
+
+					f.Matrix = ratiomatrix;
+					std::vector<GRADRECORD>& gradrecords = stylesIt->FillStyleType==FOCAL_RADIAL_GRADIENT ? f.FocalGradient.GradientRecords : f.Gradient.GradientRecords;
+					gradrecords.reserve(stylesIt->StartColors.size());
+					GRADRECORD gr(0xff);
+					uint8_t compratio = ratio>>8;
+					for (uint32_t i1=0; i1 < stylesIt->StartColors.size(); i1++)
+					{
+						switch (compratio)
+						{
+							case 0:
+								gr.Color = stylesIt->StartColors[i1];
+								gr.Ratio = stylesIt->StartRatios[i1];
+								break;
+							case 0xff:
+								gr.Color = stylesIt->EndColors[i1];
+								gr.Ratio = stylesIt->EndRatios[i1];
+								break;
+							default:
+							{
+								gr.Color.Red = stylesIt->StartColors[i1].Red + ((int32_t)ratio * ((int32_t)stylesIt->EndColors[i1].Red-(int32_t)stylesIt->StartColors[i1].Red)/(int32_t)UINT16_MAX);
+								gr.Color.Green = stylesIt->StartColors[i1].Green + ((int32_t)ratio * ((int32_t)stylesIt->EndColors[i1].Green-(int32_t)stylesIt->StartColors[i1].Green)/(int32_t)UINT16_MAX);
+								gr.Color.Blue = stylesIt->StartColors[i1].Blue + ((int32_t)ratio * ((int32_t)stylesIt->EndColors[i1].Blue-(int32_t)stylesIt->StartColors[i1].Blue)/(int32_t)UINT16_MAX);
+								gr.Color.Alpha = stylesIt->StartColors[i1].Alpha + ((int32_t)ratio * ((int32_t)stylesIt->EndColors[i1].Alpha-(int32_t)stylesIt->StartColors[i1].Alpha)/(int32_t)UINT16_MAX);
+								uint8_t diff = stylesIt->EndRatios[i1]-stylesIt->StartRatios[i1];
+								gr.Ratio = stylesIt->StartRatios[i1] + (diff/compratio);
+								break;
+							}
+						}
+						f.FocalGradient.InterpolationMode=stylesIt->InterpolationMode;
+						f.FocalGradient.SpreadMode=stylesIt->SpreadMode;
+						f.FocalGradient.FocalPoint=stylesIt->StartFocalPoint + (stylesIt->EndFocalPoint-stylesIt->StartFocalPoint)*gradratio;
+						gradrecords.push_back(gr);
+						f.ShapeBounds = boundsrc;
+					}
+					break;
+				}
+				case SOLID_FILL:
+				{
+					uint8_t compratio = ratio>>8;
+					switch (compratio)
+					{
+						case 0:
+							f.Color = stylesIt->StartColor;
+							break;
+						case 0xff:
+							f.Color = stylesIt->EndColor;
+							break;
+						default:
+						{
+							f.Color.Red = stylesIt->StartColor.Red + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Red-(int32_t)stylesIt->StartColor.Red)/(int32_t)UINT16_MAX);
+							f.Color.Green = stylesIt->StartColor.Green + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Green-(int32_t)stylesIt->StartColor.Green)/(int32_t)UINT16_MAX);
+							f.Color.Blue = stylesIt->StartColor.Blue + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Blue-(int32_t)stylesIt->StartColor.Blue)/(int32_t)UINT16_MAX);
+							f.Color.Alpha = stylesIt->EndColor.Alpha + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Alpha-(int32_t)stylesIt->StartColor.Alpha)/(int32_t)UINT16_MAX);
+							break;
+						}
+					}
+					break;
+				}
+				default:
+					LOG(LOG_NOT_IMPLEMENTED,"morphing for fill style type:"<<stylesIt->FillStyleType);
+					break;
+			}
+			itfs = stylesIt->fillstylecache.insert(make_pair(ratio,f)).first;
+		}
+		tokens.filltokens.push_back(GeomToken(SET_FILL).uval);
+		tokens.filltokens.push_back(GeomToken((*itfs).second).uval);
+		vector<ShapePathSegment>& segments = it->second;
+		for (size_t j = 0; j < segments.size(); ++j)
+		{
+			ShapePathSegment segment = segments[j];
+			if (j == 0 || segment.from != segments[j - 1].to) {
+				tokens.filltokens.push_back(GeomToken(MOVE).uval);
+				tokens.filltokens.push_back(GeomToken(segment.from,true).uval);
+			}
+			if (segment.quadctrl == segment.from || segment.quadctrl == segment.to) {
+				tokens.filltokens.push_back(GeomToken(STRAIGHT).uval);
+				tokens.filltokens.push_back(GeomToken(segment.to,true).uval);
+			}
+			else {
+				tokens.filltokens.push_back(GeomToken(CURVE_QUADRATIC).uval);
+				tokens.filltokens.push_back(GeomToken(segment.quadctrl,true).uval);
+				tokens.filltokens.push_back(GeomToken(segment.to,true).uval);
+			}
+		}
+	}
+	if (strokeShapesMap.size() > 0)
+	{
+		tokens.stroketokens.push_back(GeomToken(CLEAR_FILL).uval);
+		it=strokeShapesMap.begin();
+		//For each stroke
+		for(;it!=strokeShapesMap.end();++it)
+		{
+			joinOutlines(it->second);
+			//Find the style given the index
+			std::list<MORPHLINESTYLE2>::iterator stylesIt=linestyles.begin();
+			assert(it->first);
+			for(unsigned int i=0;i<it->first-1;i++)
+			{
+				++stylesIt;
+				assert(stylesIt!=linestyles.end());
+			}
+			//Set the line style
+			auto itls =stylesIt->linestylecache.find(ratio);
+			if (itls == stylesIt->linestylecache.end())
+			{
+				LINESTYLE2 ls(0xff);
+				ls.FillType.FillStyleType=stylesIt->FillType.FillStyleType;
+				ls.StartCapStyle = stylesIt->StartCapStyle;
+				ls.JointStyle = stylesIt->JoinStyle;
+				ls.HasFillFlag = stylesIt->HasFillFlag;
+				ls.NoHScaleFlag = stylesIt->NoHScaleFlag;
+				ls.NoVScaleFlag = stylesIt->NoVScaleFlag;
+				ls.PixelHintingFlag = stylesIt->PixelHintingFlag;
+				ls.NoClose = stylesIt->NoClose;
+				ls.EndCapStyle = stylesIt->EndCapStyle;
+				ls.MiterLimitFactor = stylesIt->MiterLimitFactor;
+				ls.Width = stylesIt->StartWidth + (stylesIt->EndWidth - stylesIt->StartWidth)*(number_t(ratio)/65535.0);
 				uint8_t compratio = ratio>>8;
-				for (uint32_t i1=0; i1 < stylesIt->StartColors.size(); i1++)
+				if (stylesIt->HasFillFlag)
+				{
+					tokens.canRenderToGL=false;// TODO linestyles with fill flag not yet implemented for nanoGL
+					switch (stylesIt->FillType.FillStyleType)
+					{
+						case LINEAR_GRADIENT:
+						case RADIAL_GRADIENT:
+						case FOCAL_RADIAL_GRADIENT:
+						{
+							number_t gradratio = float(ratio)/65535.0;
+							MATRIX ratiomatrix;
+							
+							ratiomatrix.scale(stylesIt->FillType.StartGradientMatrix.getScaleX()+(stylesIt->FillType.EndGradientMatrix.getScaleX()-stylesIt->FillType.StartGradientMatrix.getScaleX())*gradratio,
+											  stylesIt->FillType.StartGradientMatrix.getScaleY()+(stylesIt->FillType.EndGradientMatrix.getScaleY()-stylesIt->FillType.StartGradientMatrix.getScaleY())*gradratio);
+							ratiomatrix.rotate((stylesIt->FillType.StartGradientMatrix.getRotation()+(stylesIt->FillType.EndGradientMatrix.getRotation()-stylesIt->FillType.StartGradientMatrix.getRotation())*gradratio)*180.0/M_PI);
+							ratiomatrix.translate(stylesIt->FillType.StartGradientMatrix.getTranslateX() +(stylesIt->FillType.EndGradientMatrix.getTranslateX()-stylesIt->FillType.StartGradientMatrix.getTranslateX())*gradratio,
+												  stylesIt->FillType.StartGradientMatrix.getTranslateY() +(stylesIt->FillType.EndGradientMatrix.getTranslateY()-stylesIt->FillType.StartGradientMatrix.getTranslateY())*gradratio);
+							
+							ls.FillType.Matrix = ratiomatrix;
+							std::vector<GRADRECORD>& gradrecords = stylesIt->FillType.FillStyleType==FOCAL_RADIAL_GRADIENT ? ls.FillType.FocalGradient.GradientRecords : ls.FillType.Gradient.GradientRecords;
+							gradrecords.reserve(stylesIt->FillType.StartColors.size());
+							GRADRECORD gr(0xff);
+							for (uint32_t i1=0; i1 < stylesIt->FillType.StartColors.size(); i1++)
+							{
+								switch (compratio)
+								{
+									case 0:
+										gr.Color = stylesIt->FillType.StartColors[i1];
+										gr.Ratio = stylesIt->FillType.StartRatios[i1];
+										break;
+									case 0xff:
+										gr.Color = stylesIt->FillType.EndColors[i1];
+										gr.Ratio = stylesIt->FillType.EndRatios[i1];
+										break;
+									default:
+									{
+										gr.Color.Red = stylesIt->FillType.StartColors[i1].Red + ((int32_t)ratio * ((int32_t)stylesIt->FillType.EndColors[i1].Red-(int32_t)stylesIt->FillType.StartColors[i1].Red)/(int32_t)UINT16_MAX);
+										gr.Color.Green = stylesIt->FillType.StartColors[i1].Green + ((int32_t)ratio * ((int32_t)stylesIt->FillType.EndColors[i1].Green-(int32_t)stylesIt->FillType.StartColors[i1].Green)/(int32_t)UINT16_MAX);
+										gr.Color.Blue = stylesIt->FillType.StartColors[i1].Blue + ((int32_t)ratio * ((int32_t)stylesIt->FillType.EndColors[i1].Blue-(int32_t)stylesIt->FillType.StartColors[i1].Blue)/(int32_t)UINT16_MAX);
+										gr.Color.Alpha = stylesIt->FillType.StartColors[i1].Alpha + ((int32_t)ratio * ((int32_t)stylesIt->FillType.EndColors[i1].Alpha-(int32_t)stylesIt->FillType.StartColors[i1].Alpha)/(int32_t)UINT16_MAX);
+										uint8_t diff = stylesIt->FillType.EndRatios[i1]-stylesIt->FillType.StartRatios[i1];
+										gr.Ratio = stylesIt->FillType.StartRatios[i1] + (diff/compratio);
+										break;
+									}
+								}
+								ls.FillType.FocalGradient.InterpolationMode=stylesIt->FillType.InterpolationMode;
+								ls.FillType.FocalGradient.SpreadMode=stylesIt->FillType.SpreadMode;
+								ls.FillType.FocalGradient.FocalPoint=stylesIt->FillType.StartFocalPoint + (stylesIt->FillType.EndFocalPoint-stylesIt->FillType.StartFocalPoint)*gradratio;
+								gradrecords.push_back(gr);
+								ls.FillType.ShapeBounds = boundsrc;
+							}
+							break;
+						}
+						case SOLID_FILL:
+						{
+							switch (compratio)
+							{
+								case 0:
+									ls.FillType.Color = stylesIt->StartColor;
+									break;
+								case 0xff:
+									ls.FillType.Color = stylesIt->EndColor;
+									break;
+								default:
+								{
+									ls.FillType.Color.Red = stylesIt->StartColor.Red + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Red-(int32_t)stylesIt->StartColor.Red)/(int32_t)UINT16_MAX);
+									ls.FillType.Color.Green = stylesIt->StartColor.Green + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Green-(int32_t)stylesIt->StartColor.Green)/(int32_t)UINT16_MAX);
+									ls.FillType.Color.Blue = stylesIt->StartColor.Blue + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Blue-(int32_t)stylesIt->StartColor.Blue)/(int32_t)UINT16_MAX);
+									ls.FillType.Color.Alpha = stylesIt->EndColor.Alpha + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Alpha-(int32_t)stylesIt->StartColor.Alpha)/(int32_t)UINT16_MAX);
+									break;
+								}
+							}
+							break;
+						}
+						default:
+							LOG(LOG_NOT_IMPLEMENTED,"morphing for line style type:"<<hex<<stylesIt->FillType.FillStyleType);
+							break;
+					}
+				}
+				else
 				{
 					switch (compratio)
 					{
 						case 0:
-							gr.Color = stylesIt->StartColors[i1];
-							gr.Ratio = stylesIt->StartRatios[i1];
+							ls.FillType.Color = stylesIt->StartColor;
 							break;
 						case 0xff:
-							gr.Color = stylesIt->EndColors[i1];
-							gr.Ratio = stylesIt->EndRatios[i1];
+							ls.FillType.Color = stylesIt->EndColor;
 							break;
 						default:
 						{
-							gr.Color.Red = stylesIt->StartColors[i1].Red + ((int32_t)ratio * ((int32_t)stylesIt->EndColors[i1].Red-(int32_t)stylesIt->StartColors[i1].Red)/(int32_t)UINT16_MAX);
-							gr.Color.Green = stylesIt->StartColors[i1].Green + ((int32_t)ratio * ((int32_t)stylesIt->EndColors[i1].Green-(int32_t)stylesIt->StartColors[i1].Green)/(int32_t)UINT16_MAX);
-							gr.Color.Blue = stylesIt->StartColors[i1].Blue + ((int32_t)ratio * ((int32_t)stylesIt->EndColors[i1].Blue-(int32_t)stylesIt->StartColors[i1].Blue)/(int32_t)UINT16_MAX);
-							gr.Color.Alpha = stylesIt->StartColors[i1].Alpha + ((int32_t)ratio * ((int32_t)stylesIt->EndColors[i1].Alpha-(int32_t)stylesIt->StartColors[i1].Alpha)/(int32_t)UINT16_MAX);
-							uint8_t diff = stylesIt->EndRatios[i1]-stylesIt->StartRatios[i1];
-							gr.Ratio = stylesIt->StartRatios[i1] + (diff/compratio);
+							ls.FillType.Color.Red = stylesIt->StartColor.Red + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Red-(int32_t)stylesIt->StartColor.Red)/(int32_t)UINT16_MAX);
+							ls.FillType.Color.Green = stylesIt->StartColor.Green + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Green-(int32_t)stylesIt->StartColor.Green)/(int32_t)UINT16_MAX);
+							ls.FillType.Color.Blue = stylesIt->StartColor.Blue + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Blue-(int32_t)stylesIt->StartColor.Blue)/(int32_t)UINT16_MAX);
+							ls.FillType.Color.Alpha = stylesIt->EndColor.Alpha + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Alpha-(int32_t)stylesIt->StartColor.Alpha)/(int32_t)UINT16_MAX);
 							break;
 						}
 					}
-					f.Gradient.GradientRecords.push_back(gr);
 				}
-				break;
+				itls = stylesIt->linestylecache.insert(make_pair(ratio,ls)).first;
 			}
-			case SOLID_FILL:
+			vector<ShapePathSegment>& segments = it->second;
+			tokens.stroketokens.push_back(GeomToken(SET_STROKE).uval);
+			tokens.stroketokens.push_back(GeomToken((*itls).second).uval);
+			for (size_t j = 0; j < segments.size(); ++j)
 			{
-				uint8_t compratio = ratio>>8;
-				switch (compratio)
-				{
-					case 0:
-						f.Color = stylesIt->StartColor;
-						break;
-					case 0xff:
-						f.Color = stylesIt->EndColor;
-						break;
-					default:
-					{
-						f.Color.Red = stylesIt->StartColor.Red + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Red-(int32_t)stylesIt->StartColor.Red)/(int32_t)UINT16_MAX);
-						f.Color.Green = stylesIt->StartColor.Green + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Green-(int32_t)stylesIt->StartColor.Green)/(int32_t)UINT16_MAX);
-						f.Color.Blue = stylesIt->StartColor.Blue + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Blue-(int32_t)stylesIt->StartColor.Blue)/(int32_t)UINT16_MAX);
-						f.Color.Alpha = stylesIt->EndColor.Alpha + ((int32_t)ratio * ((int32_t)stylesIt->EndColor.Alpha-(int32_t)stylesIt->StartColor.Alpha)/(int32_t)UINT16_MAX);
-						break;
-					}
-				}
-				break;
-			}
-			default:
-				LOG(LOG_NOT_IMPLEMENTED,"morphing for fill style type:"<<stylesIt->FillStyleType);
-				break;
-		}
-		tokens.emplace_back(GeomToken(SET_FILL,f));
-		vector<vector<ShapePathSegment> >& outlinesForColor=it->second;
-		for(unsigned int i=0;i<outlinesForColor.size();i++)
-		{
-			vector<ShapePathSegment>& segments=outlinesForColor[i];
-			assert (segments[0].type == PATH_START);
-			tokens.push_back(GeomToken(MOVE, getVertex(segments[0].i)));
-			for(unsigned int j=1;j<segments.size();j++) {
 				ShapePathSegment segment = segments[j];
-				assert(segment.type != PATH_START);
-				if (segment.type == PATH_STRAIGHT)
-					tokens.push_back(GeomToken(STRAIGHT, getVertex(segment.i)));
-				if (segment.type == PATH_CURVE_QUADRATIC)
-					tokens.push_back(GeomToken(CURVE_QUADRATIC, getVertex(segment.i), getVertex(segments[++j].i)));
-			}
-		}
-	}
-	if (strokeShapesMap.size() > 0)
-	{
-		tokens.emplace_back(GeomToken(CLEAR_FILL));
-		it=strokeShapesMap.begin();
-		//For each stroke
-		for(;it!=strokeShapesMap.end();++it)
-		{
-			assert(!it->second.empty());
-			//Find the style given the index
-			std::list<MORPHLINESTYLE2>::const_iterator stylesIt=linestyles.begin();
-			assert(it->first);
-			for(unsigned int i=0;i<it->first-1;i++)
-			{
-				++stylesIt;
-				assert(stylesIt!=linestyles.end());
-			}
-			//Set the line style
-			LOG(LOG_NOT_IMPLEMENTED,"morphing for line styles");
-			vector<vector<ShapePathSegment> >& outlinesForStroke=it->second;
-			tokens.emplace_back(GeomToken(SET_STROKE,*stylesIt));
-			for(unsigned int i=0;i<outlinesForStroke.size();i++)
-			{
-				vector<ShapePathSegment>& segments=outlinesForStroke[i];
-				assert (segments[0].type == PATH_START);
-				tokens.push_back(GeomToken(MOVE, getVertex(segments[0].i)));
-				for(unsigned int j=1;j<segments.size();j++) {
-					ShapePathSegment segment = segments[j];
-					assert(segment.type != PATH_START);
-					if (segment.type == PATH_STRAIGHT)
-						tokens.push_back(GeomToken(STRAIGHT, getVertex(segment.i)));
-					if (segment.type == PATH_CURVE_QUADRATIC)
-						tokens.push_back(GeomToken(CURVE_QUADRATIC, getVertex(segment.i), getVertex(segments[++j].i)));
+				if (j == 0 || segment.from != segments[j - 1].to) {
+					tokens.stroketokens.push_back(GeomToken(MOVE).uval);
+					tokens.stroketokens.push_back(GeomToken(segment.from,true).uval);
+				}
+				if (segment.quadctrl == segment.from || segment.quadctrl == segment.to) {
+					tokens.stroketokens.push_back(GeomToken(STRAIGHT).uval);
+					tokens.stroketokens.push_back(GeomToken(segment.to,true).uval);
+				}
+				else {
+					tokens.stroketokens.push_back(GeomToken(CURVE_QUADRATIC).uval);
+					tokens.stroketokens.push_back(GeomToken(segment.quadctrl,true).uval);
+					tokens.stroketokens.push_back(GeomToken(segment.to,true).uval);
 				}
 			}
 		}
-		
 	}
-}
-
-
-GeomToken::GeomToken(GEOM_TOKEN_TYPE _t, const MORPHLINESTYLE2 _s):fillStyle(0xff),lineStyle(0xff),type(_t),p1(0,0),p2(0,0),p3(0,0)
-{
-	
 }

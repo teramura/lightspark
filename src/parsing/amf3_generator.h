@@ -105,9 +105,7 @@ private:
 	asAtom parseDictionary(std::vector<tiny_string>& stringMap,
 			std::vector<asAtom>& objMap,
 			std::vector<TraitsRef>& traitsMap) const;
-	asAtom parseByteArray(std::vector<tiny_string>& stringMap,
-			std::vector<asAtom>& objMap,
-			std::vector<TraitsRef>& traitsMap) const;
+	asAtom parseByteArray(std::vector<asAtom>& objMap) const;
 	asAtom parseValue(std::vector<tiny_string>& stringMap,
 			std::vector<asAtom>& objMap,
 			std::vector<TraitsRef>& traitsMap) const;
@@ -125,10 +123,11 @@ private:
 			std::vector<TraitsRef>& traitsMap) const;
 	asAtom parseObjectAMF0(std::vector<tiny_string>& stringMap,
 			std::vector<asAtom>& objMap,
-			std::vector<TraitsRef>& traitsMap) const;
+			std::vector<TraitsRef>& traitsMap, const tiny_string& clsname="") const;
 public:
 	Amf3Deserializer(ByteArray* i):input(i) {}
 	asAtom readObject() const;
+	void readSharedObject(ASObject* ret);
 	tiny_string parseStringAMF0() const;
 };
 

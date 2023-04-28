@@ -21,20 +21,19 @@
 #define BACKENDS_LSOPENGL_H 1
 
 #ifdef ENABLE_GLES2
-	#define SUPPORT_X11 1 //Needed for SGX/OMAP GL stack
 	#include <EGL/egl.h>
 	#include <GLES2/gl2.h>
 	#include <GLES2/gl2ext.h>
 	//Texture formats
 	#ifdef GL_EXT_texture_format_BGRA8888
 		#define GL_RGBA8 GL_RGBA
-		#define GL_BGRA GL_RGBA
+		#define GL_BGRA GL_BGRA_EXT
 	#else
 		#error GL_EXT_texture_format_BGRA8888 extension needed
 	#endif
 
 	//there are no multiple buffers in GLES 2.0
-	#define glDrawBuffer(x)
+	#define glDrawBuffer(x) {}
 //	#define glBindBuffer(...)
 //	#define glBufferData(...)
 	#define glPixelStorei(...)
@@ -43,10 +42,6 @@
 	//compile on systems without glu.h.
 	#define GLEW_NO_GLU
 	#include <GL/glew.h>
-	#ifndef _WIN32
-		#include <GL/glx.h>
-	#endif
-	#undef None // conflicts with libxml++ headers
 #endif
 
 #endif /* BACKENDS_LSOPENGL_H */

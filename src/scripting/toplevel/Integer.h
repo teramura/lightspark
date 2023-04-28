@@ -31,38 +31,39 @@ friend class Number;
 friend class Array;
 friend class ABCVm;
 friend class ABCContext;
-friend ASObject* abstract_i(int32_t i);
+friend ASObject* abstract_i(SystemState* sys, int32_t i);
 public:
-	Integer(Class_base* c,int32_t v=0):ASObject(c,T_INTEGER),val(v){}
+	Integer(ASWorker* wrk,Class_base* c,int32_t v=0):ASObject(wrk,c,T_INTEGER),val(v){}
 	int32_t val;
-	static void buildTraits(ASObject* o){};
 	static void sinit(Class_base* c);
-	inline number_t toNumber() { return val; }
-	inline bool destruct() { val=0; return ASObject::destruct(); }
+	inline number_t toNumber() override { return val; }
+	inline bool destruct() override { val=0; return destructIntern(); }
 	ASFUNCTION_ATOM(_toString);
-	tiny_string toString();
+	tiny_string toString() const;
 	static tiny_string toString(int32_t val);
-	int32_t toInt()
+	int32_t toInt() override
 	{
 		return val;
 	}
-	int64_t toInt64()
+	int64_t toInt64() override
 	{
 		return val;
 	}
-	TRISTATE isLess(ASObject* r);
-	bool isEqual(ASObject* o);
+	TRISTATE isLess(ASObject* r) override;
+	TRISTATE isLessAtom(asAtom& r) override;
+	bool isEqual(ASObject* o) override;
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(generator);
 	ASFUNCTION_ATOM(_valueOf);
 	ASFUNCTION_ATOM(_toExponential);
 	ASFUNCTION_ATOM(_toFixed);
 	ASFUNCTION_ATOM(_toPrecision);
-	std::string toDebugString() { return toString()+"i"; }
+	std::string toDebugString() const override { return toString()+"i"; }
 	//Serialization interface
 	void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap);
+				std::map<const Class_base*, uint32_t>& traitsMap, ASWorker* wrk) override;
+	static void serializeValue(ByteArray* out,int32_t val);
 	/*
 	 * This method skips trailing spaces and zeroes
 	 */
@@ -71,7 +72,7 @@ public:
 	 * script conversion algorithm (i.e. accepts hex, skips
 	 * whitespace, zeroes). Returns 0 if conversion fails.
 	 */
-	static int32_t stringToASInteger(const char* cur, int radix, bool strict=false);
+	static int32_t stringToASInteger(const char* cur, int radix, bool strict=false, bool* isValid=nullptr);
 	
 };
 

@@ -17,6 +17,7 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 **************************************************************************/
 
+#include <glib.h>
 #include "version.h"
 #include "backends/security.h"
 #include "backends/config.h"
@@ -25,27 +26,84 @@
 #include "platforms/engineutils.h"
 #include "compat.h"
 #include <SDL2/SDL.h>
-#include "boost/filesystem.hpp"
 #include "flash/utils/ByteArray.h"
+#include <sys/stat.h>
+#include "parsing/streams.h"
 
-
+#ifdef __MINGW32__
+    #ifndef PATH_MAX
+    #define PATH_MAX _MAX_PATH
+    #endif
+    #define realpath(N,R) _fullpath((R),(N),_MAX_PATH)
+#endif
 using namespace std;
 using namespace lightspark;
 
 class StandaloneEngineData: public EngineData
 {
 	SDL_GLContext mSDLContext;
-public:
-	StandaloneEngineData()
+	char* mBaseDir;
+	tiny_string mApplicationStoragePath;
+	void removedir(const char* dir)
 	{
+		GDir* d = g_dir_open(dir,0,nullptr);
+		if (!d)
+			return;
+		while (true)
+		{
+			const char* filename = g_dir_read_name (d);
+			if (!filename)
+			{
+				g_dir_close(d);
+				return;
+			}
+			string path = dir;
+			path += G_DIR_SEPARATOR_S;
+			path += filename;
+			struct stat st;
+			stat(path.c_str(), &st);
+			if(st.st_mode & S_IFDIR)
+				removedir(path.c_str());
+			else
+				::remove(path.c_str());
+		}
+		g_dir_close(d);
+		removedir(dir);
+	}
+	bool isvalidfilename(const tiny_string& filename)
+	{
+		if (filename.find("./") != tiny_string::npos || filename == ".." ||
+				filename.find("~") != tiny_string::npos)
+			return false;
+		return true;
+	}
+	size_t getfilesize(const char* filepath)
+	{
+		struct stat st;
+		stat(filepath, &st);
+		return st.st_size;
+	}
+public:
+	StandaloneEngineData(const tiny_string& filedatapath)
+	{
+		sharedObjectDatapath = Config::getConfig()->getCacheDirectory();
+		sharedObjectDatapath += G_DIR_SEPARATOR_S;
+		sharedObjectDatapath += "data";
+		sharedObjectDatapath += filedatapath;
+
+		mApplicationStoragePath = Config::getConfig()->getCacheDirectory();
+		mApplicationStoragePath += filedatapath;
+		mApplicationStoragePath += G_DIR_SEPARATOR_S;
+		mApplicationStoragePath += "appstorage";
+		mBaseDir = g_get_current_dir();
 	}
 	~StandaloneEngineData()
 	{
-		boost::filesystem::path p(Config::getConfig()->getDataDirectory());
-		if (!p.empty())
-			boost::filesystem::remove_all(p);
+		removedir(Config::getConfig()->getDataDirectory().c_str());
+		if (mBaseDir)
+			g_free(mBaseDir);
 	}
-	SDL_Window* createWidget(uint32_t w, uint32_t h)
+	SDL_Window* createWidget(uint32_t w, uint32_t h) override
 	{
 		SDL_Window* window = SDL_CreateWindow("Lightspark",SDL_WINDOWPOS_UNDEFINED,SDL_WINDOWPOS_UNDEFINED,w,h,SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
 		if (window == 0)
@@ -57,28 +115,28 @@ public:
 		}
 		return window;
 	}
-	
-	uint32_t getWindowForGnash()
+
+	uint32_t getWindowForGnash() override
 	{
 		/* passing and invalid window id to gnash makes
 		 * it create its own window */
 		return 0;
 	}
-	void stopMainDownload() {}
-	bool isSizable() const
+	void stopMainDownload() override {}
+	bool isSizable() const override
 	{
 		return true;
 	}
-	void grabFocus()
+	void grabFocus() override
 	{
 		/* Nothing to do because the standalone main window is
 		 * always focused */
 	}
-	void openPageInBrowser(const tiny_string& url, const tiny_string& window)
+	void openPageInBrowser(const tiny_string& url, const tiny_string& window) override
 	{
 		LOG(LOG_NOT_IMPLEMENTED, "openPageInBrowser not implemented in the standalone mode");
 	}
-	bool getScreenData(SDL_DisplayMode* screen)
+	bool getScreenData(SDL_DisplayMode* screen) override
 	{
 		if (SDL_GetDesktopDisplayMode(0, screen) != 0) {
 			LOG(LOG_ERROR,"Capabilities: SDL_GetDesktopDisplayMode failed:"<<SDL_GetError());
@@ -86,7 +144,7 @@ public:
 		}
 		return true;
 	}
-	double getScreenDPI()
+	double getScreenDPI() override
 	{
 #if SDL_VERSION_ATLEAST(2, 0, 4)
 		float ddpi;
@@ -99,130 +157,194 @@ public:
 		return 96.0;
 #endif
 	}
-	void DoSwapBuffers()
+	void DoSwapBuffers() override
 	{
 		uint32_t err;
 		if (getGLError(err))
 			LOG(LOG_ERROR,"swapbuffers:"<<widget<<" "<<err);
 		SDL_GL_SwapWindow(widget);
 	}
-	void InitOpenGL()
+	void InitOpenGL() override
 	{
 		mSDLContext = SDL_GL_CreateContext(widget);
 		if (!mSDLContext)
 			LOG(LOG_ERROR,"failed to create openGL context:"<<SDL_GetError());
 		initGLEW();
 	}
-	void DeinitOpenGL()
+	void DeinitOpenGL() override
 	{
 		SDL_GL_DeleteContext(mSDLContext);
 	}
-	bool FileExists(const tiny_string& filename)
+
+	bool FileExists(SystemState* sys,const tiny_string& filename, bool isfullpath) override
 	{
-		if (!boost::filesystem::portable_file_name(filename))
+		if (!isvalidfilename(filename))
 			return false;
-		boost::filesystem::path p(Config::getConfig()->getDataDirectory());
+		tiny_string p = isfullpath ? filename : FileFullPath(sys,filename);
 		if (p.empty())
 			return false;
-		p /= filename.raw_buf();
-		return boost::filesystem::exists(p);
+		return g_file_test(p.raw_buf(),G_FILE_TEST_EXISTS);
 	}
-	tiny_string FileRead(const tiny_string& filename)
+
+	uint32_t FileSize(SystemState* sys,const tiny_string& filename, bool isfullpath) override
 	{
-		if (!boost::filesystem::portable_file_name(filename))
-			return "";
-		boost::filesystem::path p(Config::getConfig()->getDataDirectory());
+		if (!isvalidfilename(filename))
+			return 0;
+		tiny_string p = isfullpath ? filename : FileFullPath(sys,filename);
+		if (p.empty())
+			return 0;
+		return getfilesize(p.raw_buf());
+	}
+	
+	tiny_string FileFullPath(SystemState* sys, const tiny_string& filename) override
+	{
+		std::string p;
+		if (sys->flashMode == SystemState::FLASH_MODE::AIR && mBaseDir)
+		{
+			if (!g_path_is_absolute(filename.raw_buf()))
+				p = mBaseDir;
+		}
+		else
+			p = Config::getConfig()->getDataDirectory();
 		if (p.empty())
 			return "";
-		p /= filename.raw_buf();
-		if (!boost::filesystem::exists(p))
+		p += G_DIR_SEPARATOR_S;
+		p += filename.raw_buf();
+		return p;
+	}
+
+	tiny_string FileRead(SystemState* sys,const tiny_string& filename, bool isfullpath) override
+	{
+		if (!isvalidfilename(filename))
 			return "";
-		uint32_t len = boost::filesystem::file_size(p);
+		tiny_string p = isfullpath ? filename : FileFullPath(sys,filename);
+		if (p.empty())
+			return "";
+
+		if (!g_file_test(p.raw_buf(),G_FILE_TEST_EXISTS))
+			return "";
+		uint32_t len = getfilesize(p.raw_buf());
 		std::ifstream file;
 		
-		file.open(p.string(), std::ios::in|std::ios::binary);
+		file.open(p.raw_buf(), std::ios::in|std::ios::binary);
 		
 		tiny_string res(file,len);
 		file.close();
 		return res;
 	}
-	void FileWrite(const tiny_string& filename, const tiny_string& data)
+	void FileWrite(SystemState* sys,const tiny_string& filename, const tiny_string& data, bool isfullpath) override
 	{
-		if (!boost::filesystem::portable_file_name(filename))
+		if (!isvalidfilename(filename))
 			return;
-		boost::filesystem::path p(Config::getConfig()->getDataDirectory());
+		tiny_string p = isfullpath ? filename : FileFullPath(sys,filename);
 		if (p.empty())
 			return;
-		p /= filename.raw_buf();
 		std::ofstream file;
-		
-		file.open(p.string(), std::ios::out|std::ios::binary);
+
+		file.open(p.raw_buf(), std::ios::out|std::ios::binary);
 		file << data;
 		file.close();
 	}
-	void FileReadByteArray(const tiny_string &filename,ByteArray* res)
+	uint8_t FileReadUnsignedByte(SystemState* sys, const tiny_string& filename, uint32_t startpos, bool isfullpath) override
 	{
-		if (!boost::filesystem::portable_file_name(filename))
+		if (!isvalidfilename(filename))
+			return 0;
+		tiny_string p = isfullpath ? filename : FileFullPath(sys,filename);
+		if (p.empty())
+			return 0;
+		if (!g_file_test(p.raw_buf(),G_FILE_TEST_EXISTS))
+			return 0;
+		std::ifstream file;
+		file.open(p.raw_buf(), std::ios::in|std::ios::binary);
+		file.seekg(startpos);
+		uint8_t buf;
+		file.read((char*)&buf,1);
+		file.close();
+		return buf;
+	}
+	void FileReadByteArray(SystemState* sys,const tiny_string &filename,ByteArray* res, uint32_t startpos, uint32_t length, bool isfullpath) override
+	{
+		if (!isvalidfilename(filename))
 			return;
-		boost::filesystem::path p(Config::getConfig()->getDataDirectory());
+		tiny_string p = isfullpath ? filename : FileFullPath(sys,filename);
 		if (p.empty())
 			return;
-		p /= filename.raw_buf();
-		if (!boost::filesystem::exists(p))
+		if (!g_file_test(p.raw_buf(),G_FILE_TEST_EXISTS))
 			return;
-		uint32_t len = boost::filesystem::file_size(p);
+		uint32_t len = min(length,uint32_t(getfilesize(p.raw_buf())-startpos));
 		std::ifstream file;
-		uint8_t buf[len];
-		file.open(p.string(), std::ios::in|std::ios::binary);
+		uint8_t* buf = new uint8_t[len];
+		file.open(p.raw_buf(), std::ios::in|std::ios::binary);
+		file.seekg(startpos);
 		file.read((char*)buf,len);
 		res->writeBytes(buf,len);
 		file.close();
+		delete[] buf;
 	}
 	
-	void FileWriteByteArray(const tiny_string &filename, ByteArray *data)
+	void FileWriteByteArray(SystemState* sys,const tiny_string &filename, ByteArray *data, uint32_t startpos, uint32_t length, bool isfullpath) override
 	{
-		if (data == NULL)
+		if (!isvalidfilename(filename))
 			return;
-		if (!boost::filesystem::portable_file_name(filename))
-			return;
-		boost::filesystem::path p(Config::getConfig()->getDataDirectory());
+		tiny_string p = isfullpath ? filename : FileFullPath(sys,filename);
 		if (p.empty())
 			return;
-		p /= filename.raw_buf();
 		std::ofstream file;
 		
-		file.open(p.string(), std::ios::out|std::ios::binary|std::ios::trunc);
+		file.open(p.raw_buf(), std::ios::out|std::ios::binary|std::ios::trunc);
 		uint8_t* buf = data->getBuffer(data->getLength(),false);
-		file.write((char*)buf,data->getLength());
+		uint32_t len = length;
+		if (length == UINT32_MAX || startpos+length > data->getLength())
+			len = data->getLength()-startpos;
+		file.write((char*)buf+startpos,len);
 		file.close();
+	}
+	bool FileCreateDirectory(SystemState* sys,const tiny_string& filename, bool isfullpath) override
+	{
+		if (!isvalidfilename(filename))
+			return false;
+		tiny_string p = isfullpath ? filename : FileFullPath(sys,filename);
+		if (p.empty())
+			return false;
+		if (!p.endsWith(G_DIR_SEPARATOR_S))
+		{
+			// if filename doesn't end with a directory separator, it is treated as a full path to a file
+			gchar* dir = g_path_get_dirname(p.raw_buf());
+			p=dir;
+			g_free(dir);
+		}
+		return g_mkdir_with_parents(p.raw_buf(),0755) == 0;
+	}
+	bool FilePathIsAbsolute(const tiny_string& filename) override
+	{
+		return g_path_is_absolute(filename.raw_buf());
+	}
+	tiny_string FileGetApplicationStorageDir() override
+	{
+		return mApplicationStoragePath;
 	}
 };
 
 int main(int argc, char* argv[])
 {
-	char* fileName=NULL;
-	char* url=NULL;
-	char* paramsFileName=NULL;
+	char* fileName=nullptr;
+	char* url=nullptr;
+	char* paramsFileName=nullptr;
 #ifdef PROFILING_SUPPORT
-	char* profilingFileName=NULL;
+	char* profilingFileName=nullptr;
 #endif
-	char *HTTPcookie=NULL;
+	char *HTTPcookie=nullptr;
 	SecurityManager::SANDBOXTYPE sandboxType=SecurityManager::LOCAL_WITH_FILE;
 	bool useInterpreter=true;
 	bool useFastInterpreter=false;
 	bool useJit=false;
+	bool ignoreUnhandledExceptions = false;
+	bool startInFullScreenMode=false;
+	double startscalefactor=1.0;
 	SystemState::ERROR_TYPE exitOnError=SystemState::ERROR_PARSING;
 	LOG_LEVEL log_level=LOG_INFO;
 	SystemState::FLASH_MODE flashMode=SystemState::FLASH;
-
-	setlocale(LC_ALL, "");
-#ifdef _WIN32
-	const char* localedir = getExectuablePath();
-#else
-	const char* localedir = "/usr/share/locale";
-#endif
-	bindtextdomain("lightspark", localedir);
-	textdomain("lightspark");
+	std::vector<tiny_string> extensions;
 
 	LOG(LOG_INFO,"Lightspark version " << VERSION << " Copyright 2009-2013 Alessandro Pignotti and others");
 
@@ -234,7 +356,7 @@ int main(int argc, char* argv[])
 			i++;
 			if(i==argc)
 			{
-				fileName=NULL;
+				fileName=nullptr;
 				break;
 			}
 
@@ -250,12 +372,26 @@ int main(int argc, char* argv[])
 			useFastInterpreter=true;
 		else if(strcmp(argv[i],"-j")==0 || strcmp(argv[i],"--enable-jit")==0)
 			useJit=true;
+		else if(strcmp(argv[i],"-ne")==0 || strcmp(argv[i],"--ignore-unhandled-exceptions")==0)
+			ignoreUnhandledExceptions=true;
+		else if(strcmp(argv[i],"-fs")==0 || strcmp(argv[i],"--fullscreen")==0)
+			startInFullScreenMode=true;
+		else if(strcmp(argv[i],"-sc")==0 || strcmp(argv[i],"--scale")==0)
+		{
+			i++;
+			if(i==argc)
+			{
+				fileName=nullptr;
+				break;
+			}
+			startscalefactor = max(1.0,atof(argv[i]));
+		}
 		else if(strcmp(argv[i],"-l")==0 || strcmp(argv[i],"--log-level")==0)
 		{
 			i++;
 			if(i==argc)
 			{
-				fileName=NULL;
+				fileName=nullptr;
 				break;
 			}
 
@@ -267,10 +403,22 @@ int main(int argc, char* argv[])
 			i++;
 			if(i==argc)
 			{
-				fileName=NULL;
+				fileName=nullptr;
 				break;
 			}
 			paramsFileName=argv[i];
+		}
+		else if (strcmp(argv[i],"-le")==0 || 
+				 strcmp(argv[i],"--load-extension")==0)
+		{
+			i++;
+			if(i==argc)
+			{
+				fileName=nullptr;
+				break;
+			}
+			tiny_string ext = argv[i];
+			extensions.push_back(ext);
 		}
 #ifdef PROFILING_SUPPORT
 		else if(strcmp(argv[i],"-o")==0 || 
@@ -291,7 +439,7 @@ int main(int argc, char* argv[])
 			i++;
 			if(i==argc)
 			{
-				fileName=NULL;
+				fileName=nullptr;
 				break;
 			}
 			if(strncmp(argv[i], "remote", 6) == 0)
@@ -322,7 +470,7 @@ int main(int argc, char* argv[])
 			i++;
 			if(i==argc)
 			{
-				fileName=NULL;
+				fileName=nullptr;
 				break;
 			}
 			HTTPcookie=argv[i];
@@ -332,29 +480,37 @@ int main(int argc, char* argv[])
 			//No options flag, so set the swf file name
 			if(fileName) //If already set, exit in error status
 			{
-				fileName=NULL;
+				fileName=nullptr;
 				break;
 			}
 			fileName=argv[i];
 		}
 	}
 
-	if(fileName==NULL)
+	if(fileName==nullptr)
 	{
 		LOG(LOG_ERROR, "Usage: " << argv[0] << " [--url|-u http://loader.url/file.swf]" <<
-			" [--disable-interpreter|-ni] [--enable-fast-interpreter|-fi] [--enable-jit|-j]" <<
+			" [--disable-interpreter|-ni] [--enable-fast-interpreter|-fi]" <<
+#ifdef LLVM_ENABLED
+			" [--enable-jit|-j]" <<
+#endif
 			" [--log-level|-l 0-4] [--parameters-file|-p params-file] [--security-sandbox|-s sandbox]" <<
 			" [--exit-on-error] [--HTTP-cookies cookie] [--air] [--avmplus] [--disable-rendering]" <<
 #ifdef PROFILING_SUPPORT
 			" [--profiling-output|-o profiling-file]" <<
 #endif
+			" [--ignore-unhandled-exceptions|-ne]"
+			" [--fullscreen|-fs]"
+			" [--scale|-sc]"
+			" [--load-extension|-le extension-file"
 			" [--version|-v]" <<
 			" <file.swf>");
 		exit(1);
 	}
 
 	Log::setLogLevel(log_level);
-	ifstream f(fileName, ios::in|ios::binary);
+	lsfilereader r(fileName);
+	istream f(&r);
 	f.seekg(0, ios::end);
 	uint32_t fileSize=f.tellg();
 	f.seekg(0, ios::beg);
@@ -376,8 +532,13 @@ int main(int argc, char* argv[])
 	//NOTE: see SystemState declaration
 	SystemState* sys = new SystemState(fileSize, flashMode);
 	ParseThread* pt = new ParseThread(f, sys->mainClip);
+	pt->addExtensions(extensions);
 	setTLSSys(sys);
+	setTLSWorker(sys->worker);
+
 	sys->setDownloadedPath(fileName);
+	sys->allowFullscreen=true;
+	sys->allowFullscreenInteractive=true;
 
 	//This setting allows qualifying filename-only paths to fully qualified paths
 	//When the URL parameter is set, set the root URL to the given parameter
@@ -388,7 +549,7 @@ int main(int argc, char* argv[])
 		if (sandboxType != SecurityManager::REMOTE &&
 		    sys->mainClip->getOrigin().getProtocol() != "file")
 		{
-			LOG(LOG_INFO, _("Switching to remote sandbox because of remote url"));
+			LOG(LOG_INFO, "Switching to remote sandbox because of remote url");
 			sandboxType = SecurityManager::REMOTE;
 		}
 	}
@@ -396,7 +557,7 @@ int main(int argc, char* argv[])
 	//When running in a local sandbox, set the root URL to the current working dir
 	else if(sandboxType != SecurityManager::REMOTE)
 	{
-		char * cwd = get_current_dir_name();
+		char * cwd = g_get_current_dir();
 		string cwdStr = string("file://") + string(cwd);
 		free(cwd);
 		cwdStr += "/";
@@ -406,18 +567,19 @@ int main(int argc, char* argv[])
 	else
 	{
 		sys->mainClip->setOrigin(string("file://") + fileName);
-		LOG(LOG_INFO, _("Warning: running with no origin URL set."));
+		LOG(LOG_INFO, "Warning: running with no origin URL set.");
 	}
 
 	//One of useInterpreter or useJit must be enabled
 	if(!(useInterpreter || useJit))
 	{
-		LOG(LOG_ERROR,_("No execution model enabled"));
+		LOG(LOG_ERROR,"No execution model enabled");
 		exit(1);
 	}
 	sys->useInterpreter=useInterpreter;
 	sys->useFastInterpreter=useFastInterpreter;
 	sys->useJit=useJit;
+	sys->ignoreUnhandledExceptions=ignoreUnhandledExceptions;
 	sys->exitOnError=exitOnError;
 	if(paramsFileName)
 		sys->parseParametersFromFile(paramsFileName);
@@ -428,17 +590,33 @@ int main(int argc, char* argv[])
 	if(HTTPcookie)
 		sys->setCookies(HTTPcookie);
 
-	sys->setParamsAndEngine(new StandaloneEngineData(), true);
+	// create path for shared object local storage
+	char absolutepath[PATH_MAX];
+	if (realpath(fileName,absolutepath) == nullptr)
+	{
+		LOG(LOG_ERROR, "Unable to resolve file");
+		exit(1);
+	}
+	tiny_string homedir(g_get_home_dir());
+	tiny_string filedatapath = absolutepath;
+	if (filedatapath.find(homedir) == 0) // remove home dir, if file is located below home dir
+		filedatapath = filedatapath.substr_bytes(homedir.numBytes(),UINT32_MAX);
+
+	sys->setParamsAndEngine(new StandaloneEngineData(filedatapath), true);
+	// on standalone local storage is always allowed
+	sys->getEngineData()->setLocalStorageAllowedMarker(true);
+	sys->getEngineData()->startInFullScreenMode=startInFullScreenMode;
+	sys->getEngineData()->startscalefactor=startscalefactor;
 
 	sys->securityManager->setSandboxType(sandboxType);
 	if(sandboxType == SecurityManager::REMOTE)
-		LOG(LOG_INFO, _("Running in remote sandbox"));
+		LOG(LOG_INFO, "Running in remote sandbox");
 	else if(sandboxType == SecurityManager::LOCAL_WITH_NETWORK)
-		LOG(LOG_INFO, _("Running in local-with-networking sandbox"));
+		LOG(LOG_INFO, "Running in local-with-networking sandbox");
 	else if(sandboxType == SecurityManager::LOCAL_WITH_FILE)
-		LOG(LOG_INFO, _("Running in local-with-filesystem sandbox"));
+		LOG(LOG_INFO, "Running in local-with-filesystem sandbox");
 	else if(sandboxType == SecurityManager::LOCAL_TRUSTED)
-		LOG(LOG_INFO, _("Running in local-trusted sandbox"));
+		LOG(LOG_INFO, "Running in local-trusted sandbox");
 
 	sys->downloadManager=new StandaloneDownloadManager();
 
@@ -454,7 +632,7 @@ int main(int argc, char* argv[])
 	SDL_zero(event);
 	event.type = LS_USEREVENT_QUIT;
 	SDL_PushEvent(&event);
-	EngineData::mainLoopThread->join();
+	SDL_WaitThread(EngineData::mainLoopThread,nullptr);
 
 	delete pt;
 	delete sys;

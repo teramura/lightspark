@@ -33,16 +33,16 @@ class Shader;
 class GraphicsShaderFill: public ASObject, public IGraphicsFill, public IGraphicsData
 {
 public:
-	GraphicsShaderFill(Class_base* c);
+	GraphicsShaderFill(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base* c);
-	void finalize();
+	void finalize() override;
 	ASFUNCTION_ATOM(_constructor);
 	ASPROPERTY_GETTER_SETTER(_NR<Matrix>, matrix);
 	ASPROPERTY_GETTER_SETTER(_NR<Shader>, shader);
-	FILLSTYLE toFillStyle();
-	void appendToTokens(tokensVector& tokens);
+	FILLSTYLE toFillStyle() override;
+	void appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics) override;
 };
 
-};
+}
 
 #endif /* SCRIPTING_FLASH_DISPLAY_GRAPHICSSHADERFILL_H */

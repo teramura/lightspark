@@ -23,14 +23,14 @@
 #include "compat.h"
 #include <vector>
 #include <set>
+#include <unordered_set>
 #include "asobject.h"
 #include "exceptions.h"
 #include "threading.h"
 #include "scripting/abcutils.h"
-#include "scripting/toplevel/Boolean.h"
-#include "scripting/toplevel/Error.h"
+#include "scripting/toplevel/Array.h"
+#include "scripting/flash/system/flashsystem.h"
 #include "memory_support.h"
-#include <boost/intrusive/list.hpp>
 
 namespace pugi
 {
@@ -52,9 +52,8 @@ class Any;
 class Void;
 class Class_object;
 class ApplicationDomain;
+class ASWorker;
 extern bool isVmThread();
-// Enum used during early binding in abc_optimizer.cpp
-enum EARLY_BIND_STATUS { NOT_BINDED=0, CANNOT_BIND=1, BINDED };
 
 /* This abstract class represents a type, i.e. something that a value can be coerced to.
  * Currently Class_base and Template_base implement this interface.
@@ -77,20 +76,19 @@ public:
 	 * then an exception is thrown.
 	 * The caller does not own the object returned.
 	 */
-	static const Type* getTypeFromMultiname(const multiname* mn, ABCContext* context);
+	static const Type* getTypeFromMultiname(multiname* mn, ABCContext* context, bool opportunistic=false);
 	/*
 	 * Checks if the type is already in sys->classes
 	 */
-	static const Type *getBuiltinType(SystemState* sys, const multiname* mn);
+	static const Type *getBuiltinType(ASWorker* wrk, multiname* mn);
 	/*
 	 * Converts the given object to an object of this type.
-	 * It consumes one reference of 'o'.
-	 * The returned object must be decRef'ed by caller.
 	 * If the argument cannot be converted, it throws a TypeError
+	 * returns true if the atom is really converted into another instance
 	 */
-	virtual void coerce(SystemState* sys, asAtom& o) const=0;
+	virtual bool coerce(ASWorker* wrk, asAtom& o) const=0;
 
-	virtual void coerceForTemplate(SystemState* sys, asAtom& o) const=0;
+	virtual void coerceForTemplate(ASWorker* wrk, asAtom& o) const=0;
 	
 	/* Return "any" for anyType, "void" for voidType and class_name.name for Class_base */
 	virtual tiny_string getName() const=0;
@@ -103,6 +101,9 @@ public:
 
 	/* returns true if this type is a builtin type, false for classes defined in the swf file */
 	virtual bool isBuiltin() const = 0;
+	
+	/* returns the Global object this type is associated to */
+	virtual Global* getGlobalScope() const = 0;
 };
 template<> inline Type* ASObject::as<Type>() { return dynamic_cast<Type*>(this); }
 template<> inline const Type* ASObject::as<Type>() const { return dynamic_cast<const Type*>(this); }
@@ -110,25 +111,27 @@ template<> inline const Type* ASObject::as<Type>() const { return dynamic_cast<c
 class Any: public Type
 {
 public:
-	void coerce(SystemState* sys,asAtom& o) const {}
-	void coerceForTemplate(SystemState* sys, asAtom& o) const {}
+	bool coerce(ASWorker* wrk,asAtom& o) const override { return false; }
+	void coerceForTemplate(ASWorker* wrk, asAtom& o) const override {}
 	virtual ~Any() {}
-	tiny_string getName() const { return "any"; }
-	EARLY_BIND_STATUS resolveMultinameStatically(const multiname& name) const { return CANNOT_BIND; }
-	const multiname* resolveSlotTypeName(uint32_t slotId) const { return NULL; }
-	bool isBuiltin() const { return true; }
+	tiny_string getName() const override { return "any"; }
+	EARLY_BIND_STATUS resolveMultinameStatically(const multiname& name) const override { return CANNOT_BIND; }
+	const multiname* resolveSlotTypeName(uint32_t slotId) const override { return nullptr; }
+	bool isBuiltin() const override { return true; }
+	Global* getGlobalScope() const override { return nullptr; }
 };
 
 class Void: public Type
 {
 public:
-	void coerce(SystemState* sys,asAtom& o) const;
-	void coerceForTemplate(SystemState* sys, asAtom& o) const { coerce(sys,o); }
+	bool coerce(ASWorker* wrk,asAtom& o) const override { return false; }
+	void coerceForTemplate(ASWorker* wrk, asAtom& o) const override { }
 	virtual ~Void() {}
-	tiny_string getName() const { return "void"; }
-	EARLY_BIND_STATUS resolveMultinameStatically(const multiname& name) const { return NOT_BINDED; }
-	const multiname* resolveSlotTypeName(uint32_t slotId) const { return NULL; }
-	bool isBuiltin() const { return true; }
+	tiny_string getName() const override { return "void"; }
+	EARLY_BIND_STATUS resolveMultinameStatically(const multiname& name) const override { return NOT_BINDED; }
+	const multiname* resolveSlotTypeName(uint32_t slotId) const override { return nullptr; }
+	bool isBuiltin() const override { return true; }
+	Global* getGlobalScope() const override { return nullptr; }
 };
 
 /*
@@ -140,54 +143,18 @@ private:
 	const method_info* mi;
 public:
 	ActivationType(const method_info* m):mi(m){}
-	void coerce(SystemState* sys,asAtom& o) const { throw RunTimeException("Coercing to an ActivationType should not happen");}
-	void coerceForTemplate(SystemState* sys,asAtom& o) const { throw RunTimeException("Coercing to an ActivationType should not happen");}
+	bool coerce(ASWorker* wrk,asAtom& o) const override { throw RunTimeException("Coercing to an ActivationType should not happen");}
+	void coerceForTemplate(ASWorker* wrk,asAtom& o) const override { throw RunTimeException("Coercing to an ActivationType should not happen");}
 	virtual ~ActivationType() {}
-	tiny_string getName() const { return "activation"; }
-	EARLY_BIND_STATUS resolveMultinameStatically(const multiname& name) const;
-	const multiname* resolveSlotTypeName(uint32_t slotId) const;
-	bool isBuiltin() const { return true; }
+	tiny_string getName() const override { return "activation"; }
+	EARLY_BIND_STATUS resolveMultinameStatically(const multiname& name) const override;
+	const multiname* resolveSlotTypeName(uint32_t slotId) const override;
+	bool isBuiltin() const override { return true; }
+	Global* getGlobalScope() const override { return nullptr; }
 };
 
 class Prototype;
 class ObjectConstructor;
-
-#define FREELIST_SIZE 16
-struct asfreelist
-{
-	ASObject* freelist[FREELIST_SIZE];
-	int freelistsize;
-	asfreelist():freelistsize(0) {}
-	~asfreelist() 
-	{
-		for (int i = 0; i < freelistsize; i++)
-			delete freelist[i];
-		freelistsize = 0;
-	}
-
-	inline ASObject* getObjectFromFreeList()
-	{
-#ifndef NDEBUG
-		// all ASObjects must be created in the VM thread
-		//assert_and_throw(isVmThread());
-#endif
-		return freelistsize ? freelist[--freelistsize] :NULL;
-	}
-	inline bool pushObjectToFreeList(ASObject *obj)
-	{
-#ifndef NDEBUG
-		// all ASObjects must be created in the VM thread
-		//assert_and_throw(isVmThread());
-#endif
-		assert(obj->getRefCount() == 1);
-		if (freelistsize < FREELIST_SIZE)
-		{
-			freelist[freelistsize++]=obj;
-			return true;
-		}
-		return false;
-	}
-};
 
 class Class_base: public ASObject, public Type
 {
@@ -197,23 +164,30 @@ template<class T> friend class Template;
 private:
 	mutable std::vector<multiname> interfaces;
 	mutable std::vector<Class_base*> interfaces_added;
+	std::unordered_set<uint32_t> overriddenmethods;
 	nsNameAndKind protected_ns;
-	void initializeProtectedNamespace(uint32_t nameId, const namespace_info& ns);
+	void initializeProtectedNamespace(uint32_t nameId, const namespace_info& ns,RootMovieClip* root);
 	IFunction* constructor;
 	void describeTraits(pugi::xml_node &root, std::vector<traits_info>& traits, std::map<varName,pugi::xml_node> &propnames, bool first) const;
-	void describeVariables(pugi::xml_node &root, const Class_base* c, std::map<tiny_string, pugi::xml_node *> &instanceNodes, const variables_map& map, bool isTemplate) const;
+	void describeVariables(pugi::xml_node &root, const Class_base* c, std::map<tiny_string, pugi::xml_node *> &instanceNodes, const variables_map& map, bool isTemplate, bool forinstance) const;
 	void describeConstructor(pugi::xml_node &root) const;
 	virtual void describeClassMetadata(pugi::xml_node &root) const {}
+	uint32_t qualifiedClassnameID;
 protected:
+	Global* global;
 	void describeMetadata(pugi::xml_node &node, const traits_info& trait) const;
 	void copyBorrowedTraitsFromSuper();
 	ASFUNCTION_ATOM(_toString);
 	void initStandardProps();
-	void destroy();
 public:
-	asfreelist freelist[2];
+	virtual asfreelist* getFreeList(ASWorker* w)
+	{
+		return isReusable && w ? &w->freelist[classID] : nullptr ;
+	}
 	variables_map borrowedVariables;
-	ASPROPERTY_GETTER(_NR<Prototype>,prototype);
+	_NR<Prototype> prototype;
+	Prototype* getPrototype(ASWorker* wrk) const;
+	ASFUNCTION_ATOM(_getter_prototype);
 	ASPROPERTY_GETTER(_NR<ObjectConstructor>,constructorprop);
 	_NR<Class_base> super;
 	//We need to know what is the context we are referring to
@@ -233,71 +207,105 @@ private:
 	//TODO: move in Class_inherit
 	bool use_protected:1;
 public:
+	uint32_t classID;
 	void addConstructorGetter();
 	void addPrototypeGetter();
 	void addLengthGetter();
-	inline virtual void setupDeclaredTraits(ASObject *target) const { target->traitsInitialized = true; }
+	inline virtual void setupDeclaredTraits(ASObject *target, bool checkclone=true) { target->traitsInitialized = true; }
 	void handleConstruction(asAtom &target, asAtom *args, unsigned int argslen, bool buildAndLink);
 	void setConstructor(IFunction* c);
-	bool hasConstructor() { return constructor != NULL; }
-	Class_base(const QName& name, MemoryAccount* m);
+	bool hasConstructor() { return constructor != nullptr; }
+	IFunction* getConstructor() { return constructor; }
+	Class_base(const QName& name, uint32_t _classID, MemoryAccount* m);
 	//Special constructor for Class_object
-	Class_base(const Class_object*);
+	Class_base(const Class_object*c);
 	~Class_base();
-	void finalize();
-	virtual void getInstance(asAtom& ret, bool construct, asAtom* args, const unsigned int argslen, Class_base* realClass=NULL)=0;
+	void finalize() override;
+	void prepareShutdown() override;
+	virtual void getInstance(ASWorker* worker, asAtom& ret, bool construct, asAtom* args, const unsigned int argslen, Class_base* realClass=nullptr)=0;
 	void addImplementedInterface(const multiname& i);
 	void addImplementedInterface(Class_base* i);
 	virtual void buildInstanceTraits(ASObject* o) const=0;
-	const std::vector<Class_base*>& getInterfaces(bool *alldefined = NULL) const;
+	const std::vector<Class_base*>& getInterfaces(bool *alldefined = nullptr) const;
 	virtual void linkInterface(Class_base* c) const;
 	/*
 	 * Returns true when 'this' is a subclass of 'cls',
 	 * i.e. this == cls or cls equals some super of this.
-         * If considerInterfaces is true, check interfaces, too.
+	 * If considerInterfaces is true, check interfaces, too.
 	 */
 	bool isSubClass(const Class_base* cls, bool considerInterfaces=true) const;
-	tiny_string getQualifiedClassName(bool forDescribeType = false) const;
-	tiny_string getName() const;
+	const tiny_string getQualifiedClassName(bool forDescribeType = false) const;
+	uint32_t getQualifiedClassNameID();
+	tiny_string getName() const override;
 	tiny_string toString();
-	virtual void generator(asAtom &ret, asAtom* args, const unsigned int argslen);
-	ASObject *describeType() const;
-	void describeInstance(pugi::xml_node &root, bool istemplate) const;
-	virtual const Template_base* getTemplate() const { return NULL; }
+	virtual void generator(ASWorker* wrk,asAtom &ret, asAtom* args, const unsigned int argslen);
+	ASObject *describeType(ASWorker* wrk) const override;
+	void describeInstance(pugi::xml_node &root, bool istemplate, bool forinstance) const;
+	virtual const Template_base* getTemplate() const { return nullptr; }
 	/*
 	 * Converts the given object to an object of this Class_base's type.
-	 * It consumes one reference of 'o'.
 	 * The returned object must be decRef'ed by caller.
 	 */
-	virtual void coerce(SystemState* sys, asAtom& o) const;
+	bool coerce(ASWorker* wrk, asAtom& o) const override;
 	
-	void coerceForTemplate(SystemState* sys, asAtom& o) const;
+	void coerceForTemplate(ASWorker* wrk, asAtom& o) const override;
 
 	void setSuper(_R<Class_base> super_);
-	inline const variable* findBorrowedGettable(const multiname& name, uint32_t* nsRealId = NULL) const DLL_LOCAL
+	inline const variable* findBorrowedGettable(const multiname& name, uint32_t* nsRealId = nullptr) const
 	{
 		return ASObject::findGettableImplConst(getSystemState(), borrowedVariables,name,nsRealId);
 	}
 	
-	variable* findBorrowedSettable(const multiname& name, bool* has_getter=NULL) DLL_LOCAL;
-	variable* findSettableInPrototype(const multiname& name) DLL_LOCAL;
-	EARLY_BIND_STATUS resolveMultinameStatically(const multiname& name) const;
-	const multiname* resolveSlotTypeName(uint32_t slotId) const { /*TODO: implement*/ return NULL; }
+	variable* findBorrowedSettable(const multiname& name, bool* has_getter=nullptr);
+	variable* findSettableInPrototype(const multiname& name);
+	EARLY_BIND_STATUS resolveMultinameStatically(const multiname& name) const override;
+	const multiname* resolveSlotTypeName(uint32_t slotId) const override { /*TODO: implement*/ return nullptr; }
 	bool checkExistingFunction(const multiname& name);
-	void getClassVariableByMultiname(asAtom& ret,const multiname& name);
-	bool isBuiltin() const { return true; }
+	void getClassVariableByMultiname(asAtom& ret, const multiname& name, ASWorker* wrk);
+	variable* getBorrowedVariableByMultiname(const multiname& name)
+	{
+		return borrowedVariables.findObjVar(getSystemState(),name,NO_CREATE_TRAIT,DECLARED_TRAIT);
+	}
+	bool isBuiltin() const override { return true; }
+	Global* getGlobalScope() const override { return global; }
+	void setGlobalScope(Global* g) { global = g; }
+	bool implementsInterfaces() const { return interfaces.size() || interfaces_added.size(); }
+	bool isInterfaceMethod(const multiname &name);
+	void removeAllDeclaredProperties();
+	virtual bool hasoverriddenmethod(multiname* name) const
+	{
+		return overriddenmethods.find(name->name_s_id) != overriddenmethods.end();
+	}
+	void addoverriddenmethod(uint32_t nameID)
+	{
+		overriddenmethods.insert(nameID);
+	}
+	// Class_base needs special handling for dynamic variables in background workers
+	multiname* setVariableByMultiname(multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst, bool *alreadyset, ASWorker* wrk) override;
+	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	bool hasPropertyByMultiname(const multiname& name, bool considerDynamic, bool considerPrototype, ASWorker* wrk) override;
+	variable* findVariableByMultiname(const multiname& name, Class_base* cls, uint32_t* nsRealID, bool* isborrowed, bool considerdynamic, ASWorker* wrk) override;
 };
 
-class Template_base : public ASObject
+class Template_base : public ASObject, public Type
 {
 private:
 	QName template_name;
 public:
-	Template_base(QName name);
+	Template_base(ASWorker* wrk,QName name);
 	virtual Class_base* applyType(const std::vector<const Type*>& t,_NR<ApplicationDomain> appdomain)=0;
 	QName getTemplateName() { return template_name; }
 	ASPROPERTY_GETTER(_NR<Prototype>,prototype);
 	void addPrototypeGetter(SystemState *sys);
+
+
+	bool coerce(ASWorker* wrk, asAtom& o) const override	{ return false;}
+	void coerceForTemplate(ASWorker* wrk, asAtom& o) const override {}
+	tiny_string getName() const override { return "template"; }
+	EARLY_BIND_STATUS resolveMultinameStatically(const multiname& name) const override { return CANNOT_BIND;}
+	const multiname* resolveSlotTypeName(uint32_t slotId) const override { return nullptr; }
+	bool isBuiltin() const override { return true;}
+	Global* getGlobalScope() const override	{ return nullptr; }
 };
 
 class Class_object: public Class_base
@@ -305,18 +313,18 @@ class Class_object: public Class_base
 private:
 	//Invoke the special constructor that will set the super to Object
 	Class_object():Class_base(this){}
-	void getInstance(asAtom& ret, bool construct, asAtom* args, const unsigned int argslen, Class_base* realClass)
+	void getInstance(ASWorker* worker,asAtom& ret, bool construct, asAtom* args, const unsigned int argslen, Class_base* realClass) override
 	{
 		throw RunTimeException("Class_object::getInstance");
 	}
-	void buildInstanceTraits(ASObject* o) const
+	void buildInstanceTraits(ASObject* o) const override
 	{
 //		throw RunTimeException("Class_object::buildInstanceTraits");
 	}
-	void finalize()
+	void finalize() override
 	{
 		//Remove the cyclic reference to itself
-		setClass(NULL);
+		setClass(nullptr);
 		Class_base::finalize();
 	}
 	
@@ -336,21 +344,54 @@ class Prototype
 {
 protected:
 	ASObject* obj;
+	ASObject* workerDynamicClassVars; // this contains dynamically added properties to the class this prototype belongs to if it is added in a background worker
+	ASObject* originalPrototypeVars;
+	void copyOriginalValues(Prototype* target);
+	void reset()
+	{
+		if (originalPrototypeVars)
+			originalPrototypeVars->decRef();
+		originalPrototypeVars=nullptr;
+		if (workerDynamicClassVars)
+			workerDynamicClassVars->decRef();
+		workerDynamicClassVars=nullptr;
+		prevPrototype.reset();
+		if (obj)
+			obj->decRef();
+		obj=nullptr;
+	}
+	void prepShutdown()
+	{
+		if (obj)
+			obj->prepareShutdown();
+		if (prevPrototype)
+			prevPrototype->prepShutdown();
+		if (originalPrototypeVars)
+			originalPrototypeVars->prepareShutdown();
+		if (workerDynamicClassVars)
+			workerDynamicClassVars->prepareShutdown();
+	}
 public:
-	Prototype():isSealed(false) {}
-	virtual ~Prototype() {}
+	Prototype():obj(nullptr),workerDynamicClassVars(nullptr),originalPrototypeVars(nullptr),isSealed(false) {}
+	virtual ~Prototype()
+	{
+	}
 	_NR<Prototype> prevPrototype;
-	inline void incRef() { obj->incRef(); }
-	inline void decRef() { obj->decRef(); }
+	inline void incRef() { if (obj) obj->incRef(); }
+	inline void decRef() { if (obj) obj->decRef(); }
 	inline ASObject* getObj() {return obj; }
+	inline ASObject* getWorkerDynamicClassVars() const {return workerDynamicClassVars; }
 	bool isSealed;
 	/*
 	 * This method is actually forwarded to the object. It's here as a shorthand.
 	 */
-	void setVariableByQName(const tiny_string& name, const tiny_string& ns, ASObject* o, TRAIT_KIND traitKind)
-	{
-		getObj()->setVariableByQName(name,ns,o,traitKind);
-	}
+	void setVariableByQName(const tiny_string& name, const tiny_string& ns, ASObject* o, TRAIT_KIND traitKind);
+	void setVariableByQName(const tiny_string& name, const nsNameAndKind& ns, ASObject* o, TRAIT_KIND traitKind);
+	void setVariableByQName(uint32_t nameID, const nsNameAndKind& ns, ASObject* o, TRAIT_KIND traitKind);
+	void setVariableAtomByQName(const tiny_string& name, const nsNameAndKind& ns, asAtom o, TRAIT_KIND traitKind);
+	void setDeclaredMethodByQName(const tiny_string& name, const tiny_string& ns, IFunction* o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable= true);
+	
+	virtual Prototype* clonePrototype(ASWorker* wrk) = 0;
 };
 
 /* Special object used as prototype for classes
@@ -359,11 +400,21 @@ public:
 class ObjectPrototype: public ASObject, public Prototype
 {
 public:
-	ObjectPrototype(Class_base* c);
-	inline void finalize() { prevPrototype.reset(); }
-	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt=NONE);
-	void setVariableByMultiname(const multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst);
-	bool isEqual(ASObject* r);
+	ObjectPrototype(ASWorker* wrk,Class_base* c);
+	inline bool destruct() override
+	{
+		reset();
+		return ASObject::destruct();
+	}
+	void finalize() override
+	{
+		reset();
+	}
+	void prepareShutdown() override;
+	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	multiname* setVariableByMultiname(multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst, bool *alreadyset, ASWorker* wrk) override;
+	bool isEqual(ASObject* r) override;
+	Prototype* clonePrototype(ASWorker* wrk) override;
 };
 
 /* Special object used as constructor property for classes
@@ -374,18 +425,46 @@ class ObjectConstructor: public ASObject
 	Prototype* prototype;
 	uint32_t _length;
 public:
-	ObjectConstructor(Class_base* c,uint32_t length);
-	void incRef() { getClass()->incRef(); }
-	void decRef() { getClass()->decRef(); }
-	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt=NONE);
-	bool isEqual(ASObject* r);
+	ObjectConstructor(ASWorker* wrk, Class_base* c,uint32_t length);
+	inline bool destruct() override
+	{
+		prototype=nullptr;
+		return ASObject::destruct();
+	}
+	void finalize() override
+	{
+		prototype=nullptr;
+	}
+	void incRef() { if (getClass()) getClass()->incRef(); }
+	void decRef() { if (getClass()) getClass()->decRef(); }
+	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	bool isEqual(ASObject* r) override;
 };
 
+class ArrayPrototype: public Array, public Prototype
+{
+public:
+	ArrayPrototype(ASWorker* wrk,Class_base* c);
+	inline bool destruct() override
+	{
+		reset();
+		return Array::destruct();
+	}
+	void finalize() override
+	{
+		reset();
+	}
+	void prepareShutdown() override;
+	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	multiname* setVariableByMultiname(multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst, bool *alreadyset, ASWorker* wrk) override;
+	bool isEqual(ASObject* r) override;
+	Prototype* clonePrototype(ASWorker* wrk) override;
+};
 
 class Activation_object: public ASObject
 {
 public:
-    Activation_object(Class_base* c) : ASObject(c,T_OBJECT,SUBTYPE_ACTIVATIONOBJECT) {}
+	Activation_object(ASWorker* wrk, Class_base* c) : ASObject(wrk,c,T_OBJECT,SUBTYPE_ACTIVATIONOBJECT) {}
 };
 
 /* Special object returned when new func() syntax is used.
@@ -394,11 +473,11 @@ public:
 class Function_object: public ASObject
 {
 public:
-	Function_object(Class_base* c, _R<ASObject> p);
+	Function_object(ASWorker* wrk, Class_base* c, _R<ASObject> p);
 	_NR<ASObject> functionPrototype;
-	void finalize() { functionPrototype.reset(); }
-
-	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt=NONE);
+	void finalize() override { functionPrototype.reset(); }
+	void prepareShutdown() override;
+	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
 };
 
 /*
@@ -412,31 +491,83 @@ public:
 	uint32_t length;
 	ASFUNCTION_ATOM(_length);
 protected:
-	IFunction(Class_base *c,CLASS_SUBTYPE st);
+	IFunction(ASWorker* wrk,Class_base *c, CLASS_SUBTYPE st);
+	virtual IFunction* clone(ASWorker* wrk)=0;
 public:
+	ASObject* closure_this;
 	static void sinit(Class_base* c);
 	/* If this is a method, inClass is the class this is defined in.
 	 * If this is a function, inClass == NULL
 	 */
 	Class_base* inClass;
+	// if this is a class method, this indicates if it is a static or instance method
+	bool isStatic;
+	IFunction* clonedFrom;
 	/* returns whether this is this a method of a function */
-	bool isMethod() const { return inClass != NULL; }
-	bool isConstructed() const { return constructIndicator; }
-	inline bool destruct() 
+	bool isMethod() const { return inClass != nullptr; }
+	bool isConstructed() const override { return constructIndicator; }
+	inline bool destruct() override
 	{
-		inClass=NULL;
+		inClass=nullptr;
+		isStatic=false;
+		clonedFrom=nullptr;
 		functionname=0;
 		length=0;
-		return ASObject::destruct();
+		if (closure_this)
+			closure_this->removeStoredMember();
+		closure_this=nullptr;
+		prototype.reset();
+		return destructIntern();
+	}
+	inline void finalize() override
+	{
+		inClass=nullptr;
+		clonedFrom=nullptr;
+		if (closure_this)
+			closure_this->removeStoredMember();
+		closure_this=nullptr;
+		prototype.reset();
+	}
+	
+	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
+	IFunction* bind(ASObject* c, ASWorker* wrk)
+	{
+		IFunction* ret=nullptr;
+		ret=clone(wrk);
+		ret->setClass(getClass());
+		ret->closure_this=c;
+		ret->closure_this->incRef();
+		ret->closure_this->addStoredMember();
+		ret->clonedFrom=this;
+		ret->isStatic=isStatic;
+		ret->constructIndicator = true;
+		ret->constructorCallComplete = true;
+		return ret;
+	}
+	IFunction* createFunctionInstance(ASWorker* wrk)
+	{
+		IFunction* ret=nullptr;
+		ret=clone(wrk);
+		ret->setClass(getClass());
+		ret->isStatic=isStatic;
+		ret->constructIndicator = true;
+		ret->constructorCallComplete = true;
+		return ret;
 	}
 	ASFUNCTION_ATOM(apply);
 	ASFUNCTION_ATOM(_call);
 	ASFUNCTION_ATOM(_toString);
 	ASPROPERTY_GETTER_SETTER(_NR<ASObject>,prototype);
 	virtual method_info* getMethodInfo() const=0;
-	virtual ASObject *describeType() const;
+	ASObject *describeType(ASWorker* wrk) const override;
 	uint32_t functionname;
-	virtual void callGetter(asAtom& ret, ASObject* target) =0;
+	virtual multiname* callGetter(asAtom& ret, ASObject* target,ASWorker* wrk) =0;
+	virtual Class_base* getReturnType(bool opportunistic=false) =0;
+	std::string toDebugString() const override;
+	void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
+				std::map<const ASObject*, uint32_t>& objMap,
+				std::map<const Class_base*, uint32_t>& traitsMap, ASWorker* wrk) override;
 };
 
 /*
@@ -450,21 +581,37 @@ class Function : public IFunction
 friend class Class<IFunction>;
 friend class Class_base;
 public:
-typedef void (*as_atom_function)(asAtom&, SystemState*, asAtom&, asAtom*, const unsigned int);
+typedef void (*as_atom_function)(asAtom&, ASWorker*, asAtom&, asAtom*, const unsigned int);
 protected:
 	/* Function pointer to the C-function implementation with atom arguments */
 	as_atom_function val_atom;
 	
-	// type of the return value;
+	// type of the return value
 	Class_base* returnType;
-	Function(Class_base* c,as_atom_function v = NULL):IFunction(c,SUBTYPE_FUNCTION),val_atom(v) {}
-	method_info* getMethodInfo() const { return NULL; }
+	// type of the return value if all arguments are integer
+	Class_base* returnTypeAllArgsInt;
+	Function(ASWorker* wrk,Class_base* c,as_atom_function v = nullptr):IFunction(wrk,c,SUBTYPE_FUNCTION),val_atom(v),returnType(nullptr),returnTypeAllArgsInt(nullptr) {}
+	method_info* getMethodInfo() const override { return nullptr; }
+	IFunction* clone(ASWorker* wrk) override;
+	bool destruct() override
+	{
+		returnType=nullptr;
+		returnTypeAllArgsInt=nullptr;
+		return IFunction::destruct();
+	}
+	void finalize() override
+	{
+		returnType=nullptr;
+		returnTypeAllArgsInt=nullptr;
+		IFunction::finalize();
+	}
+	void prepareShutdown() override;
 public:
 	/**
 	 * This executes a C++ function.
 	 * It consumes _no_ references of obj and args
 	 */
-	FORCE_INLINE void call(asAtom& ret, asAtom& obj, asAtom* args, uint32_t num_args)
+	FORCE_INLINE void call(asAtom& ret, ASWorker* wrk,asAtom& obj, asAtom* args, uint32_t num_args)
 	{
 		/*
 		 * We do not enforce ABCVm::limits.max_recursion here.
@@ -473,14 +620,17 @@ public:
 		 * Additionally, we still need to run builtin code (such as the ASError constructor) when
 		 * ABCVm::limits.max_recursion is reached in SyntheticFunction::call.
 		 */
-		val_atom(ret,getSystemState(),obj,args,num_args);
+		val_atom(ret,wrk,obj,args,num_args);
 	}
-	bool isEqual(ASObject* r);
-	FORCE_INLINE void callGetter(asAtom& ret, ASObject* target)
+	bool isEqual(ASObject* r) override;
+	FORCE_INLINE multiname* callGetter(asAtom& ret, ASObject* target,ASWorker* wrk) override
 	{
-		asAtom c = asAtom::fromObject(target);
-		val_atom(ret,getSystemState(),c,NULL,0);
+		asAtom c = asAtomHandler::fromObject(target);
+		val_atom(ret,wrk,c,nullptr,0);
+		return nullptr;
 	}
+	Class_base* getReturnType(bool opportunistic=false) override;
+	Class_base* getArgumentDependentReturnType(bool allargsint);
 };
 
 /* Special object used as prototype for the Function class
@@ -489,14 +639,22 @@ public:
 class FunctionPrototype: public Function, public Prototype
 {
 public:
-	FunctionPrototype(Class_base* c, _NR<Prototype> p);
-	inline bool destruct()
+	FunctionPrototype(ASWorker* wrk,Class_base* c, _NR<Prototype> p);
+	inline bool destruct() override
 	{
-		prevPrototype.reset();
+		reset();
 		return Function::destruct();
 	}
+	void finalize() override
+	{
+		reset();
+		Function::finalize();
+	}
+	void prepareShutdown() override;
 	
-	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt=NONE);
+	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	multiname* setVariableByMultiname(multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst, bool *alreadyset, ASWorker* wrk) override;
+	Prototype* clonePrototype(ASWorker* wrk) override;
 };
 
 /*
@@ -505,28 +663,31 @@ public:
 class SyntheticFunction : public IFunction
 {
 friend class ABCVm;
+friend class ABCContext;
 friend class Class<IFunction>;
 friend class Class_base;
-public:
-	typedef ASObject* (*synt_function)(call_context* cc);
 private:
 	/* Data structure with information directly loaded from the SWF */
 	method_info* mi;
 	/* Pointer to JIT-compiled function or NULL if not yet compiled */
 	synt_function val;
-	SyntheticFunction(Class_base* c,method_info* m);
-	
-	method_info* getMethodInfo() const { return mi; }
+	/* Pointer to multiname, if this function is a simple getter or setter */
+	multiname* simpleGetterOrSetterName;
+	bool fromNewFunction;
+	SyntheticFunction(ASWorker* wrk,Class_base* c,method_info* m);
+protected:
+	IFunction* clone(ASWorker* wrk) override;
 public:
 	~SyntheticFunction() {}
-	void call(asAtom &ret, asAtom& obj, asAtom *args, uint32_t num_args, bool coerceresult);
-	bool destruct();
+	void call(ASWorker* wrk, asAtom &ret, asAtom& obj, asAtom *args, uint32_t num_args, bool coerceresult, bool coercearguments);
+	bool destruct() override;
+	void finalize() override;
+	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
+	method_info* getMethodInfo() const override { return mi; }
 	
 	_NR<scope_entry_list> func_scope;
-	bool isEqual(ASObject* r)
-	{
-		return this == r;
-	}
+	bool isEqual(ASObject* r) override;
 	void acquireScope(const std::vector<scope_entry>& scope)
 	{
 		if (func_scope.isNull())
@@ -540,11 +701,112 @@ public:
 			func_scope = _NR<scope_entry_list>(new scope_entry_list());
 		func_scope->scope.emplace_back(s);
 	}
-	FORCE_INLINE void callGetter(asAtom& ret, ASObject* target)
+	FORCE_INLINE multiname* callGetter(asAtom& ret, ASObject* target,ASWorker* wrk) override
 	{
-		asAtom c = asAtom::fromObject(target);
-		call(ret,c,NULL,0,true);
+		if (simpleGetterOrSetterName)
+		{
+			target->getVariableByMultiname(ret,*simpleGetterOrSetterName,GET_VARIABLE_OPTION::NONE,wrk);
+			return simpleGetterOrSetterName;
+		}
+		asAtom c = asAtomHandler::fromObject(target);
+		call(wrk,ret,c,nullptr,0,true,false);
+		return nullptr;
 	}
+	FORCE_INLINE multiname* getSimpleName() {
+		return simpleGetterOrSetterName;
+	}
+	Class_base* getReturnType(bool opportunistic=false) override;
+	void checkParamTypes(bool opportunistic=false);
+	bool canSkipCoercion(int param, Class_base* cls);
+	inline bool isFromNewFunction() { return fromNewFunction; }
+};
+
+class AVM1Function : public IFunction
+{
+	friend class Class<IFunction>;
+	friend class Class_base;
+protected:
+	DisplayObject* clip;
+	Activation_object* activationobject;
+	AVM1context context;
+	asAtom superobj;
+	std::vector<uint8_t> actionlist;
+	std::vector<uint32_t> paramnames;
+	std::vector<uint8_t> paramregisternumbers;
+	std::map<uint32_t, asAtom> scopevariables;
+	bool preloadParent;
+	bool preloadRoot;
+	bool suppressSuper;
+	bool preloadSuper;
+	bool suppressArguments;
+	bool preloadArguments;
+	bool suppressThis;
+	bool preloadThis;
+	bool preloadGlobal;
+	AVM1Function(ASWorker* wrk,Class_base* c,DisplayObject* cl,Activation_object* act,AVM1context* ctx, std::vector<uint32_t>& p, std::vector<uint8_t>& a,std::vector<uint8_t> _registernumbers=std::vector<uint8_t>(), bool _preloadParent=false, bool _preloadRoot=false, bool _suppressSuper=false, bool _preloadSuper=false, bool _suppressArguments=false, bool _preloadArguments=false,bool _suppressThis=false, bool _preloadThis=false, bool _preloadGlobal=false);
+	~AVM1Function();
+	method_info* getMethodInfo() const override { return nullptr; }
+	IFunction* clone(ASWorker* wrk) override
+	{
+		// no cloning needed in AVM1
+		return nullptr;
+	}
+	asAtom computeSuper();
+public:
+	void finalize() override;
+	bool destruct() override;
+	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
+	FORCE_INLINE void call(asAtom* ret, asAtom* obj, asAtom *args, uint32_t num_args, AVM1Function* caller=nullptr, std::map<uint32_t,asAtom>* locals=nullptr)
+	{
+		if (locals)
+			this->setscopevariables(*locals);
+		if (needsSuper())
+		{
+			asAtom newsuper = computeSuper();
+			ACTIONRECORD::executeActions(clip,&context,this->actionlist,0,this->scopevariables,false,ret,obj, args, num_args, paramnames,paramregisternumbers, preloadParent,preloadRoot,suppressSuper,preloadSuper,suppressArguments,preloadArguments,suppressThis,preloadThis,preloadGlobal,caller,this,activationobject,&newsuper);
+		}
+		else
+			ACTIONRECORD::executeActions(clip,&context,this->actionlist,0,this->scopevariables,false,ret,obj, args, num_args, paramnames,paramregisternumbers, preloadParent,preloadRoot,suppressSuper,preloadSuper,suppressArguments,preloadArguments,suppressThis,preloadThis,preloadGlobal,caller,this,activationobject);
+	}
+	FORCE_INLINE multiname* callGetter(asAtom& ret, ASObject* target, ASWorker* wrk) override
+	{
+		asAtom obj = asAtomHandler::fromObject(target);
+		if (needsSuper())
+		{
+			asAtom newsuper = computeSuper();
+			ACTIONRECORD::executeActions(clip,&context,this->actionlist,0,this->scopevariables,false,&ret,&obj, nullptr, 0, paramnames,paramregisternumbers, preloadParent,preloadRoot,suppressSuper,preloadSuper,suppressArguments,preloadArguments,suppressThis,preloadThis,preloadGlobal,nullptr,this,activationobject,&newsuper);
+		}
+		else
+			ACTIONRECORD::executeActions(clip,&context,this->actionlist,0,this->scopevariables,false,&ret,&obj, nullptr, 0, paramnames,paramregisternumbers, preloadParent,preloadRoot,suppressSuper,preloadSuper,suppressArguments,preloadArguments,suppressThis,preloadThis,preloadGlobal,nullptr,this,activationobject);
+		return nullptr;
+	}
+	FORCE_INLINE Class_base* getReturnType(bool opportunistic=false) override
+	{
+		return nullptr;
+	}
+	FORCE_INLINE Activation_object* getActivationObject() const
+	{
+		return activationobject;
+	}
+	FORCE_INLINE void setSuper(asAtom s)
+	{
+		superobj.uintval = s.uintval;
+	}
+	FORCE_INLINE DisplayObject* getClip() const
+	{
+		return clip;
+	}
+	FORCE_INLINE bool needsSuper() const
+	{
+		return preloadSuper && !suppressSuper;
+	}
+	FORCE_INLINE asAtom getSuper() const
+	{
+		return superobj;
+	}
+	void filllocals(std::map<uint32_t,asAtom>& locals);
+	void setscopevariables(std::map<uint32_t,asAtom>& locals);
 };
 
 /*
@@ -554,8 +816,8 @@ template<>
 class Class<IFunction>: public Class_base
 {
 private:
-	Class<IFunction>(MemoryAccount* m):Class_base(QName(BUILTIN_STRINGS::STRING_FUNCTION,BUILTIN_STRINGS::EMPTY),m){}
-	void getInstance(asAtom& ret, bool construct, asAtom* args, const unsigned int argslen, Class_base* realClass);
+	Class<IFunction>(MemoryAccount* m, uint32_t classID):Class_base(QName(BUILTIN_STRINGS::STRING_FUNCTION,BUILTIN_STRINGS::EMPTY),classID ,m){}
+	void getInstance(ASWorker* worker,asAtom& ret, bool construct, asAtom* args, const unsigned int argslen, Class_base* realClass) override;
 	IFunction* getNopFunction();
 public:
 	static Class<IFunction>* getClass(SystemState* sys);
@@ -565,46 +827,58 @@ public:
 		ret->incRef();
 		return _MR(ret);
 	}
-	static Function* getFunction(SystemState* sys,Function::as_atom_function v, int len = 0, Class_base* returnType=NULL)
+	static Function* getFunction(SystemState* sys,Function::as_atom_function v, int len = 0, Class_base* returnType=nullptr, Class_base* returnTypeAllArgsInt=nullptr)
 	{
 		Class<IFunction>* c=Class<IFunction>::getClass(sys);
-		Function*  ret = c->freelist[0].getObjectFromFreeList()->as<Function>();
-		if (!ret)
-			ret=new (c->memoryAccount) Function(c);
+		Function*  ret = new (c->memoryAccount) Function(c->getInstanceWorker(),c);
+		ret->objfreelist = &c->getInstanceWorker()->freelist[c->classID];
+		ret->setRefConstant();
+		ret->resetCached();
 		ret->val_atom = v;
 		ret->returnType = returnType;
+		ret->returnTypeAllArgsInt = returnTypeAllArgsInt;
 		ret->length = len;
 		ret->constructIndicator = true;
 		ret->constructorCallComplete = true;
 		return ret;
 	}
 
-	static SyntheticFunction* getSyntheticFunction(SystemState* sys,method_info* m, uint32_t _length)
+	static SyntheticFunction* getSyntheticFunction(ASWorker* wrk,method_info* m, uint32_t _length)
 	{
-		Class<IFunction>* c=Class<IFunction>::getClass(sys);
-		SyntheticFunction*  ret;
-		ret= c->freelist[1].getObjectFromFreeList()->as<SyntheticFunction>();
+		Class<IFunction>* c=Class<IFunction>::getClass(wrk->getSystemState());
+		SyntheticFunction* ret = nullptr;
+		ret= wrk->freelist_syntheticfunction.getObjectFromFreeList()->as<SyntheticFunction>();
 		if (!ret)
 		{
-			ret=new (c->memoryAccount) SyntheticFunction(c, m);
+			ret=new (c->memoryAccount) SyntheticFunction(wrk,c, m);
 		}
 		else
 		{
+			ret->resetCached();
 			ret->mi = m;
 			ret->length = _length;
-			ret->objfreelist = &c->freelist[1];
+			ret->objfreelist = &wrk->freelist_syntheticfunction;
 		}
 
 		ret->constructIndicator = true;
 		ret->constructorCallComplete = true;
-		asAtom obj = asAtom::fromObject(ret);
-		c->handleConstruction(obj,NULL,0,true);
+		asAtom obj = asAtomHandler::fromObject(ret);
+		c->handleConstruction(obj,nullptr,0,true);
 		return ret;
 	}
-	void buildInstanceTraits(ASObject* o) const
+	static AVM1Function* getAVM1Function(ASWorker* wrk,DisplayObject* clip,Activation_object* act, AVM1context* ctx,std::vector<uint32_t>& params, std::vector<uint8_t>& actions, std::vector<uint8_t> paramregisternumbers=std::vector<uint8_t>(), bool preloadParent=false, bool preloadRoot=false, bool suppressSuper=true, bool preloadSuper=false, bool suppressArguments=false, bool preloadArguments=false, bool suppressThis=true, bool preloadThis=false, bool preloadGlobal=false)
+	{
+		Class<IFunction>* c=Class<IFunction>::getClass(wrk->getSystemState());
+		AVM1Function*  ret =new (c->memoryAccount) AVM1Function(wrk,c, clip, act,ctx, params,actions,paramregisternumbers,preloadParent,preloadRoot,suppressSuper,preloadSuper,suppressArguments,preloadArguments,suppressThis,preloadThis,preloadGlobal);
+		ret->objfreelist = nullptr;
+		ret->constructIndicator = true;
+		ret->constructorCallComplete = true;
+		return ret;
+	}
+	void buildInstanceTraits(ASObject* o) const override
 	{
 	}
-	virtual void generator(asAtom& ret, asAtom* args, const unsigned int argslen);
+	void generator(ASWorker* wrk, asAtom& ret, asAtom* args, const unsigned int argslen) override;
 };
 
 class Undefined : public ASObject
@@ -612,34 +886,36 @@ class Undefined : public ASObject
 public:
 	ASFUNCTION_ATOM(call);
 	Undefined();
-	int32_t toInt();
-	int64_t toInt64();
-	bool isEqual(ASObject* r);
-	TRISTATE isLess(ASObject* r);
-	ASObject *describeType() const;
+	int32_t toInt() override;
+	int64_t toInt64() override;
+	bool isEqual(ASObject* r) override;
+	TRISTATE isLess(ASObject* r) override;
+	TRISTATE isLessAtom(asAtom& r) override;
+	ASObject *describeType(ASWorker* wrk) const override;
 	//Serialization interface
 	void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap);
-	void setVariableByMultiname(const multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst);
+				std::map<const Class_base*, uint32_t>& traitsMap, ASWorker* wrk) override;
+	multiname* setVariableByMultiname(multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst, bool *alreadyset, ASWorker* wrk) override;
 };
 
 class Null: public ASObject
 {
 public:
 	Null();
-	bool isEqual(ASObject* r);
-	TRISTATE isLess(ASObject* r);
-	int32_t toInt();
-	int64_t toInt64();
-	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt);
-	int32_t getVariableByMultiname_i(const multiname& name);
-	void setVariableByMultiname(const multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst);
+	bool isEqual(ASObject* r) override;
+	TRISTATE isLess(ASObject* r) override;
+	TRISTATE isLessAtom(asAtom& r) override;
+	int32_t toInt() override;
+	int64_t toInt64() override;
+	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	int32_t getVariableByMultiname_i(const multiname& name, ASWorker* wrk) override;
+	multiname* setVariableByMultiname(multiname& name, asAtom &o, CONST_ALLOWED_FLAG allowConst, bool *alreadyset, ASWorker* wrk) override;
 
 	//Serialization interface
 	void serialize(ByteArray* out, std::map<tiny_string, uint32_t>& stringMap,
 				std::map<const ASObject*, uint32_t>& objMap,
-				std::map<const Class_base*, uint32_t>& traitsMap);
+				std::map<const Class_base*, uint32_t>& traitsMap, ASWorker* wrk) override;
 };
 
 class ASQName: public ASObject
@@ -651,7 +927,7 @@ private:
 	uint32_t uri;
 	uint32_t local_name;
 public:
-	ASQName(Class_base* c);
+	ASQName(ASWorker* wrk,Class_base* c);
 	void setByXML(XML* node);
 	static void sinit(Class_base*);
 	ASFUNCTION_ATOM(_constructor);
@@ -661,13 +937,13 @@ public:
 	ASFUNCTION_ATOM(_toString);
 	uint32_t getURI() const { return uri; }
 	uint32_t getLocalName() const { return local_name; }
-	bool isEqual(ASObject* o);
+	bool isEqual(ASObject* o) override;
 
 	tiny_string toString();
 
-	uint32_t nextNameIndex(uint32_t cur_index);
-	void nextName(asAtom &ret, uint32_t index);
-	void nextValue(asAtom &ret, uint32_t index);
+	uint32_t nextNameIndex(uint32_t cur_index) override;
+	void nextName(asAtom &ret, uint32_t index) override;
+	void nextValue(asAtom &ret, uint32_t index) override;
 };
 
 class Namespace: public ASObject
@@ -680,8 +956,8 @@ private:
 	uint32_t uri;
 	uint32_t prefix;
 public:
-	Namespace(Class_base* c);
-	Namespace(Class_base* c, uint32_t _uri, uint32_t _prefix=BUILTIN_STRINGS::EMPTY,NS_KIND _nskind = NAMESPACE);
+	Namespace(ASWorker* wrk,Class_base* c);
+	Namespace(ASWorker* wrk, Class_base* c, uint32_t _uri, uint32_t _prefix=BUILTIN_STRINGS::EMPTY, NS_KIND _nskind = NAMESPACE);
 	static void sinit(Class_base*);
 	static void buildTraits(ASObject* o);
 	ASFUNCTION_ATOM(_constructor);
@@ -694,13 +970,13 @@ public:
 	ASFUNCTION_ATOM(_toString);
 	ASFUNCTION_ATOM(_valueOf);
 	ASFUNCTION_ATOM(_ECMA_valueOf);
-	bool isEqual(ASObject* o);
+	bool isEqual(ASObject* o) override;
 	uint32_t getURI() const { return uri; }
 	uint32_t getPrefix(bool& is_undefined) { is_undefined=prefix_is_undefined; return prefix; }
 
-	uint32_t nextNameIndex(uint32_t cur_index);
-	void nextName(asAtom &ret, uint32_t index);
-	void nextValue(asAtom &ret, uint32_t index);
+	uint32_t nextNameIndex(uint32_t cur_index) override;
+	void nextName(asAtom &ret, uint32_t index) override;
+	void nextValue(asAtom &ret, uint32_t index) override;
 };
 
 
@@ -709,34 +985,41 @@ class Global : public ASObject
 private:
 	int scriptId;
 	ABCContext* context;
+	bool isavm1;
 public:
-	Global(Class_base* cb, ABCContext* c, int s);
+	Global(ASWorker* wrk,Class_base* cb, ABCContext* c, int s, bool avm1);
 	static void sinit(Class_base* c);
-	static void buildTraits(ASObject* o) {}
-	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt=NONE);
-	void getVariableByMultinameOpportunistic(asAtom& ret, const multiname& name);
+	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
+	multiname* setVariableByMultiname(multiname &name, asAtom &o, CONST_ALLOWED_FLAG allowConst, bool *alreadyset, ASWorker* wrk) override;
+	void getVariableByMultinameOpportunistic(asAtom& ret, const multiname& name, ASWorker* wrk);
 	/*
 	 * Utility method to register builtin methods and classes
 	 */
-	void registerBuiltin(const char* name, const char* ns, _R<ASObject> o);
+	void registerBuiltin(const char* name, const char* ns, _R<ASObject> o, NS_KIND nskind=NAMESPACE);
+	// ensures that the init script has been run
+	void checkScriptInit();
+	bool isAVM1() const { return isavm1; }
+	ABCContext* getContext() const { return context; }
 };
 
-void eval(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-void parseInt(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-void parseFloat(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-void isNaN(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-void isFinite(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-void encodeURI(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-void decodeURI(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-void encodeURIComponent(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-void decodeURIComponent(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-void escape(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-void unescape(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-void print(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-void trace(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
-bool isXMLName(SystemState *sys, asAtom &obj);
-void _isXMLName(asAtom& ret,SystemState* sys, asAtom& obj,asAtom* args, const unsigned int argslen);
+void eval(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void parseInt(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void parseFloat(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void isNaN(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void isFinite(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void encodeURI(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void decodeURI(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void encodeURIComponent(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void decodeURIComponent(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void escape(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void unescape(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void print(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void trace(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void AVM1_ASSetPropFlags(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+void AVM1_updateAfterEvent(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
+bool isXMLName(ASWorker* wrk, asAtom &obj);
+void _isXMLName(asAtom& ret,ASWorker* wrk, asAtom& obj,asAtom* args, const unsigned int argslen);
 number_t parseNumber(const tiny_string str, bool useoldversion=false);
-};
+}
 
 #endif /* SCRIPTING_TOPLEVEL_TOPLEVEL_H */

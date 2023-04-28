@@ -27,11 +27,11 @@ namespace lightspark
 class ASMutex: public ASObject
 {
 private:
-	RecMutex mutex;
+	Mutex mutex;
 	int lockcount;
 
 public:
-	ASMutex(Class_base* c);
+	ASMutex(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base*);
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(_lock);

@@ -47,11 +47,17 @@ IntervalManager::~IntervalManager()
 
 uint32_t IntervalManager::setInterval(asAtom callback, asAtom* args, const unsigned int argslen, asAtom obj, uint32_t interval)
 {
-	Mutex::Lock l(mutex);
+	Locker l(mutex);
 
+	if (interval == 0)
+	{
+		// interval is 0, so we make sure the function is executed for the first time ahead of the next event in the event loop
+		_R<FunctionAsyncEvent> event(new (asAtomHandler::getObject(callback)->getSystemState()->unaccountedMemory) FunctionAsyncEvent(callback, obj, args, argslen));
+		getVm(asAtomHandler::getObject(callback)->getSystemState())->prependEvent(NullRef,event);
+	}
 	uint32_t id = getFreeID();
-	IntervalRunner* runner = new (callback.getObject()->getSystemState()->unaccountedMemory)
-		IntervalRunner(IntervalRunner::INTERVAL, id, callback, args, argslen, obj, interval);
+	IntervalRunner* runner = new (asAtomHandler::getObject(callback)->getSystemState()->unaccountedMemory)
+		IntervalRunner(IntervalRunner::INTERVAL, id, callback, args, argslen, obj);
 
 	//Add runner as tickjob
 	getSys()->addTick(interval, runner);
@@ -64,14 +70,14 @@ uint32_t IntervalManager::setInterval(asAtom callback, asAtom* args, const unsig
 }
 uint32_t IntervalManager::setTimeout(asAtom callback, asAtom* args, const unsigned int argslen, asAtom obj, uint32_t interval)
 {
-	Mutex::Lock l(mutex);
+	Locker l(mutex);
 
 	uint32_t id = getFreeID();
-	IntervalRunner* runner = new (callback.getObject()->getSystemState()->unaccountedMemory)
-		IntervalRunner(IntervalRunner::TIMEOUT, id, callback, args, argslen, obj, interval);
+	IntervalRunner* runner = new (asAtomHandler::getObject(callback)->getSystemState()->unaccountedMemory)
+		IntervalRunner(IntervalRunner::TIMEOUT, id, callback, args, argslen, obj);
 
 	//Add runner as waitjob
-	callback.getObject()->getSystemState()->addWait(interval, runner);
+	asAtomHandler::getObject(callback)->getSystemState()->addWait(interval, runner);
 	//Add runner to map
 	runners[id] = runner;
 	//increment currentID
@@ -91,7 +97,7 @@ uint32_t IntervalManager::getFreeID()
 
 void IntervalManager::clearInterval(uint32_t id, IntervalRunner::INTERVALTYPE type, bool removeJob)
 {
-	Mutex::Lock l(mutex);
+	Locker l(mutex);
 
 	std::map<uint32_t,IntervalRunner*>::iterator it = runners.find(id);
 	//If the entry exists and the types match, remove its tickjob, delete its intervalRunner and erase their entry
