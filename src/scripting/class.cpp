@@ -18,7 +18,9 @@
 **************************************************************************/
 
 #include "scripting/abc.h"
+#include "scripting/toplevel/toplevel.h"
 #include "scripting/toplevel/ASString.h"
+#include "scripting/toplevel/Global.h"
 #include "scripting/toplevel/Vector.h"
 #include "scripting/class.h"
 #include "parsing/tags.h"
@@ -69,6 +71,19 @@ Class_inherit::Class_inherit(const QName& name, MemoryAccount* m, const traits_i
 	this->incRef(); //create on reference for the classes map
 	isReusable = true;
 	subtype = SUBTYPE_INHERIT;
+}
+
+bool Class_inherit::checkScriptInit()
+{
+	if (global)
+	{
+		if (inScriptInit)
+			return false;
+		inScriptInit=true;
+		global->checkScriptInit();
+		inScriptInit=false;
+	}
+	return true;
 }
 
 void Class_inherit::finalize()
@@ -138,7 +153,7 @@ void Class_inherit::getInstance(ASWorker* worker, asAtom& ret, bool construct, a
 		}
 	}
 	if(construct)
-		handleConstruction(ret,args,argslen,true);
+		handleConstruction(ret,args,argslen,true,worker->isExplicitlyConstructed());
 }
 void Class_inherit::recursiveBuild(ASObject* target) const
 {
@@ -236,6 +251,11 @@ variable* Class_inherit::findVariableByMultiname(const multiname& name, Class_ba
 {
 	checkScriptInit();
 	return Class_base::findVariableByMultiname(name, cls, nsRealID, isborrowed, considerdynamic, wrk);
+}
+multiname* Class_inherit::setVariableByMultiname(multiname& name, asAtom& o, CONST_ALLOWED_FLAG allowConst, bool* alreadyset, ASWorker* wrk)
+{
+	checkScriptInit();
+	return Class_base::setVariableByMultiname(name, o, allowConst, alreadyset, wrk);
 }
 string Class_inherit::toDebugString() const
 {
@@ -344,7 +364,7 @@ void Class<ASObject>::getInstance(ASWorker* worker, asAtom& ret, bool construct,
 		realClass=this;
 	ret=asAtomHandler::fromObjectNoPrimitive(new (realClass->memoryAccount) ASObject(worker,realClass));
 	if(construct)
-		handleConstruction(ret,args,argslen,true);
+		handleConstruction(ret,args,argslen,true,worker->isExplicitlyConstructed());
 }
 Class<ASObject>* Class<ASObject>::getClass(SystemState* sys)
 {

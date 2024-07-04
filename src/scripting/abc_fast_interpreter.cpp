@@ -24,8 +24,13 @@
 #include <string>
 #include <sstream>
 #include "scripting/class.h"
+#include "scripting/toplevel/toplevel.h"
+#include "scripting/toplevel/Global.h"
+#include "scripting/toplevel/Namespace.h"
 #include "scripting/toplevel/Number.h"
+#include "scripting/toplevel/Undefined.h"
 #include "scripting/flash/system/flashsystem.h"
+#include "scripting/flash/display/RootMovieClip.h"
 
 using namespace std;
 using namespace lightspark;
@@ -39,7 +44,7 @@ struct OpcodeData
 		double doubles[0];
 		ASObject* objs[0];
 		multiname* names[0];
-		const Type* types[0];
+		Type* types[0];
 	};
 };
 
@@ -1144,7 +1149,7 @@ ASObject* ABCVm::executeFunctionFast(const SyntheticFunction* function, call_con
 				//coerce
 				multiname* name=data->names[0];
 				char* rewriteableCode = &(mi->body->code[0]);
-				const Type* type = Type::getTypeFromMultiname(name, context->mi->context);
+				Type* type = Type::getTypeFromMultiname(name, context->mi->context);
 				OpcodeData* rewritableData=reinterpret_cast<OpcodeData*>(rewriteableCode+instructionPointer);
 				//Rewrite this to a coerceEarly
 				rewriteableCode[instructionPointer-1]=0xfc;
@@ -1664,7 +1669,7 @@ ASObject* ABCVm::executeFunctionFast(const SyntheticFunction* function, call_con
 			case 0xfc:
 			{
 				//coerceearly
-				const Type* type = data->types[0];
+				Type* type = data->types[0];
 				LOG_CALL("coerceEarly " << type);
 
 				RUNTIME_STACK_POP_CREATE(context,o);

@@ -22,10 +22,15 @@
 
 #include "compat.h"
 
+#include "forwards/threading.h"
+#include "forwards/backends/netutils.h"
+#include "interfaces/backends/netutils.h"
 #include "swftypes.h"
 #include "scripting/flash/events/flashevents.h"
 #include "backends/netutils.h"
+#include "backends/graphics.h"
 #include "scripting/flash/display/DisplayObject.h"
+#include "scripting/flash/display/Graphics.h"
 #include "scripting/flash/display/TokenContainer.h"
 #include "scripting/flash/display/NativeWindow.h"
 #include "abcutils.h"
@@ -43,7 +48,8 @@ class DefineButtonTag;
 class InteractiveObject;
 class Downloader;
 class RenderContext;
-class RenderContext;
+class SoundChannel;
+class SoundTransform;
 class ApplicationDomain;
 class SecurityDomain;
 class BitmapData;
@@ -69,9 +75,9 @@ protected:
 public:
 	bool isHittable(DisplayObject::HIT_TYPE type)
 	{
-		if(type == DisplayObject::MOUSE_CLICK)
+		if(type == DisplayObject::MOUSE_CLICK_HIT)
 			return mouseEnabled;
-		else if(type == DisplayObject::DOUBLE_CLICK)
+		else if(type == DisplayObject::DOUBLE_CLICK_HIT)
 			return doubleClickEnabled && mouseEnabled;
 		else
 			return true;
@@ -107,54 +113,66 @@ private:
 	bool mouseChildren;
 	map<int32_t,DisplayObject*> mapDepthToLegacyChild;
 	unordered_map<DisplayObject*,int32_t> mapLegacyChildToDepth;
-	map<int32_t,_NR<DisplayObject>> namedRemovedLegacyChildren;
 	set<int32_t> legacyChildrenMarkedForDeletion;
+	map<int32_t,DisplayObject*> mapFrameDepthToLegacyChildRemembered;
 	bool _contains(DisplayObject* child);
 	void getObjectsFromPoint(Point* point, Array* ar);
 	number_t boundsrectXmin;
 	number_t boundsrectYmin;
 	number_t boundsrectXmax;
 	number_t boundsrectYmax;
-	bool boundsrectdirty;
+	bool boundsRectDirty;
+	number_t boundsrectVisibleXmin;
+	number_t boundsrectVisibleYmin;
+	number_t boundsrectVisibleXmax;
+	number_t boundsrectVisibleYmax;
+	bool boundsRectVisibleDirty;
+	void umarkLegacyChild(DisplayObject* child);
+	void setChildIndexIntern(DisplayObject* child, int index);
 protected:
-	//This is shared between RenderThread and VM
 	std::vector < DisplayObject* > dynamicDisplayList;
 	void clearDisplayList();
 	//The lock should only be taken when doing write operations
 	//As the RenderThread only reads, it's safe to read without the lock
 	mutable Mutex mutexDisplayList;
 	void setOnStage(bool staged, bool force, bool inskipping=false) override;
-	_NR<DisplayObject> hitTestImpl(number_t x, number_t y, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override;
-	bool boundsRectWithoutChildren(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override
-	{
-		return false;
-	}
-	bool renderImpl(RenderContext& ctxt) override;
+	_NR<DisplayObject> hitTestImpl(const Vector2f& globalPoint, const Vector2f& localPoint, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
+	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax, bool visibleOnly) override;
 	virtual void resetToStart() {}
 	ASPROPERTY_GETTER_SETTER(bool, tabChildren);
 	void LegacyChildEraseDeletionMarked();
+	void rememberLastFrameChildren();
+	void clearLastFrameChildren();
 public:
-	DisplayObject* findRemovedLegacyChild(uint32_t name);
-	void eraseRemovedLegacyChild(uint32_t name);
+	bool boundsRectWithoutChildren(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax, bool visibleOnly) override
+	{
+		return false;
+	}
+	DisplayObject* getLastFrameChildAtDepth(int depth);
+	void fillGraphicsData(Vector* v, bool recursive) override;
 	bool LegacyChildRemoveDeletionMark(int32_t depth);
 	void requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh=false) override;
+	void requestInvalidationIncludingChildren(InvalidateQueue* q) override;
+	IDrawable* invalidate(bool smoothing) override;
+	void invalidateForRenderToBitmap(RenderDisplayObjectToBitmapContainer* container) override;
+	
 	void _addChildAt(DisplayObject* child, unsigned int index, bool inskipping=false);
 	void dumpDisplayList(unsigned int level=0);
+	void handleRemovedEvent(DisplayObject* child, bool keepOnStage = false, bool inskipping = false);
 	bool _removeChild(DisplayObject* child, bool direct=false, bool inskipping=false, bool keeponstage=false);
 	void _removeAllChildren();
 	void removeAVM1Listeners() override;
 	int getChildIndex(DisplayObject* child);
 	DisplayObjectContainer(ASWorker* wrk,Class_base* c);
 	void markAsChanged() override;
-	inline void markBoundsRectDirty() { boundsrectdirty=true; }
+	inline void markBoundsRectDirty() { boundsRectDirty=true; boundsRectVisibleDirty=true; }
 	void markBoundsRectDirtyChildren();
-	void setChildrenCachedAsBitmapOf(DisplayObject* cachedBitmapObject);
 	bool destruct() override;
 	void finalize() override;
 	void prepareShutdown() override;
 	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
 	void cloneDisplayList(std::vector<_R<DisplayObject>>& displayListCopy);
+	bool isEmpty() const { return dynamicDisplayList.empty(); }
 	bool hasLegacyChildAt(int32_t depth);
 	// this does not test if a DisplayObject exists at the provided depth
 	DisplayObject* getLegacyChildAt(int32_t depth);
@@ -169,10 +187,13 @@ public:
 	uint32_t getMaxLegacyChildDepth();
 	void purgeLegacyChildren();
 	void checkClipDepth();
+	void enterFrame(bool implicit) override;
 	void advanceFrame(bool implicit) override;
 	void declareFrame(bool implicit) override;
 	void initFrame() override;
 	void executeFrameScript() override;
+	void afterLegacyInsert() override;
+	void afterLegacyDelete(bool inskipping) override;
 	multiname* setVariableByMultiname(multiname& name, asAtom& o, CONST_ALLOWED_FLAG allowConst, bool* alreadyset, ASWorker* wrk) override;
 	bool deleteVariableByMultiname(const multiname& name, ASWorker* wrk) override;
 	inline bool deleteVariableByMultinameWithoutRemovingChild(const multiname& name, ASWorker* wrk)
@@ -200,269 +221,6 @@ public:
 	ASFUNCTION_ATOM(swapChildrenAt);
 };
 
-/* This is really ugly, but the parent of the current
- * active state (e.g. upState) is set to the owning SimpleButton,
- * which is not a DisplayObjectContainer per spec.
- * We let it derive from DisplayObjectContainer, but
- * call only the InteractiveObject::_constructor
- * to make it look like an InteractiveObject to AS.
- */
-class SimpleButton: public DisplayObjectContainer
-{
-private:
-	_NR<DisplayObject> downState;
-	_NR<DisplayObject> hitTestState;
-	_NR<DisplayObject> overState;
-	_NR<DisplayObject> upState;
-	_NR<SoundChannel> soundchannel_OverUpToIdle;
-	_NR<SoundChannel> soundchannel_IdleToOverUp;
-	_NR<SoundChannel> soundchannel_OverUpToOverDown;
-	_NR<SoundChannel> soundchannel_OverDownToOverUp;
-	DefineButtonTag* buttontag;
-	enum BUTTONSTATE
-	{
-		UP,
-		OVER,
-		DOWN,
-		STATE_OUT
-	};
-	BUTTONSTATE currentState;
-	bool enabled;
-	bool useHandCursor;
-	bool hasMouse;
-	void reflectState(BUTTONSTATE oldstate);
-	_NR<DisplayObject> hitTestImpl(number_t x, number_t y, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
-	/* This is called by when an event is dispatched */
-	void defaultEventBehavior(_R<Event> e) override;
-protected:
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override;
-public:
-	SimpleButton(ASWorker* wrk,Class_base* c, DisplayObject *dS = nullptr, DisplayObject *hTS = nullptr,
-				 DisplayObject *oS = nullptr, DisplayObject *uS = nullptr, DefineButtonTag* tag = nullptr);
-	void constructionComplete() override;
-	void finalize() override;
-	bool destruct() override;
-	void prepareShutdown() override;
-	IDrawable* invalidate(DisplayObject* target, const MATRIX& initialMatrix, bool smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap) override;
-	void requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh=false) override;
-	uint32_t getTagID() const override;
-
-	static void sinit(Class_base* c);
-	ASFUNCTION_ATOM(_constructor);
-	ASFUNCTION_ATOM(_getUpState);
-	ASFUNCTION_ATOM(_setUpState);
-	ASFUNCTION_ATOM(_getDownState);
-	ASFUNCTION_ATOM(_setDownState);
-	ASFUNCTION_ATOM(_getOverState);
-	ASFUNCTION_ATOM(_setOverState);
-	ASFUNCTION_ATOM(_getHitTestState);
-	ASFUNCTION_ATOM(_setHitTestState);
-	ASFUNCTION_ATOM(_getEnabled);
-	ASFUNCTION_ATOM(_setEnabled);
-	ASFUNCTION_ATOM(_getUseHandCursor);
-	ASFUNCTION_ATOM(_setUseHandCursor);
-
-	void afterLegacyInsert() override;
-	void afterLegacyDelete(DisplayObjectContainer* parent, bool inskipping) override;
-	bool AVM1HandleKeyboardEvent(KeyboardEvent* e) override;
-	bool AVM1HandleMouseEvent(EventDispatcher* dispatcher, MouseEvent *e) override;
-	void handleMouseCursor(bool rollover) override;
-};
-
-class Shape: public DisplayObject, public TokenContainer
-{
-protected:
-	_NR<Graphics> graphics;
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override;
-	bool renderImpl(RenderContext& ctxt) override
-		{ return TokenContainer::renderImpl(ctxt); }
-	_NR<DisplayObject> hitTestImpl(number_t x, number_t y, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
-	
-	DefineShapeTag* fromTag;
-public:
-	Shape(ASWorker* wrk,Class_base* c);
-	void setupShape(lightspark::DefineShapeTag *tag, float _scaling);
-	uint32_t getTagID() const override;
-	bool destruct() override;
-	void finalize() override;
-	void prepareShutdown() override;
-	void startDrawJob() override;
-	void endDrawJob() override;
-
-	static void sinit(Class_base* c);
-	ASFUNCTION_ATOM(_constructor);
-	ASFUNCTION_ATOM(_getGraphics);
-	void requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh=false) override;
-	IDrawable* invalidate(DisplayObject* target, const MATRIX& initialMatrix, bool smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap) override;
-	bool hasGraphics() const override { return !graphics.isNull(); }
-};
-
-class DefineMorphShapeTag;
-class MorphShape: public DisplayObject, public TokenContainer
-{
-private:
-	DefineMorphShapeTag* morphshapetag;
-	uint16_t currentratio;
-protected:
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override;
-	bool renderImpl(RenderContext& ctxt) override
-		{ return TokenContainer::renderImpl(ctxt); }
-	_NR<DisplayObject> hitTestImpl(number_t x, number_t y, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
-public:
-	MorphShape(ASWorker* wrk,Class_base* c);
-	MorphShape(ASWorker* wrk, Class_base* c, DefineMorphShapeTag* _morphshapetag);
-	static void sinit(Class_base* c);
-	void requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh=false) override { TokenContainer::requestInvalidation(q,forceTextureRefresh); }
-	IDrawable* invalidate(DisplayObject* target, const MATRIX& initialMatrix, bool smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap) override;
-	void checkRatio(uint32_t ratio, bool inskipping) override;
-	uint32_t getTagID() const override;
-};
-
-class Loader;
-
-class LoaderInfo: public EventDispatcher, public ILoadable
-{
-public:
-	_NR<ApplicationDomain> applicationDomain;
-	_NR<SecurityDomain> securityDomain;
-	ASPROPERTY_GETTER(_NR<ASObject>,parameters);
-	ASPROPERTY_GETTER(tiny_string, contentType);
-private:
-	uint32_t bytesLoaded;
-	uint32_t bytesLoadedPublic; // bytes loaded synchronized with ProgressEvent
-	uint32_t bytesTotal;
-	tiny_string url;
-	tiny_string loaderURL;
-	_NR<EventDispatcher> sharedEvents;
-	Loader* loader;
-	_NR<ByteArray> bytesData;
-	/*
-	 * waitedObject is the object we are supposed to wait,
-	 * it's necessary when multiple loads are invoked on
-	 * the same Loader. Since the construction may complete
-	 * after the second load is used we need to know what is
-	 * the last object that will notify this LoaderInfo about
-	 * completion
-	 */
-	_NR<DisplayObject> waitedObject;
-	_NR<ProgressEvent> progressEvent;
-	Mutex spinlock;
-	enum LOAD_STATUS { STARTED=0, INIT_SENT, COMPLETE };
-	LOAD_STATUS loadStatus;
-	/*
-	 * sendInit should be called with the spinlock held
-	 */
-	void sendInit();
-	// set of events that need refcounting of loader
-	std::unordered_set<Event*> loaderevents;
-public:
-	ASPROPERTY_GETTER(uint32_t,actionScriptVersion);
-	ASPROPERTY_GETTER(uint32_t,swfVersion);
-	ASPROPERTY_GETTER(bool, childAllowsParent);
-	ASPROPERTY_GETTER(_NR<UncaughtErrorEvents>,uncaughtErrorEvents);
-	ASPROPERTY_GETTER(bool,parentAllowsChild);
-	ASPROPERTY_GETTER(number_t,frameRate);
-	LoaderInfo(ASWorker*,Class_base* c);
-	LoaderInfo(ASWorker*, Class_base* c, Loader* l);
-	bool destruct() override;
-	void finalize() override;
-	void prepareShutdown() override;
-	void afterHandleEvent(Event* ev) override;
-	void addLoaderEvent(Event* ev);
-	static void sinit(Class_base* c);
-	ASFUNCTION_ATOM(_constructor);
-	ASFUNCTION_ATOM(_getLoaderURL);
-	ASFUNCTION_ATOM(_getURL);
-	ASFUNCTION_ATOM(_getBytesLoaded);
-	ASFUNCTION_ATOM(_getBytesTotal);
-	ASFUNCTION_ATOM(_getBytes);
-	ASFUNCTION_ATOM(_getApplicationDomain);
-	ASFUNCTION_ATOM(_getLoader);
-	ASFUNCTION_ATOM(_getContent);
-	ASFUNCTION_ATOM(_getSharedEvents);
-	ASFUNCTION_ATOM(_getWidth);
-	ASFUNCTION_ATOM(_getHeight);
-	void objectHasLoaded(DisplayObject* obj);
-	void setWaitedObject(_NR<DisplayObject> w);
-	//ILoadable interface
-	void setBytesTotal(uint32_t b) override
-	{
-		bytesTotal=b;
-	}
-	void setBytesLoaded(uint32_t b) override;
-	void setBytesLoadedPublic(uint32_t b) { bytesLoadedPublic = b; }
-	uint32_t getBytesLoaded() { return bytesLoaded; }
-	uint32_t getBytesTotal() { return bytesTotal; }
-	void setURL(const tiny_string& _url, bool setParameters=true);
-	void setLoaderURL(const tiny_string& _url) { loaderURL=_url; }
-	void setParameters(_NR<ASObject> p) { parameters = p; }
-	void resetState();
-	void setFrameRate(number_t f) { frameRate=f; }
-	void setComplete();
-	void setContent(DisplayObject *o);
-};
-
-class URLRequest;
-
-class LoaderThread : public DownloaderThreadBase
-{
-private:
-	enum SOURCE { URL, BYTES };
-	_NR<ByteArray> bytes;
-	_R<Loader> loader;
-	_NR<LoaderInfo> loaderInfo;
-	SOURCE source;
-	void execute();
-public:
-	LoaderThread(_R<URLRequest> request, _R<Loader> loader);
-	LoaderThread(_R<ByteArray> bytes, _R<Loader> loader);
-};
-
-class Loader: public DisplayObjectContainer, public IDownloaderThreadListener
-{
-private:
-	mutable Mutex spinlock;
-	DisplayObject* content;
-	// There can be multiple jobs, one active and aborted ones
-	// that have not yet terminated
-	std::list<IThreadJob *> jobs;
-	URLInfo url;
-	_NR<LoaderInfo> contentLoaderInfo;
-	void unload();
-	bool loaded;
-	bool allowCodeImport;
-protected:
-	_NR<DisplayObject> avm1target;
-	void loadIntern(URLRequest* r, LoaderContext* context);
-public:
-	Loader(ASWorker* wrk, Class_base* c);
-	~Loader();
-	void finalize() override;
-	bool destruct() override;
-	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
-	void prepareShutdown() override;
-	void threadFinished(IThreadJob* job) override;
-	static void sinit(Class_base* c);
-	ASFUNCTION_ATOM(_constructor);
-	ASFUNCTION_ATOM(close);
-	ASFUNCTION_ATOM(load);
-	ASFUNCTION_ATOM(loadBytes);
-	ASFUNCTION_ATOM(_unload);
-	ASFUNCTION_ATOM(_unloadAndStop);
-	ASFUNCTION_ATOM(_getContentLoaderInfo);
-	ASFUNCTION_ATOM(_getContent);
-	ASPROPERTY_GETTER(_NR<UncaughtErrorEvents>,uncaughtErrorEvents);
-	int getDepth() const
-	{
-		return 0;
-	}
-	void setContent(DisplayObject* o);
-	DisplayObject* getContent() const { return content; }
-	_R<LoaderInfo> getContentLoaderInfo() { return contentLoaderInfo; }
-	bool allowLoadingSWF() { return allowCodeImport; }
-	bool hasAVM1Target() const { return !avm1target.isNull(); }
-};
-
 class Sprite: public DisplayObjectContainer, public TokenContainer
 {
 friend class DisplayObject;
@@ -478,22 +236,25 @@ private:
 	bool hasMouse;
 	void afterSetUseHandCursor(bool oldValue);
 protected:
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override;
-	bool boundsRectWithoutChildren(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override
-	{
-		return TokenContainer::boundsRect(xmin,xmax,ymin,ymax);
-	}
-	bool renderImpl(RenderContext& ctxt) override;
-	_NR<DisplayObject> hitTestImpl(number_t x, number_t y, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
+	bool initializingFrame;
+	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax, bool visibleOnly) override;
+	_NR<DisplayObject> hitTestImpl(const Vector2f& globalPoint, const Vector2f& localPoint, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
 	void resetToStart() override;
 	void checkSound(uint32_t frame);// start sound streaming if it is not already playing
 	void stopSound();
 	void markSoundFinished();
 public:
+	bool boundsRectWithoutChildren(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax, bool visibleOnly) override
+	{
+		if (visibleOnly && !this->isVisible())
+			return false;
+		return TokenContainer::boundsRect(xmin,xmax,ymin,ymax);
+	}
+	void fillGraphicsData(Vector* v, bool recursive) override;
 	bool dragged;
 	Sprite(ASWorker* wrk,Class_base* c);
 	void setSound(SoundChannel* s, bool forstreaming);
-	SoundChannel* getSoundChannel() const { return sound.getPtr(); }
+	SoundChannel* getSoundChannel() const;
 	void appendSound(unsigned char* buf, int len, uint32_t frame);
 	void setSoundStartFrame(uint32_t frame) { soundstartframe=frame; }
 	bool destruct() override;
@@ -515,213 +276,12 @@ public:
 	{
 		return 0;
 	}
-	IDrawable* invalidate(DisplayObject* target, const MATRIX& initialMatrix, bool smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap) override;
+	IDrawable* invalidate(bool smoothing) override;
 	void requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh=false) override;
-	_NR<Graphics> getGraphics();
+	Graphics* getGraphics();
 	void handleMouseCursor(bool rollover) override;
-	bool hasGraphics() const override { return !graphics.isNull(); }
-};
-
-struct FrameLabel_data
-{
-	FrameLabel_data() : frame(0) {}
-	FrameLabel_data(uint32_t _frame, tiny_string _name) : name(_name),frame(_frame){}
-	tiny_string name;
-	uint32_t frame;
-};
-
-class FrameLabel: public ASObject, public FrameLabel_data
-{
-public:
-	FrameLabel(ASWorker* wrk,Class_base* c);
-	FrameLabel(ASWorker* wrk,Class_base* c, const FrameLabel_data& data);
-	static void sinit(Class_base* c);
-	ASFUNCTION_ATOM(_getFrame);
-	ASFUNCTION_ATOM(_getName);
-};
-
-struct Scene_data
-{
-	Scene_data() : startframe(0) {}
-	//this vector is sorted with respect to frame
-	std::vector<FrameLabel_data> labels;
-	tiny_string name;
-	uint32_t startframe;
-	void addFrameLabel(uint32_t frame, const tiny_string& label);
-};
-
-class Scene: public ASObject, public Scene_data
-{
-	uint32_t numFrames;
-public:
-	Scene(ASWorker* wrk,Class_base* c);
-	Scene(ASWorker* wrk,Class_base* c, const Scene_data& data, uint32_t _numFrames);
-	static void sinit(Class_base* c);
-	ASFUNCTION_ATOM(_constructor);
-	ASFUNCTION_ATOM(_getLabels);
-	ASFUNCTION_ATOM(_getName);
-	ASFUNCTION_ATOM(_getNumFrames);
-};
-
-class Frame
-{
-friend class FrameContainer;
-private:
-	AVM1context avm1context;
-public:
-	inline AVM1context* getAVM1Context() { return &avm1context; }
-	std::list<DisplayListTag*> blueprint;
-	void execute(DisplayObjectContainer* displayList, bool inskipping);
-	void AVM1executeActions(MovieClip* clip);
-	/**
-	 * destroyTags must be called only by the tag destructor, not by
-	 * the objects that are instance of tags
-	 */
-	void destroyTags();
-};
-
-class FrameContainer
-{
-protected:
-	/* This list is accessed by both the vm thread and the parsing thread,
-	 * but the parsing thread only accesses frames.back(), while
-	 * the vm thread only accesses the frames before that frame (until
-	 * the parsing finished; then it can also access the last frame).
-	 * To make that easier for the vm thread, the member framesLoaded keep
-	 * track of how many frames the vm may access. Access to framesLoaded
-	 * is guarded by a spinlock.
-	 * For non-RootMovieClips, the parser fills the frames member before
-	 * handing the object to the vm, so there is no issue here.
-	 * RootMovieClips use the new_frame semaphore to wait
-	 * for a finished frame from the parser.
-	 * It cannot be implemented as std::vector, because then reallocation
-	 * would break concurrent access.
-	 */
-	std::list<Frame> frames;
-	std::vector<Scene_data> scenes;
-	void addToFrame(DisplayListTag *r);
-	void setFramesLoaded(uint32_t fl) { framesLoaded = fl; }
-	FrameContainer();
-	FrameContainer(const FrameContainer& f);
-private:
-	//No need for any lock, just make sure accesses are atomic
-	ATOMIC_INT32(framesLoaded);
-	AVM1context avm1context;
-public:
-	void addFrameLabel(uint32_t frame, const tiny_string& label);
-	uint32_t getFramesLoaded() { return framesLoaded; }
-	void setAvm1InitAction(AVM1InitActionTag* t);
-	inline AVM1context* getAVM1Context() { return &avm1context; }
-};
-
-class MovieClip: public Sprite, public FrameContainer
-{
-friend class Stage;
-private:
-	uint32_t getCurrentScene() const;
-	const Scene_data *getScene(const tiny_string &sceneName) const;
-	uint32_t getFrameIdByNumber(uint32_t i, const tiny_string& sceneName) const;
-	std::map<uint32_t,asAtom > frameScripts;
-	uint32_t fromDefineSpriteTag;
-	uint32_t lastFrameScriptExecuted;
-	uint32_t lastratio;
-	bool inExecuteFramescript;
-	bool inAVM1Attachment;
-	bool isAVM1Loaded;
-	void currentFrameChanged(bool newframe);
-protected:
-	const CLIPACTIONS* actions;
-	/* This is read from the SWF header. It's only purpose is for flash.display.MovieClip.totalFrames */
-	uint32_t totalFrames_unreliable;
-	ASPROPERTY_GETTER_SETTER(bool, enabled);
-public:
-	uint32_t getFrameIdByLabel(const tiny_string& l, const tiny_string& sceneName) const;
-	void constructionComplete() override;
-	void afterConstruction() override;
-	RunState state;
-	_NR<AVM1MovieClipLoader> avm1loader;
-	Frame* getCurrentFrame();
-	MovieClip(ASWorker* wrk,Class_base* c);
-	MovieClip(ASWorker* wrk,Class_base* c, const FrameContainer& f, uint32_t defineSpriteTagID);
-	bool destruct() override;
-	void finalize() override;
-	void prepareShutdown() override;
-	void setPlaying();
-	void setStopped();
-	void gotoAnd(asAtom *args, const unsigned int argslen, bool stop);
-	static void sinit(Class_base* c);
-	/*
-	 * returns true if all frames of this MovieClip are loaded
-	 * this is overwritten in RootMovieClip, because that one is
-	 * executed while loading
-	 */
-	virtual bool hasFinishedLoading() { return true; }
-	ASFUNCTION_ATOM(_constructor);
-	ASFUNCTION_ATOM(swapDepths);
-	ASFUNCTION_ATOM(addFrameScript);
-	ASFUNCTION_ATOM(stop);
-	ASFUNCTION_ATOM(play);
-	ASFUNCTION_ATOM(gotoAndStop);
-	ASFUNCTION_ATOM(gotoAndPlay);
-	ASFUNCTION_ATOM(prevFrame);
-	ASFUNCTION_ATOM(nextFrame);
-	ASFUNCTION_ATOM(_getCurrentFrame);
-	ASFUNCTION_ATOM(_getCurrentFrameLabel);
-	ASFUNCTION_ATOM(_getCurrentLabel);
-	ASFUNCTION_ATOM(_getCurrentLabels);
-	ASFUNCTION_ATOM(_getTotalFrames);
-	ASFUNCTION_ATOM(_getFramesLoaded);
-	ASFUNCTION_ATOM(_getScenes);
-	ASFUNCTION_ATOM(_getCurrentScene);
-
-	void advanceFrame(bool implicit) override;
-	void declareFrame(bool implicit) override;
-	void initFrame() override;
-	void executeFrameScript() override;
-	void checkRatio(uint32_t ratio, bool inskipping) override;
-
-	void afterLegacyInsert() override;
-	void afterLegacyDelete(DisplayObjectContainer* parent, bool inskipping) override;
-
-	void addScene(uint32_t sceneNo, uint32_t startframe, const tiny_string& name);
-	uint32_t getTagID() const override { return fromDefineSpriteTag; }
-	void setupActions(const CLIPACTIONS& clipactions);
-
-	bool AVM1HandleKeyboardEvent(KeyboardEvent *e) override;
-	bool AVM1HandleMouseEvent(EventDispatcher* dispatcher, MouseEvent *e) override;
-	void AVM1HandleEvent(EventDispatcher* dispatcher, Event* e) override;
-	void AVM1AfterAdvance() override;
-	
-	void AVM1gotoFrameLabel(const tiny_string &label, bool stop, bool switchplaystate);
-	void AVM1gotoFrame(int frame, bool stop, bool switchplaystate, bool advanceFrame=true);
-	static void AVM1SetupMethods(Class_base* c);
-	void AVM1ExecuteFrameActionsFromLabel(const tiny_string &label);
-	void AVM1ExecuteFrameActions(uint32_t frame);
-	void AVM1AddScriptEvents();
-	void AVM1HandleConstruction();
-	bool getAVM1Loaded() const { return isAVM1Loaded; }
-	MovieClip* AVM1CloneSprite(asAtom target, uint32_t Depth, ASObject* initobj);
-
-	ASFUNCTION_ATOM(AVM1AttachMovie);
-	ASFUNCTION_ATOM(AVM1CreateEmptyMovieClip);
-	ASFUNCTION_ATOM(AVM1RemoveMovieClip);
-	ASFUNCTION_ATOM(AVM1DuplicateMovieClip);
-	ASFUNCTION_ATOM(AVM1Clear);
-	ASFUNCTION_ATOM(AVM1MoveTo);
-	ASFUNCTION_ATOM(AVM1LineTo);
-	ASFUNCTION_ATOM(AVM1LineStyle);
-	ASFUNCTION_ATOM(AVM1BeginFill);
-	ASFUNCTION_ATOM(AVM1BeginGradientFill);
-	ASFUNCTION_ATOM(AVM1EndFill);
-	ASFUNCTION_ATOM(AVM1GetNextHighestDepth);
-	ASFUNCTION_ATOM(AVM1AttachBitmap);
-	ASFUNCTION_ATOM(AVM1getInstanceAtDepth);
-	ASFUNCTION_ATOM(AVM1getSWFVersion);
-	ASFUNCTION_ATOM(AVM1LoadMovie);
-	ASFUNCTION_ATOM(AVM1UnloadMovie);
-	ASFUNCTION_ATOM(AVM1CreateTextField);
-	
-	std::string toDebugString() const override;
+	bool allowAsMask() const override { return !isEmpty() || !graphics.isNull(); }
+	float getScaleFactor() const override { return this->scaling; }
 };
 
 struct AVM1scriptToExecute
@@ -731,6 +291,7 @@ struct AVM1scriptToExecute
 	AVM1context* avm1context;
 	uint32_t event_name_id;
 	MovieClip* clip;
+	bool isEventScript;
 	void execute();
 };
 class Stage: public DisplayObjectContainer
@@ -741,6 +302,7 @@ public:
 private:
 	Mutex avm1listenerMutex;
 	Mutex avm1DisplayObjectMutex;
+	Mutex avm1ScriptMutex;
 	void onColorCorrection(const tiny_string&);
 	void onFullScreenSourceRect(_NR<Rectangle>);
 	// Keyboard focus object is accessed from the VM thread (AS
@@ -751,7 +313,7 @@ private:
 	// list of objects that are not added to stage, but need to be handled when first frame is executed
 	// currently used when Loader contents are added and the Loader is not on stage
 	// or a MovieClip is not on stage but set to "play" from AS3 code
-	unordered_set<MovieClip*> hiddenobjects;
+	unordered_set<DisplayObject*> hiddenobjects;
 	vector<ASObject*> avm1KeyboardListeners;
 	vector<ASObject*> avm1MouseListeners;
 	vector<ASObject*> avm1EventListeners;
@@ -762,10 +324,13 @@ private:
 	DisplayObject* avm1DisplayObjectLast;
 	std::list<AVM1scriptToExecute> avm1scriptstoexecute;
 	bool hasAVM1Clips;
+	void executeAVM1Scripts(bool implicit);
+	Mutex DisplayObjectRemovedMutex;
+	unordered_set<DisplayObject*> removedDisplayObjects;
 protected:
 	virtual void eventListenerAdded(const tiny_string& eventName) override;
-	bool renderImpl(RenderContext& ctxt) override;
 public:
+	void render(RenderContext& ctxt, const MATRIX* startmatrix);
 	bool destruct() override;
 	void prepareShutdown() override;
 	void defaultEventBehavior(_R<Event> e) override;
@@ -773,9 +338,9 @@ public:
 	void onAlign(uint32_t);
 	void forceInvalidation();
 	bool renderStage3D();
-	void onDisplayState(const tiny_string&);
+	void onDisplayState(const tiny_string& old_value);
 	void AVM1RootClipAdded() { hasAVM1Clips = true; }
-	_NR<DisplayObject> hitTestImpl(number_t x, number_t y, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
+	_NR<DisplayObject> hitTestImpl(const Vector2f& globalPoint, const Vector2f& localPoint, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
 	void setOnStage(bool staged, bool force,bool inskipping=false) override { assert(false); /* we are the stage */}
 	_NR<RootMovieClip> getRoot() override;
 	void setRoot(_NR<RootMovieClip> _root);
@@ -785,8 +350,13 @@ public:
 	_NR<InteractiveObject> getFocusTarget();
 	void setFocusTarget(_NR<InteractiveObject> focus);
 	void checkResetFocusTarget(InteractiveObject* removedtarget);
-	void addHiddenObject(MovieClip* o);
-	void removeHiddenObject(MovieClip* o);
+	void addHiddenObject(DisplayObject* o);
+	void removeHiddenObject(DisplayObject* o);
+	void forEachHiddenObject(std::function<void(DisplayObject*)> callback, bool allowInvalid = false);
+	void cleanupDeadHiddenObjects();
+	void prepareForRemoval(DisplayObject* d);
+	void cleanupRemovedDisplayObjects();
+	void enterFrame(bool implicit) override;
 	void advanceFrame(bool implicit) override;
 	void initFrame() override;
 	void executeFrameScript() override;
@@ -868,25 +438,6 @@ public:
 	static void sinit(Class_base* c);
 };
 
-class Stage3D: public EventDispatcher
-{
-friend class Stage;
-protected:
-	bool renderImpl(RenderContext &ctxt) const;
-public:
-	bool destruct() override;
-	void prepareShutdown() override;
-	Stage3D(ASWorker* wrk, Class_base* c);
-	static void sinit(Class_base* c);
-	ASFUNCTION_ATOM(_constructor);
-	ASFUNCTION_ATOM(requestContext3D);
-	ASFUNCTION_ATOM(requestContext3DMatchingProfiles);
-	ASPROPERTY_GETTER_SETTER(number_t,x);
-	ASPROPERTY_GETTER_SETTER(number_t,y);
-	ASPROPERTY_GETTER_SETTER(bool,visible);
-	ASPROPERTY_GETTER(_NR<Context3D>,context3D);
-};
-
 
 class LineScaleMode: public ASObject
 {
@@ -926,7 +477,6 @@ public:
 class GraphicsPathCommand: public ASObject
 {
 public:
-	enum {NO_OP=0, MOVE_TO, LINE_TO, CURVE_TO, WIDE_MOVE_TO, WIDE_LINE_TO, CUBIC_CURVE_TO};
 	GraphicsPathCommand(ASWorker* wrk, Class_base* c):ASObject(wrk,c){}
 	static void sinit(Class_base* c);
 };
@@ -937,14 +487,6 @@ public:
 	GraphicsPathWinding(ASWorker* wrk, Class_base* c):ASObject(wrk,c){}
 	static void sinit(Class_base* c);
 
-};
-
-class IntSize
-{
-public:
-	uint32_t width;
-	uint32_t height;
-	IntSize(uint32_t w, uint32_t h):width(w),height(h){}
 };
 
 class PixelSnapping: public ASObject
@@ -967,43 +509,12 @@ public:
 	static void sinit(Class_base* c);
 };
 
-class Bitmap: public DisplayObject
-{
-friend class CairoTokenRenderer;
-private:
-	DisplayObject* cachedBitmapOwner;
-	void onBitmapData(_NR<BitmapData>);
-	void onSmoothingChanged(bool);
-	void onPixelSnappingChanged(tiny_string snapping);
-protected:
-	bool renderImpl(RenderContext& ctxt) override;
-public:
-	ASPROPERTY_GETTER_SETTER(_NR<BitmapData>,bitmapData);
-	ASPROPERTY_GETTER_SETTER(bool, smoothing);
-	ASPROPERTY_GETTER_SETTER(tiny_string,pixelSnapping);
-	/* Call this after updating any member of 'data' */
-	void updatedData();
-	Bitmap(ASWorker* wrk, Class_base* c, _NR<LoaderInfo> li=NullRef, std::istream *s = NULL, FILE_TYPE type=FT_UNKNOWN);
-	Bitmap(ASWorker* wrk, Class_base* c, _R<BitmapData> data, bool startupload=true, DisplayObject* owner=nullptr);
-	~Bitmap();
-	bool destruct() override;
-	void finalize() override;
-	void prepareShutdown() override;
-	void setOnStage(bool staged, bool force, bool inskipping=false) override;
-	static void sinit(Class_base* c);
-	ASFUNCTION_ATOM(_constructor);
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override;
-	_NR<DisplayObject> hitTestImpl(number_t x, number_t y, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
-	virtual IntSize getBitmapSize() const;
-	void requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh=false) override;
-	IDrawable* invalidate(DisplayObject* target, const MATRIX& initialMatrix, bool smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap) override;
-	IDrawable* invalidateFromSource(DisplayObject* target, const MATRIX& initialMatrix, bool smoothing, DisplayObject* matrixsource, const MATRIX& sourceMatrix, DisplayObject* originalsource);
-};
-
-class AVM1Movie: public DisplayObject
+// AVM1Movie is derived from DisplayObjectContainer, but to ActionScript it behaves as a DisplayObject (similar to how we handle SimpleButtons)
+// Its only child is the RootMovieClip of the loaded AVM1 swf file
+class AVM1Movie: public DisplayObjectContainer
 {
 public:
-	AVM1Movie(ASWorker* wrk, Class_base* c):DisplayObject(wrk,c){}
+	AVM1Movie(ASWorker* wrk, Class_base* c);
 	static void sinit(Class_base* c);
 	ASFUNCTION_ATOM(_constructor);
 };

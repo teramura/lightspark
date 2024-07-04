@@ -27,6 +27,7 @@
 /* for utf8 handling */
 #include <glib.h>
 #include "compat.h"
+#include <functional>
 
 /* forward declare for tiny_string conversion */
 typedef unsigned char xmlChar;
@@ -88,6 +89,7 @@ public:
 class DLL_PUBLIC tiny_string
 {
 friend std::ostream& operator<<(std::ostream& s, const tiny_string& r);
+friend struct std::hash<lightspark::tiny_string>;
 private:
 	enum TYPE { READONLY=0, STATIC, DYNAMIC };
 	/*must be at least 6 bytes for tiny_string(uint32_t c) constructor */
@@ -112,6 +114,7 @@ private:
 	void createBuffer(uint32_t s);
 	void resizeBuffer(uint32_t s);
 	void resetToStatic();
+	void getTrimPositions(uint32_t& start, uint32_t &end) const;
 	void init();
 	bool isASCII:1;
 	bool hasNull:1;
@@ -256,6 +259,10 @@ public:
 	 * returns index of character */
 	uint32_t find(const tiny_string& needle, uint32_t start = 0) const;
 	uint32_t rfind(const tiny_string& needle, uint32_t start = npos) const;
+	// fills line with the text from byteindex up to the next line terminator
+	// upon return byteindex will be set to the index after the next line terminator
+	// returns true if a line terminator was found
+	bool getLine(uint32_t& byteindex, tiny_string& line);
 	tiny_string& replace(uint32_t pos1, uint32_t n1, const tiny_string& o);
 	tiny_string& replace_bytes(uint32_t bytestart, uint32_t bytenum, const tiny_string& o);
 	tiny_string lowercase() const;
@@ -273,7 +280,28 @@ public:
 	CharIterator end() const;
 	int compare(const tiny_string& r) const;
 	tiny_string toQuotedString() const;
+	// returns string that has whitespace characters removed at begin and end 
+	tiny_string removeWhitespace() const;
+	// returns true if the string is empty or only contains whitespace characters
+	bool isWhiteSpaceOnly() const;
+	// encodes all null bytes instring to xml notation ("&#x0;")
+	tiny_string encodeNull() const;
 };
-
+}
+namespace std
+{
+// using djb2 hash function from http://www.cse.yorku.ca/~oz/hash.html
+template <>
+struct hash<lightspark::tiny_string>
+{
+	size_t operator()(const lightspark::tiny_string& s) const
+	{
+		size_t hash = 5381;
+		uint32_t n =0;
+		while (n++ < s.stringSize-1)
+			hash = ((hash << 5) + hash) + s.buf[n]; /* hash * 33 + c */
+		return hash;
+	}
+};
 }
 #endif /* TINY_STRING_H */

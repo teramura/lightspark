@@ -19,10 +19,15 @@
 
 #include "scripting/flash/text/flashtextengine.h"
 #include "scripting/flash/text/flashtext.h"
+#include "scripting/toplevel/Number.h"
+#include "scripting/toplevel/Integer.h"
+#include "scripting/toplevel/UInteger.h"
 #include "scripting/class.h"
 #include "scripting/toplevel/Vector.h"
 #include "scripting/argconv.h"
+#include "parsing/tags.h"
 #include "swf.h"
+#include "platforms/engineutils.h"
 
 #define MAX_LINE_WIDTH 1000000
 
@@ -32,14 +37,60 @@ using namespace lightspark;
 void ContentElement::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructorNotInstantiatable, CLASS_SEALED);
-	REGISTER_GETTER(c,rawText);
+	c->isReusable=true;
+	REGISTER_GETTER_RESULTTYPE(c,rawText,ASString);
 	REGISTER_GETTER_SETTER(c,elementFormat);
 	REGISTER_GETTER_RESULTTYPE(c,groupElement,GroupElement);
+	REGISTER_GETTER_RESULTTYPE(c,textBlockBeginIndex,Integer);
+	
 	c->setVariableAtomByQName("GRAPHIC_ELEMENT",nsNameAndKind(),asAtomHandler::fromUInt(0xFDEF),CONSTANT_TRAIT);
+}
+
+void ContentElement::finalize()
+{
+	ASObject::finalize();
+	textBlockBeginIndex=-1;
+	elementFormat.reset();
+	groupElement.reset();
+}
+
+bool ContentElement::destruct()
+{
+	textBlockBeginIndex=-1;
+	elementFormat.reset();
+	groupElement.reset();
+	rawText.clear();
+	return ASObject::destruct();
+}
+
+void ContentElement::prepareShutdown()
+{
+	if (preparedforshutdown)
+		return;
+	ASObject::prepareShutdown();
+
+	if (elementFormat)
+		elementFormat->prepareShutdown();
+	if (groupElement)
+		groupElement->prepareShutdown();
+}
+
+bool ContentElement::countCylicMemberReferences(garbagecollectorstate& gcstate)
+{
+	if (gcstate.checkAncestors(this))
+		return false;
+	bool ret = ASObject::countCylicMemberReferences(gcstate);
+	if (elementFormat)
+		ret = elementFormat->countAllCylicMemberReferences(gcstate) || ret;
+	if (groupElement)
+		ret = groupElement->countAllCylicMemberReferences(gcstate) || ret;
+	return ret;
 }
 ASFUNCTIONBODY_GETTER_SETTER(ContentElement,elementFormat)
 ASFUNCTIONBODY_GETTER(ContentElement,rawText)
 ASFUNCTIONBODY_GETTER_NOT_IMPLEMENTED(ContentElement,groupElement)
+ASFUNCTIONBODY_GETTER(ContentElement,textBlockBeginIndex)
+
 
 ElementFormat::ElementFormat(ASWorker* wrk, Class_base *c): ASObject(wrk,c,T_OBJECT,SUBTYPE_ELEMENTFORMAT),
 	alignmentBaseline("useDominantBaseline"),
@@ -67,27 +118,77 @@ ElementFormat::ElementFormat(ASWorker* wrk, Class_base *c): ASObject(wrk,c,T_OBJ
 void ElementFormat::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_FINAL | CLASS_SEALED);
+	c->isReusable=true;
 	c->setVariableAtomByQName("GRAPHIC_ELEMENT",nsNameAndKind(),asAtomHandler::fromUInt((uint32_t)0xFDEF),CONSTANT_TRAIT);
-	c->setDeclaredMethodByQName("clone","",Class<IFunction>::getFunction(c->getSystemState(),_clone),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("clone","",c->getSystemState()->getBuiltinFunction(_clone,0,Class<ElementFormat>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
 
-	REGISTER_GETTER_SETTER(c,alignmentBaseline);
-	REGISTER_GETTER_SETTER(c,alpha);
-	REGISTER_GETTER_SETTER(c,baselineShift);
-	REGISTER_GETTER_SETTER(c,breakOpportunity);
-	REGISTER_GETTER_SETTER(c,color);
-	REGISTER_GETTER_SETTER(c,digitCase);
-	REGISTER_GETTER_SETTER(c,digitWidth);
-	REGISTER_GETTER_SETTER(c,dominantBaseline);
-	REGISTER_GETTER_SETTER(c,fontDescription);
-	REGISTER_GETTER_SETTER(c,fontSize);
-	REGISTER_GETTER_SETTER(c,kerning);
-	REGISTER_GETTER_SETTER(c,ligatureLevel);
-	REGISTER_GETTER_SETTER(c,locale);
-	REGISTER_GETTER_SETTER(c,locked);
-	REGISTER_GETTER_SETTER(c,textRotation);
-	REGISTER_GETTER_SETTER(c,trackingLeft);
-	REGISTER_GETTER_SETTER(c,trackingRight);
-	REGISTER_GETTER_SETTER(c,typographicCase);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,alignmentBaseline,ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,alpha,Number);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,baselineShift,Number);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,breakOpportunity,ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,color,UInteger);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,digitCase,ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,digitWidth,ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,dominantBaseline,ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,fontDescription,FontDescription);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,fontSize,Number);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,kerning,ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,ligatureLevel,ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,locale,ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,locked,Boolean);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,textRotation,ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,trackingLeft,Number);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,trackingRight,Number);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,typographicCase,ASString);
+}
+
+void ElementFormat::finalize()
+{
+	ASObject::finalize();
+	fontDescription.reset();
+}
+
+bool ElementFormat::destruct()
+{
+	alignmentBaseline= "useDominantBaseline";
+	alpha = 1.0;
+	baselineShift = 0.0;
+	breakOpportunity = "auto";
+	color = 0x000000;
+	digitCase = "default";
+	digitWidth = "default";
+	dominantBaseline = "roman";
+	fontSize = 12.0;
+	kerning = "on";
+	ligatureLevel = "common";
+	locale = "en";
+	locked = false;
+	textRotation = "auto";
+	trackingLeft = 0.0;
+	trackingRight = 0.0;
+	typographicCase = "default";
+	fontDescription.reset();
+	return ASObject::destruct();
+}
+
+void ElementFormat::prepareShutdown()
+{
+	if (preparedforshutdown)
+		return;
+	ASObject::prepareShutdown();
+	
+	if (fontDescription)
+		fontDescription->prepareShutdown();
+}
+
+bool ElementFormat::countCylicMemberReferences(garbagecollectorstate& gcstate)
+{
+	if (gcstate.checkAncestors(this))
+		return false;
+	bool ret = ASObject::countCylicMemberReferences(gcstate);
+	if (fontDescription)
+		ret = fontDescription->countAllCylicMemberReferences(gcstate) || ret;
+	return ret;
 }
 ASFUNCTIONBODY_GETTER_SETTER(ElementFormat,alignmentBaseline)
 ASFUNCTIONBODY_GETTER_SETTER(ElementFormat,alpha)
@@ -153,29 +254,29 @@ void FontDescription::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_FINAL | CLASS_SEALED);
 	c->isReusable = true;
-	c->setDeclaredMethodByQName("clone","",Class<IFunction>::getFunction(c->getSystemState(),_clone),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("isFontCompatible","",Class<IFunction>::getFunction(c->getSystemState(),isFontCompatible),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("clone","",c->getSystemState()->getBuiltinFunction(_clone),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("isFontCompatible","",c->getSystemState()->getBuiltinFunction(isFontCompatible),NORMAL_METHOD,false);
 
-    c->setDeclaredMethodByQName("fontName","",Class<IFunction>::getFunction(c->getSystemState(),_getFontName),GETTER_METHOD,true);
-    c->setDeclaredMethodByQName("fontName","",Class<IFunction>::getFunction(c->getSystemState(),_setFontName),SETTER_METHOD,true);
+    c->setDeclaredMethodByQName("fontName","",c->getSystemState()->getBuiltinFunction(_getFontName),GETTER_METHOD,true);
+    c->setDeclaredMethodByQName("fontName","",c->getSystemState()->getBuiltinFunction(_setFontName),SETTER_METHOD,true);
 
-    c->setDeclaredMethodByQName("fontWeight","",Class<IFunction>::getFunction(c->getSystemState(),_getFontWeight),GETTER_METHOD,true);
-    c->setDeclaredMethodByQName("fontWeight","",Class<IFunction>::getFunction(c->getSystemState(),_setFontWeight),SETTER_METHOD,true);
+    c->setDeclaredMethodByQName("fontWeight","",c->getSystemState()->getBuiltinFunction(_getFontWeight),GETTER_METHOD,true);
+    c->setDeclaredMethodByQName("fontWeight","",c->getSystemState()->getBuiltinFunction(_setFontWeight),SETTER_METHOD,true);
 
-    c->setDeclaredMethodByQName("fontPosture","",Class<IFunction>::getFunction(c->getSystemState(),_getFontPosture),GETTER_METHOD,true);
-    c->setDeclaredMethodByQName("fontPosture","",Class<IFunction>::getFunction(c->getSystemState(),_setFontPosture),SETTER_METHOD,true);
+    c->setDeclaredMethodByQName("fontPosture","",c->getSystemState()->getBuiltinFunction(_getFontPosture),GETTER_METHOD,true);
+    c->setDeclaredMethodByQName("fontPosture","",c->getSystemState()->getBuiltinFunction(_setFontPosture),SETTER_METHOD,true);
 
-    c->setDeclaredMethodByQName("fontLookup","",Class<IFunction>::getFunction(c->getSystemState(),_getFontLookup),GETTER_METHOD,true);
-    c->setDeclaredMethodByQName("fontLookup","",Class<IFunction>::getFunction(c->getSystemState(),_setFontLookup),SETTER_METHOD,true);
+    c->setDeclaredMethodByQName("fontLookup","",c->getSystemState()->getBuiltinFunction(_getFontLookup),GETTER_METHOD,true);
+    c->setDeclaredMethodByQName("fontLookup","",c->getSystemState()->getBuiltinFunction(_setFontLookup),SETTER_METHOD,true);
 
-    c->setDeclaredMethodByQName("renderingMode","",Class<IFunction>::getFunction(c->getSystemState(),_getRenderingMode),GETTER_METHOD,true);
-    c->setDeclaredMethodByQName("renderingMode","",Class<IFunction>::getFunction(c->getSystemState(),_setRenderingMode),SETTER_METHOD,true);
+    c->setDeclaredMethodByQName("renderingMode","",c->getSystemState()->getBuiltinFunction(_getRenderingMode),GETTER_METHOD,true);
+    c->setDeclaredMethodByQName("renderingMode","",c->getSystemState()->getBuiltinFunction(_setRenderingMode),SETTER_METHOD,true);
 
-    c->setDeclaredMethodByQName("cffHinting","",Class<IFunction>::getFunction(c->getSystemState(),_getCffHinting),GETTER_METHOD,true);
-    c->setDeclaredMethodByQName("cffHinting","",Class<IFunction>::getFunction(c->getSystemState(),_setCffHinting),SETTER_METHOD,true);
+    c->setDeclaredMethodByQName("cffHinting","",c->getSystemState()->getBuiltinFunction(_getCffHinting),GETTER_METHOD,true);
+    c->setDeclaredMethodByQName("cffHinting","",c->getSystemState()->getBuiltinFunction(_setCffHinting),SETTER_METHOD,true);
 
-    c->setDeclaredMethodByQName("locked","",Class<IFunction>::getFunction(c->getSystemState(),_getLocked),GETTER_METHOD,true);
-    c->setDeclaredMethodByQName("locked","",Class<IFunction>::getFunction(c->getSystemState(),_setLocked),SETTER_METHOD,true);
+    c->setDeclaredMethodByQName("locked","",c->getSystemState()->getBuiltinFunction(_getLocked),GETTER_METHOD,true);
+    c->setDeclaredMethodByQName("locked","",c->getSystemState()->getBuiltinFunction(_setLocked),SETTER_METHOD,true);
 }
 
 bool FontDescription::destruct()
@@ -551,23 +652,23 @@ TextBlock::TextBlock(ASWorker* wrk, Class_base *c): ASObject(wrk,c,T_OBJECT,SUBT
 void TextBlock::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_FINAL | CLASS_SEALED);
-	c->setDeclaredMethodByQName("createTextLine","",Class<IFunction>::getFunction(c->getSystemState(),createTextLine),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("recreateTextLine","",Class<IFunction>::getFunction(c->getSystemState(),recreateTextLine),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("releaseLines","",Class<IFunction>::getFunction(c->getSystemState(),releaseLines),NORMAL_METHOD,true);
-	REGISTER_GETTER_SETTER(c, applyNonLinearFontScaling);
-	REGISTER_GETTER_SETTER(c, baselineFontDescription);
-	REGISTER_GETTER_SETTER(c, baselineFontSize);
-	REGISTER_GETTER_SETTER(c, baselineZero);
-	REGISTER_GETTER_SETTER(c, bidiLevel);
-	REGISTER_GETTER_SETTER(c, content);
-	REGISTER_GETTER(c, firstInvalidLine );
-	REGISTER_GETTER(c, firstLine);
-	REGISTER_GETTER(c, lastLine);
-	REGISTER_GETTER_SETTER(c, lineRotation);
-	REGISTER_GETTER_SETTER(c, textJustifier);
-	REGISTER_GETTER_SETTER(c, tabStops);
-	REGISTER_GETTER(c, textLineCreationResult);
-	REGISTER_GETTER_SETTER(c, userData);
+	c->setDeclaredMethodByQName("createTextLine","",c->getSystemState()->getBuiltinFunction(createTextLine,0,Class<TextLine>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("recreateTextLine","",c->getSystemState()->getBuiltinFunction(recreateTextLine,0,Class<TextLine>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("releaseLines","",c->getSystemState()->getBuiltinFunction(releaseLines),NORMAL_METHOD,true);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, applyNonLinearFontScaling, Boolean);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, baselineFontDescription, FontDescription);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, baselineFontSize, Number);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, baselineZero, ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, bidiLevel, Integer);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, content, ContentElement);
+	REGISTER_GETTER_RESULTTYPE(c, firstInvalidLine, TextLine);
+	REGISTER_GETTER_RESULTTYPE(c, firstLine, TextLine);
+	REGISTER_GETTER_RESULTTYPE(c, lastLine, TextLine);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, lineRotation, ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, textJustifier, TextJustifier);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, tabStops, Vector);
+	REGISTER_GETTER_RESULTTYPE(c, textLineCreationResult, ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, userData, ASObject);
 }
 
 ASFUNCTIONBODY_GETTER_SETTER_NOT_IMPLEMENTED(TextBlock, applyNonLinearFontScaling)
@@ -593,6 +694,24 @@ ASFUNCTIONBODY_ATOM(TextBlock,_constructor)
 		LOG(LOG_NOT_IMPLEMENTED, "TextBlock constructor ignores some parameters");
 }
 
+bool TextBlock::fillTextLine(_NR<TextLine> textLine, bool fitSomething, _NR<TextLine> previousLine)
+{
+	tiny_string linetext = asAtomHandler::toString(content->as<TextElement>()->text,getInstanceWorker());
+	uint32_t startpos = 0;
+	if (!previousLine.isNull())
+		startpos += previousLine->textBlockBeginIndex + previousLine->getText().numChars();
+	if (linetext.numChars() <= startpos)
+		linetext.clear();
+	else
+		linetext = linetext.substr(startpos,linetext.numChars()-startpos);
+	if (fitSomething && linetext.empty())
+		linetext = " ";
+	textLine->setText(linetext.raw_buf(),true);
+	textLine->checkEmbeddedFont(textLine.getPtr());
+	textLine->textBlockBeginIndex = startpos;
+	textLine->rawTextLength=textLine->getText().numChars();
+	return textLine->rawTextLength>0;
+}
 ASFUNCTIONBODY_ATOM(TextBlock, createTextLine)
 {
 	TextBlock* th=asAtomHandler::as<TextBlock>(obj);
@@ -602,8 +721,8 @@ ASFUNCTIONBODY_ATOM(TextBlock, createTextLine)
 	bool fitSomething;
 	ARG_CHECK(ARG_UNPACK (previousLine, NullRef) (width, MAX_LINE_WIDTH) (lineOffset, 0.0) (fitSomething, false));
 
-	if (argslen > 2)
-		LOG(LOG_NOT_IMPLEMENTED, "TextBlock::createTextLine ignored some parameters");
+	if (lineOffset != 0.0)
+		LOG(LOG_NOT_IMPLEMENTED, "TextBlock::createTextLine ignores parameter lineOffset");
 
 	if (!fitSomething && ((width < 0) || (width > MAX_LINE_WIDTH)))
 	{
@@ -611,22 +730,35 @@ ASFUNCTIONBODY_ATOM(TextBlock, createTextLine)
 		return;
 	}
 
-	// TODO handle non TextElement Content
-	if (th->content.isNull() || !th->content->is<TextElement>() || th->content->as<TextElement>()->text.empty())
+	if (th->content.isNull())
 	{
 		asAtomHandler::setNull(ret);
 		return;
 	}
-	tiny_string linetext = th->content->as<TextElement>()->text;
-	if (fitSomething && linetext == "")
-		linetext = " ";
-		
-	LOG(LOG_NOT_IMPLEMENTED,"splitting textblock in multiple lines not implemented");
-	th->content->as<TextElement>()->text = "";
+	if (!th->content->is<TextElement>())
+	{
+		LOG(LOG_NOT_IMPLEMENTED,"TextBlock.createTextLine support for content other than TextElement not yet implemented:"<<th->content->toDebugString());
+		asAtomHandler::setNull(ret);
+		return;
+	}
+	if (asAtomHandler::isNull(th->content->as<TextElement>()->text))
+	{
+		asAtomHandler::setNull(ret);
+		return;
+	}
 	th->incRef();
-	_NR<TextLine> textLine = _NR<TextLine>(Class<TextLine>::getInstanceS(wrk,linetext, _MNR(th)));
-	textLine->width = (uint32_t)width;
+	_NR<TextLine> textLine = _NR<TextLine>(Class<TextLine>::getInstanceS(wrk, _MNR(th)));
+	if (!th->fillTextLine(textLine, fitSomething, previousLine))
+	{
+		textLine.reset();
+		// it's not in the specs but it seems that we have to return null if we are at the end of the content
+		asAtomHandler::setNull(ret);
+		th->textLineCreationResult="complete";
+		return;
+	}
+	
 	textLine->previousLine = previousLine;
+		
 
 	// Set baseline font
 	textLine->font = th->baselineZero;
@@ -645,12 +777,10 @@ ASFUNCTIONBODY_ATOM(TextBlock, createTextLine)
 		th->content->as<TextElement>()->elementFormat->fontDescription->fontName;
 	}
 
+	textLine->specifiedWidth = width;
 	textLine->updateSizes();
-	if (textLine->width > textLine->textWidth)
-	{
-		asAtomHandler::setNull(ret);
-		return;
-	}
+	textLine->width = textLine->textWidth;
+	
 	if (previousLine.isNull())
 	{
 		th->firstLine = textLine;
@@ -664,6 +794,7 @@ ASFUNCTIONBODY_ATOM(TextBlock, createTextLine)
 		previousLine->nextLine = textLine;
 	}
 	
+	th->textLineCreationResult="success";
 	textLine->incRef();
 	ret = asAtomHandler::fromObject(textLine.getPtr());
 }
@@ -677,17 +808,25 @@ ASFUNCTIONBODY_ATOM(TextBlock, recreateTextLine)
 	bool fitSomething;
 	ARG_CHECK(ARG_UNPACK (textLine) (previousLine, NullRef) (width, MAX_LINE_WIDTH) (lineOffset, 0.0) (fitSomething, false));
 
-	if (argslen > 2)
-		LOG(LOG_NOT_IMPLEMENTED, "TextBlock::recreateTextLine ignored some parameters");
-	LOG(LOG_NOT_IMPLEMENTED, "TextBlock::recreateTextLine doesn't check all parameters for validity");
+	if (lineOffset != 0.0)
+		LOG(LOG_NOT_IMPLEMENTED, "TextBlock::recreateTextLine ignores parameter lineOffset");
 
-	// TODO handle non TextElement Content
-	if (th->content.isNull() || !th->content->is<TextElement>() || th->content->as<TextElement>()->text.empty())
+	if (th->content.isNull())
 	{
 		asAtomHandler::setNull(ret);
 		return;
 	}
-
+	if (!th->content->is<TextElement>())
+	{
+		LOG(LOG_NOT_IMPLEMENTED,"TextBlock.recreateTextLine support for content other than TextElement not yet implemented:"<<th->content->toDebugString());
+		asAtomHandler::setNull(ret);
+		return;
+	}
+	if (asAtomHandler::isNull(th->content->as<TextElement>()->text))
+	{
+		asAtomHandler::setNull(ret);
+		return;
+	}
 	if (!fitSomething && ((width < 0) || (width > MAX_LINE_WIDTH)))
 	{
 		createError<ArgumentError>(wrk,kOutOfRangeError,"Invalid width");
@@ -709,15 +848,23 @@ ASFUNCTIONBODY_ATOM(TextBlock, recreateTextLine)
 		createError<ArgumentError>(wrk,kInvalidArgumentError,"previousLine");
 		return;
 	}
-	if (fitSomething && textLine->getText().empty())
-		textLine->setText(" ");
-	textLine->width = (uint32_t)width;
+	if (!th->fillTextLine(textLine, fitSomething, previousLine))
+	{
+		// it's not in the specs but it seems that we have to return null if we are at the end of the content
+		asAtomHandler::setNull(ret);
+		th->textLineCreationResult="complete";
+		return;
+	}
+	
+	textLine->specifiedWidth = width;
 	textLine->previousLine = previousLine;
 	textLine->updateSizes();
+	textLine->width = textLine->textWidth;
 	th->incRef();
 	textLine->textBlock= _MNR(th);
-	if (textLine->width > textLine->textWidth)
+	if (width < (int)textLine->textWidth)
 	{
+		th->textLineCreationResult="insufficientWidth";
 		asAtomHandler::setNull(ret);
 		return;
 	}
@@ -735,6 +882,9 @@ ASFUNCTIONBODY_ATOM(TextBlock, recreateTextLine)
 	}
 
 	textLine->incRef();
+	textLine->validity = "valid";
+	
+	th->textLineCreationResult="success";
 	ret = asAtomHandler::fromObject(textLine.getPtr());
 }
 
@@ -748,13 +898,22 @@ ASFUNCTIONBODY_ATOM(TextBlock, releaseLines)
 	// TODO handle non TextElement Content
 	if (th->content.isNull() || !th->content->is<TextElement>())
 		return;
-
-	if (firstLine.isNull() || (!firstLine->textBlock.isNull() && firstLine->textBlock != th))
+	if (firstLine.isNull())
+	{
+		createError<ArgumentError>(wrk,kNullPointerError,"firstLine");
+		return;
+	}
+	if (!firstLine->textBlock.isNull() && firstLine->textBlock != th)
 	{
 		createError<ArgumentError>(wrk,kInvalidArgumentError,"firstLine");
 		return;
 	}
-	if (lastLine.isNull() || (!lastLine->textBlock.isNull() && lastLine->textBlock != th))
+	if (lastLine.isNull())
+	{
+		createError<ArgumentError>(wrk,kNullPointerError,"lastLine");
+		return;
+	}
+	if (!lastLine->textBlock.isNull() && lastLine->textBlock != th)
 	{
 		createError<ArgumentError>(wrk,kInvalidArgumentError,"lastLine");
 		return;
@@ -787,16 +946,52 @@ ASFUNCTIONBODY_ATOM(TextBlock, releaseLines)
 	}
 }
 
-void TextElement::settext_cb(tiny_string /*oldValue*/)
+void TextElement::settext_cb(asAtom /*oldValue*/)
 {
-	rawText = text;
+	rawText = asAtomHandler::isNull(text) ? "" : asAtomHandler::toString(text,getInstanceWorker());
 }
 
 void TextElement::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ContentElement, _constructor, CLASS_FINAL | CLASS_SEALED);
-	c->setDeclaredMethodByQName("replaceText","",Class<IFunction>::getFunction(c->getSystemState(),replaceText),NORMAL_METHOD,true);
-	REGISTER_GETTER_SETTER(c, text);
+	c->isReusable=true;
+	c->setDeclaredMethodByQName("replaceText","",c->getSystemState()->getBuiltinFunction(replaceText),NORMAL_METHOD,true);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, text, ASString);
+}
+void TextElement::finalize()
+{
+	ContentElement::finalize();
+	ASATOM_REMOVESTOREDMEMBER(text);
+	text = asAtomHandler::nullAtom;
+}
+
+bool TextElement::destruct()
+{
+	ASATOM_REMOVESTOREDMEMBER(text);
+	text = asAtomHandler::nullAtom;
+	return ContentElement::destruct();
+}
+
+void TextElement::prepareShutdown()
+{
+	if (preparedforshutdown)
+		return;
+	ContentElement::prepareShutdown();
+
+	ASObject* o = asAtomHandler::getObject(text);
+	if (o)
+		o->prepareShutdown();
+}
+
+bool TextElement::countCylicMemberReferences(garbagecollectorstate& gcstate)
+{
+	if (gcstate.checkAncestors(this))
+		return false;
+	bool ret = ContentElement::countCylicMemberReferences(gcstate);
+	ASObject* o = asAtomHandler::getObject(text);
+	if (o)
+		ret = o->countAllCylicMemberReferences(gcstate) || ret;
+	return ret;
 }
 
 ASFUNCTIONBODY_GETTER_SETTER_CB(TextElement, text,settext_cb)
@@ -804,16 +999,20 @@ ASFUNCTIONBODY_GETTER_SETTER_CB(TextElement, text,settext_cb)
 ASFUNCTIONBODY_ATOM(TextElement,_constructor)
 {
 	TextElement* th=asAtomHandler::as<TextElement>(obj);
-    	ARG_CHECK(ARG_UNPACK (th->text, "")(th->elementFormat, NullRef));
+	asAtom txtAtom = asAtomHandler::fromStringID(BUILTIN_STRINGS::EMPTY);
+	ARG_CHECK(ARG_UNPACK (txtAtom, asAtomHandler::nullAtom)(th->elementFormat, NullRef));
+	th->text = txtAtom;
 }
 ASFUNCTIONBODY_ATOM(TextElement, replaceText)
 {
 	TextElement* th=asAtomHandler::as<TextElement>(obj);
 	int beginIndex;
 	int endIndex;
-	tiny_string newtext;
+	asAtom newtext = asAtomHandler::fromStringID(BUILTIN_STRINGS::EMPTY);
 	ARG_CHECK(ARG_UNPACK (beginIndex)(endIndex)(newtext));
-	if ((beginIndex < 0) || (endIndex < 0) || (beginIndex > (int32_t)th->text.numChars()))
+	
+	tiny_string oldtext = asAtomHandler::isNull(th->text) ? "" : asAtomHandler::toString(th->text,wrk);
+	if ((beginIndex < 0) || (endIndex < 0) || beginIndex > (int32_t)oldtext.numChars())
 	{
 		createError<RangeError>(wrk,kParamRangeError);
 		return;
@@ -824,18 +1023,54 @@ ASFUNCTIONBODY_ATOM(TextElement, replaceText)
 		endIndex = beginIndex;
 		beginIndex = tmp;
 	}
-	tiny_string s;
-	if ( beginIndex > 0)
-		s = th->text.substr(0,(uint32_t)beginIndex);
-	s += newtext;
-	if (endIndex < (int32_t)th->text.numChars())
-		s += th->text.substr(endIndex,th->text.numChars()-endIndex);
-	th->text = s;
+	if (asAtomHandler::isNull(th->text) || asAtomHandler::isNull(newtext) )
+	{
+		ASATOM_ADDSTOREDMEMBER(newtext);
+		ASATOM_REMOVESTOREDMEMBER(th->text);
+		th->text = newtext;
+		th->rawText = asAtomHandler::isNull(newtext) ? "" : asAtomHandler::toString(newtext,wrk);
+	}
+	else
+	{
+		tiny_string s;
+		if ( beginIndex > 0)
+			s = oldtext.substr(0,(uint32_t)beginIndex);
+		s += asAtomHandler::toString(newtext,wrk);
+		if (endIndex < (int32_t)oldtext.numChars())
+			s += oldtext.substr(endIndex,oldtext.numChars()-endIndex);
+		th->text = asAtomHandler::fromString(wrk->getSystemState(),s);
+		th->rawText = s;
+	}
 }
 
 void GroupElement::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ContentElement, _constructor, CLASS_FINAL | CLASS_SEALED);
+	c->isReusable=true;
+}
+void GroupElement::finalize()
+{
+	ContentElement::finalize();
+}
+
+bool GroupElement::destruct()
+{
+	return ContentElement::destruct();
+}
+
+void GroupElement::prepareShutdown()
+{
+	if (preparedforshutdown)
+		return;
+	ContentElement::prepareShutdown();
+}
+
+bool GroupElement::countCylicMemberReferences(garbagecollectorstate& gcstate)
+{
+	if (gcstate.checkAncestors(this))
+		return false;
+	bool ret = ContentElement::countCylicMemberReferences(gcstate);
+	return ret;
 }
 
 ASFUNCTIONBODY_ATOM(GroupElement,_constructor)
@@ -844,37 +1079,36 @@ ASFUNCTIONBODY_ATOM(GroupElement,_constructor)
 	LOG(LOG_NOT_IMPLEMENTED, "GroupElement constructor not implemented");
 }
 
-TextLine::TextLine(ASWorker* wrk, Class_base* c, tiny_string linetext, _NR<TextBlock> owner)
-  : DisplayObjectContainer(wrk,c), TextData(),nextLine(nullptr),previousLine(nullptr),userData(nullptr)
+TextLine::TextLine(ASWorker* wrk, Class_base* c, _NR<TextBlock> owner)
+  : DisplayObjectContainer(wrk,c), TextData(), TokenContainer(this),nextLine(nullptr),previousLine(nullptr),userData(nullptr)
   ,hasGraphicElement(false),hasTabs(false),rawTextLength(0),specifiedWidth(0),textBlockBeginIndex(0)
 {
 	subtype = SUBTYPE_TEXTLINE;
 	textBlock = owner;
-
-	setText(linetext.raw_buf());
-	updateSizes();
+	fillstyleTextColor.push_back(0xff);
 }
 
 void TextLine::sinit(Class_base* c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, DisplayObjectContainer, CLASS_FINAL | CLASS_SEALED);
 	c->setVariableAtomByQName("MAX_LINE_WIDTH",nsNameAndKind(),asAtomHandler::fromUInt((uint32_t)MAX_LINE_WIDTH),CONSTANT_TRAIT);
-	c->setDeclaredMethodByQName("getBaselinePosition","",Class<IFunction>::getFunction(c->getSystemState(),getBaselinePosition),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("descent","",Class<IFunction>::getFunction(c->getSystemState(),getDescent),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("ascent","",Class<IFunction>::getFunction(c->getSystemState(),getAscent),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("textWidth","",Class<IFunction>::getFunction(c->getSystemState(),getTextWidth),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("textHeight","",Class<IFunction>::getFunction(c->getSystemState(),getTextHeight),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("unjustifiedTextWidth","",Class<IFunction>::getFunction(c->getSystemState(),getUnjustifiedTextWidth),GETTER_METHOD,true);
-	REGISTER_GETTER(c, textBlock);
-	REGISTER_GETTER(c, nextLine);
-	REGISTER_GETTER(c, previousLine);
-	REGISTER_GETTER_SETTER(c, validity);
-	REGISTER_GETTER_SETTER(c, userData);
-	REGISTER_GETTER(c, hasGraphicElement);
-	REGISTER_GETTER(c, hasTabs);
-	REGISTER_GETTER(c, rawTextLength);
-	REGISTER_GETTER(c, specifiedWidth);
-	REGISTER_GETTER(c, textBlockBeginIndex);
+	c->setDeclaredMethodByQName("getBaselinePosition","",c->getSystemState()->getBuiltinFunction(getBaselinePosition,1,Class<Number>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("flushAtomData","",c->getSystemState()->getBuiltinFunction(flushAtomData),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("descent","",c->getSystemState()->getBuiltinFunction(getDescent,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("ascent","",c->getSystemState()->getBuiltinFunction(getAscent,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("textWidth","",c->getSystemState()->getBuiltinFunction(getTextWidth,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("textHeight","",c->getSystemState()->getBuiltinFunction(getTextHeight,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("unjustifiedTextWidth","",c->getSystemState()->getBuiltinFunction(getUnjustifiedTextWidth,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	REGISTER_GETTER_RESULTTYPE(c, textBlock,TextBlock);
+	REGISTER_GETTER_RESULTTYPE(c, nextLine,TextLine);
+	REGISTER_GETTER_RESULTTYPE(c, previousLine,TextLine);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, validity,ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, userData,ASObject);
+	REGISTER_GETTER_RESULTTYPE(c, hasGraphicElement, Boolean);
+	REGISTER_GETTER_RESULTTYPE(c, hasTabs, Boolean);
+	REGISTER_GETTER_RESULTTYPE(c, rawTextLength, Integer);
+	REGISTER_GETTER_RESULTTYPE(c, specifiedWidth, Number);
+	REGISTER_GETTER_RESULTTYPE(c, textBlockBeginIndex, Integer);
 }
 
 void TextLine::finalize()
@@ -893,8 +1127,8 @@ ASFUNCTIONBODY_GETTER_SETTER(TextLine, validity)
 ASFUNCTIONBODY_GETTER_SETTER(TextLine, userData)
 ASFUNCTIONBODY_GETTER_NOT_IMPLEMENTED(TextLine, hasGraphicElement)
 ASFUNCTIONBODY_GETTER_NOT_IMPLEMENTED(TextLine, hasTabs)
-ASFUNCTIONBODY_GETTER_NOT_IMPLEMENTED(TextLine, rawTextLength)
-ASFUNCTIONBODY_GETTER_NOT_IMPLEMENTED(TextLine, specifiedWidth)
+ASFUNCTIONBODY_GETTER(TextLine, rawTextLength)
+ASFUNCTIONBODY_GETTER(TextLine, specifiedWidth)
 ASFUNCTIONBODY_GETTER_NOT_IMPLEMENTED(TextLine, textBlockBeginIndex)
 
 ASFUNCTIONBODY_ATOM(TextLine, getBaselinePosition)
@@ -903,17 +1137,33 @@ ASFUNCTIONBODY_ATOM(TextLine, getBaselinePosition)
 	asAtomHandler::setInt(ret,wrk,0);
 }
 
+ASFUNCTIONBODY_ATOM(TextLine, flushAtomData)
+{
+	// According to specs this method does nothing
+}
+
 ASFUNCTIONBODY_ATOM(TextLine, getDescent)
 {
-	LOG(LOG_NOT_IMPLEMENTED,"TextLine.descent");
-	asAtomHandler::setInt(ret,wrk,0);
+	TextLine* th=asAtomHandler::as<TextLine>(obj);
+	if (th->embeddedFont)
+		asAtomHandler::setInt(ret,wrk,th->embeddedFont->getAscent());
+	else
+	{
+		LOG(LOG_NOT_IMPLEMENTED,"TextLine.descent without embedded font");
+		asAtomHandler::setInt(ret,wrk,0);
+	}
 }
 
 ASFUNCTIONBODY_ATOM(TextLine, getAscent)
 {
 	TextLine* th=asAtomHandler::as<TextLine>(obj);
-	LOG(LOG_NOT_IMPLEMENTED,"TextLine.ascent");
-	asAtomHandler::setInt(ret,wrk,th->textHeight);
+	if (th->embeddedFont)
+		asAtomHandler::setInt(ret,wrk,th->embeddedFont->getAscent());
+	else
+	{
+		LOG(LOG_NOT_IMPLEMENTED,"TextLine.ascent without embedded font");
+		asAtomHandler::setInt(ret,wrk,th->textHeight);
+	}
 }
 
 ASFUNCTIONBODY_ATOM(TextLine, getTextWidth)
@@ -940,7 +1190,7 @@ void TextLine::updateSizes()
 	w = width;
 	h = height;
 	//Compute (text)width, (text)height
-	CairoPangoRenderer::getBounds(*this,this->getText(), w, h);
+	getTextSizes(this->getText(), w, h);
 	textWidth = w;
 	textHeight = h;
 }
@@ -957,11 +1207,16 @@ string TextLine::toDebugString() const
 		sprintf(buf," ow:%p",textBlock.getPtr());
 		res += buf;
 	}
+	res += " \"";
+	res += this->getText();
+	res += "\"";
 	return res;
 }
 
-bool TextLine::boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax)
+bool TextLine::boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax, bool visibleOnly)
 {
+	if (visibleOnly && !this->isVisible())
+		return false;
 	xmin=0;
 	xmax=width;
 	ymin=0;
@@ -971,73 +1226,95 @@ bool TextLine::boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number
 
 void TextLine::requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh)
 {
-	if (requestInvalidationForCacheAsBitmap(q))
-		return;
 	DisplayObjectContainer::requestInvalidation(q,forceTextureRefresh);
-	incRef();
-	q->addToInvalidateQueue(_MR(this));
+	if (!tokensEmpty())
+		TokenContainer::requestInvalidation(q,forceTextureRefresh);
+	else
+	{
+		requestInvalidationFilterParent(q);
+		incRef();
+		q->addToInvalidateQueue(_MR(this));
+	}
 }
 
-IDrawable* TextLine::invalidate(DisplayObject* target, const MATRIX& initialMatrix,bool smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap)
+IDrawable* TextLine::invalidate(bool smoothing)
 {
-	if (cachedBitmap && computeCacheAsBitmap())
-	{
-		setNeedsTextureRecalculation();
-		return getCachedBitmapDrawable(target, initialMatrix, cachedBitmap);
-	}
-	number_t x,y,rx,ry;
-	number_t width,height,rwidth,rheight;
+	number_t x,y;
+	number_t width,height;
 	number_t bxmin,bxmax,bymin,bymax;
-	if(boundsRect(bxmin,bxmax,bymin,bymax)==false)
+	if(boundsRect(bxmin,bxmax,bymin,bymax,false)==false)
 	{
 		//No contents, nothing to do
 		return nullptr;
 	}
 
-	//Compute the matrix and the masks that are relevant
-	bool isMask;
-	_NR<DisplayObject> mask;
-	MATRIX totalMatrix;
-	std::vector<IDrawable::MaskData> masks;
-	computeMasksAndMatrix(target,masks,totalMatrix,false,isMask,mask);
-	totalMatrix=initialMatrix.multiplyMatrix(totalMatrix);
-	computeBoundsForTransformedRect(bxmin,bxmax,bymin,bymax,x,y,width,height,totalMatrix);
-	MATRIX totalMatrix2;
-	computeMasksAndMatrix(target,masks,totalMatrix2,true,isMask,mask);
-	totalMatrix2=initialMatrix.multiplyMatrix(totalMatrix2);
-	computeBoundsForTransformedRect(bxmin,bxmax,bymin,bymax,rx,ry,rwidth,rheight,totalMatrix2);
+	tokens.clear();
+	if (embeddedFont)
+	{
+		scaling = 1.0f/1024.0f/20.0f;
+		fillstyleTextColor.front().FillStyleType=SOLID_FILL;
+		fillstyleTextColor.front().Color= RGBA(textColor.Red,textColor.Green,textColor.Blue,255);
+		int32_t startposy = TEXTFIELD_PADDING;
+		for (auto it = textlines.begin(); it != textlines.end(); it++)
+		{
+			if (isPassword)
+			{
+				tiny_string pwtxt;
+				for (uint32_t i = 0; i < (*it).text.numChars(); i++)
+					pwtxt+="*";
+				embeddedFont->fillTextTokens(tokens,pwtxt,fontSize,fillstyleTextColor,leading,TEXTFIELD_PADDING+(*it).autosizeposition,startposy);
+			}
+			else
+				embeddedFont->fillTextTokens(tokens,(*it).text,fontSize,fillstyleTextColor,leading,TEXTFIELD_PADDING+(*it).autosizeposition,startposy);
+			startposy += this->leading+(embeddedFont->getAscent()+embeddedFont->getDescent()+embeddedFont->getLeading())*fontSize/1024;
+		}
+		if (tokens.empty())
+			return nullptr;
+		return TokenContainer::invalidate(smoothing ? SMOOTH_MODE::SMOOTH_SUBPIXEL : SMOOTH_MODE::SMOOTH_NONE,false);
+	}
+	MATRIX matrix = getMatrix();
+	bool isMask=this->isMask();
+	MATRIX m;
+	m.scale(matrix.getScaleX(),matrix.getScaleY());
+	computeBoundsForTransformedRect(bxmin,bxmax,bymin,bymax,x,y,width,height,m);
+	if (getLineCount()==0)
+		return nullptr;
 	if(width==0 || height==0)
 		return nullptr;
-
-	float rotation = getConcatenatedMatrix().getRotation();
-	return new CairoPangoRenderer(*this, totalMatrix,
+	if(matrix.getScaleX() != 1 || matrix.getScaleY() != 1)
+		LOG(LOG_NOT_IMPLEMENTED, "TextField when scaled is not correctly implemented:"<<x<<"/"<<y<<" "<<width<<"x"<<height<<" "<<matrix.getScaleX()<<" "<<matrix.getScaleY()<<" "<<this->getText());
+	float xscale = getConcatenatedMatrix().getScaleX();
+	float yscale = getConcatenatedMatrix().getScaleY();
+	// use specialized Renderer from EngineData, if available, otherwise fallback to Pango
+	IDrawable* res = this->getSystemState()->getEngineData()->getTextRenderDrawable(*this,matrix, x, y, ceil(width), ceil(height),
+																					xscale,yscale,isMask,cacheAsBitmap, 1.0f,getConcatenatedAlpha(),
+																					ColorTransformBase(),
+																					smoothing ? SMOOTH_MODE::SMOOTH_SUBPIXEL : SMOOTH_MODE::SMOOTH_NONE,this->getBlendMode());
+	if (res != nullptr)
+		return res;
+	return new CairoPangoRenderer(*this,matrix,
 				x, y, ceil(width), ceil(height),
-				rx, ry, ceil(rwidth), ceil(rheight), rotation,
-				totalMatrix.getScaleX(),totalMatrix.getScaleY(),
-				isMask,mask,
-				1.0f,getConcatenatedAlpha(),masks,
-				1.0f,1.0f,1.0f,1.0f,
-				0.0f,0.0f,0.0f,0.0f,
-				smoothing ? SMOOTH_MODE::SMOOTH_SUBPIXEL : SMOOTH_MODE::SMOOTH_NONE,0);
+				xscale,yscale,
+				isMask, cacheAsBitmap,
+				1.0f,getConcatenatedAlpha(),
+				ColorTransformBase(),
+				smoothing ? SMOOTH_MODE::SMOOTH_SUBPIXEL : SMOOTH_MODE::SMOOTH_NONE,this->getBlendMode(),0);
 }
 
-bool TextLine::renderImpl(RenderContext& ctxt)
-{
-	return defaultRender(ctxt);
-}
-
-_NR<DisplayObject> TextLine::hitTestImpl(number_t x, number_t y, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly)
+_NR<DisplayObject> TextLine::hitTestImpl(const Vector2f& globalPoint, const Vector2f& localPoint, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly)
 {
 	number_t xmin,xmax,ymin,ymax;
-	boundsRect(xmin,xmax,ymin,ymax);
-	if( xmin <= x && x <= xmax && ymin <= y && y <= ymax)
+	// TODO: Add an overload for RECT.
+	boundsRect(xmin,xmax,ymin,ymax,false);
+	//TODO: Add a point intersect function to RECT, and use that instead.
+	if( xmin <= localPoint.x && localPoint.x <= xmax && ymin <= localPoint.y && localPoint.y <= ymax)
 	{
 		incRef();
 		return _MNR(this);
 	}
 	else
 	{
-		return DisplayObjectContainer::hitTestImpl(x, y, type, interactiveObjectsOnly);
+		return DisplayObjectContainer::hitTestImpl(globalPoint, localPoint, type, interactiveObjectsOnly);
 	}
 }
 

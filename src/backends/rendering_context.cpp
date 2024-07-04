@@ -31,10 +31,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <stack>
+#include "platforms/engineutils.h"
 #include "backends/rendering_context.h"
 #include "logger.h"
-#include "scripting/flash/display/flashdisplay.h"
+#include "scripting/flash/display/BitmapContainer.h"
+#include "scripting/flash/display/Bitmap.h"
 #include "scripting/flash/geom/flashgeom.h"
+#include "3rdparty/nanovg/src/nanovg.h"
 
 using namespace std;
 using namespace lightspark;
@@ -48,9 +51,25 @@ const float RenderContext::lsIdentityMatrix[16] = {
 								0, 0, 0, 1
 								};
 
-const CachedSurface CairoRenderContext::invalidSurface;
+void TransformStack::push(const Transform2D& _transform)
+{
+	if (!transforms.empty())
+	{
+		auto matrix = transform().matrix.multiplyMatrix(_transform.matrix);
+		auto colorTransform = transform().colorTransform.multiplyTransform(_transform.colorTransform);
+		AS_BLENDMODE blendmode = transform().blendmode;
+		if (DisplayObject::isShaderBlendMode(blendmode)
+			|| blendmode == AS_BLENDMODE::BLENDMODE_LAYER
+			|| _transform.blendmode != AS_BLENDMODE::BLENDMODE_NORMAL)
+			blendmode = _transform.blendmode;
+		transforms.push_back(Transform2D(matrix, colorTransform,blendmode));
+	}
+	else
+		transforms.push_back(_transform);
+}
 
-RenderContext::RenderContext(CONTEXT_TYPE t):contextType(t),currentMask(nullptr)
+RenderContext::RenderContext():
+	inMaskRendering(false),maskActive(false)
 {
 	lsglLoadIdentity();
 }
@@ -120,22 +139,58 @@ void GLRenderContext::lsglOrtho(float l, float r, float b, float t, float n, flo
 	lsglMultMatrixf(ortho);
 }
 
-const CachedSurface& GLRenderContext::getCachedSurface(const DisplayObject* d) const
+CachedSurface* GLRenderContext::getCachedSurface(const DisplayObject* d) const
 {
-	return d->cachedSurface;
+	return d->cachedSurface.getPtr();
 }
 
-void GLRenderContext::renderTextured(const TextureChunk& chunk, float alpha, COLOR_MODE colorMode,
-									 float redMultiplier, float greenMultiplier, float blueMultiplier, float alphaMultiplier,
-									 float redOffset, float greenOffset, float blueOffset, float alphaOffset,
-									 bool isMask, bool hasMask, float directMode, RGB directColor, SMOOTH_MODE smooth, const MATRIX& matrix, Rectangle* scalingGrid, AS_BLENDMODE blendmode)
+void GLRenderContext::pushMask()
 {
-	// TODO handle other blend modes ,maybe with shaders ? (see https://github.com/jamieowen/glsl-blend)
+	RenderContext::pushMask();
+	if (engineData->nvgcontext != nullptr)
+		nvgPushClip(engineData->nvgcontext);
+	if (!(maskCount++))
+	{
+		engineData->exec_glClearStencil(0);
+		engineData->exec_glClear(CLEARMASK::STENCIL);
+	}
+}
+
+void GLRenderContext::popMask()
+{
+	RenderContext::popMask();
+	if (engineData->nvgcontext != nullptr)
+		nvgPopClip(engineData->nvgcontext);
+	if (!(--maskCount))
+	{
+		engineData->exec_glClearStencil(0);
+		engineData->exec_glClear(CLEARMASK::STENCIL);
+	}
+}
+
+void GLRenderContext::deactivateMask()
+{
+	RenderContext::deactivateMask();
+}
+
+void GLRenderContext::activateMask()
+{
+	RenderContext::activateMask();
+}
+
+void GLRenderContext::resetCurrentFrameBuffer()
+{
+	engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(baseFramebuffer);
+	engineData->exec_glBindRenderbuffer_GL_RENDERBUFFER(baseRenderbuffer);
+}
+void GLRenderContext::setupRenderingState(float alpha, const ColorTransformBase& colortransform,SMOOTH_MODE smooth,AS_BLENDMODE blendmode)
+{
+	engineData->exec_glUniform1f(blendModeUniform, blendmode);
 	switch (blendmode)
 	{
 		case BLENDMODE_NORMAL:
 		case BLENDMODE_LAYER: // layer implies rendering to bitmap, so no special blending needed
-			engineData->exec_glBlendFunc(BLEND_SRC_ALPHA,BLEND_ONE_MINUS_SRC_ALPHA);
+			engineData->exec_glBlendFunc(BLEND_ONE,BLEND_ONE_MINUS_SRC_ALPHA);
 			break;
 		case BLENDMODE_MULTIPLY:
 			engineData->exec_glBlendFunc(BLEND_DST_COLOR,BLEND_ONE_MINUS_SRC_ALPHA);
@@ -146,58 +201,68 @@ void GLRenderContext::renderTextured(const TextureChunk& chunk, float alpha, COL
 		case BLENDMODE_SCREEN:
 			engineData->exec_glBlendFunc(BLEND_ONE,BLEND_ONE_MINUS_SRC_COLOR);
 			break;
+		case BLENDMODE_ERASE:
+			engineData->exec_glBlendFunc(BLEND_ZERO,BLEND_ONE_MINUS_SRC_ALPHA);
+			break;
+		case BLENDMODE_OVERLAY: // handled through blendMode uniform
+		case BLENDMODE_HARDLIGHT: // handled through blendMode uniform
+			engineData->exec_glBlendFunc(BLEND_ONE,BLEND_ONE_MINUS_SRC_ALPHA);
+			break;
 		default:
 			LOG(LOG_NOT_IMPLEMENTED,"renderTextured of blend mode "<<(int)blendmode);
 			break;
-	}
-	if (isMask)
-	{
-		engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(maskframebuffer);
-		engineData->exec_glClearColor(0,0,0,0);
-		engineData->exec_glClear_GL_COLOR_BUFFER_BIT();
-		engineData->exec_glUniform1f(maskUniform, 0);
-	}
-	else
-	{
-		engineData->exec_glUniform1f(maskUniform, hasMask ? 1 : 0);
 	}
 	if (smooth == SMOOTH_MODE::SMOOTH_NONE)
 	{
 		engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MIN_FILTER_GL_NEAREST();
 		engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MAG_FILTER_GL_NEAREST();
 	}
-	//Set color mode
-	engineData->exec_glUniform1f(yuvUniform, (colorMode==YUV_MODE)?1:0);
 	//Set alpha
 	engineData->exec_glUniform1f(alphaUniform, alpha);
-	engineData->exec_glUniform4f(colortransMultiplyUniform, redMultiplier,greenMultiplier,blueMultiplier,alphaMultiplier);
-	engineData->exec_glUniform4f(colortransAddUniform, redOffset/255.0,greenOffset/255.0,blueOffset/255.0,alphaOffset/255.0);
+	//Set colotransform
+	engineData->exec_glUniform4f(colortransMultiplyUniform, colortransform.redMultiplier,colortransform.greenMultiplier,colortransform.blueMultiplier,colortransform.alphaMultiplier);
+	engineData->exec_glUniform4f(colortransAddUniform, colortransform.redOffset/255.0,colortransform.greenOffset/255.0,colortransform.blueOffset/255.0,colortransform.alphaOffset/255.0);
+	// set mask drawing indicator
+	engineData->exec_glUniform1f(maskUniform, isDrawingMask() ? 1 : 0);
+}
+void GLRenderContext::renderTextured(const TextureChunk& chunk, float alpha, COLOR_MODE colorMode,
+									 const ColorTransformBase& colortransform,
+									 bool isMask, float directMode, RGB directColor, SMOOTH_MODE smooth, const MATRIX& matrix, const RECT& scalingGrid,
+									 AS_BLENDMODE blendmode)
+{
+	setupRenderingState(alpha,colortransform,smooth,blendmode);
+	float empty=0;
+	engineData->exec_glUniform1fv(filterdataUniform, 1, &empty);
+	engineData->exec_glUniform1f(yuvUniform, colorMode==COLOR_MODE::YUV_MODE?1.0:0.0);
+	
 	// set mode for direct coloring:
 	// 0.0:no coloring
 	// 1.0 coloring for profiling/error message (?)
 	// 2.0:set color for every non transparent pixel (used for text rendering)
 	// 3.0 set color for every pixel (renders a filled rectangle)
 	engineData->exec_glUniform1f(directUniform, directMode);
+	engineData->exec_glUniform1f(renderStage3DUniform, 0.0);
 	engineData->exec_glUniform4f(directColorUniform,float(directColor.Red)/255.0,float(directColor.Green)/255.0,float(directColor.Blue)/255.0,1.0);
 
 	engineData->exec_glBindTexture_GL_TEXTURE_2D(largeTextures[chunk.texId].id);
 	assert(chunk.getNumberOfChunks()==((chunk.width+CHUNKSIZE_REAL-1)/CHUNKSIZE_REAL)*((chunk.height+CHUNKSIZE_REAL-1)/CHUNKSIZE_REAL));
-
-	if (scalingGrid && scalingGrid->width+abs(scalingGrid->x) < chunk.width/chunk.xContentScale && scalingGrid->height+abs(scalingGrid->y) < chunk.height/chunk.yContentScale && matrix.getRotation()==0)
+	
+	if ((scalingGrid.Xmin!= 0 || scalingGrid.Xmax != 0 || scalingGrid.Ymin !=0 || scalingGrid.Ymax != 0)
+		&& (scalingGrid.Xmax-scalingGrid.Xmin)+abs(scalingGrid.Xmin) < chunk.width/chunk.xContentScale && (scalingGrid.Ymax-scalingGrid.Ymin)+abs(scalingGrid.Ymin) < chunk.height/chunk.yContentScale && matrix.getRotation()==0)
 	{
 		// rendering with scalingGrid
 
 		MATRIX m;
 		number_t scalex = chunk.xContentScale;
 		number_t scaley = chunk.yContentScale;
-		number_t leftborder = abs(scalingGrid->x);
-		number_t topborder = abs(scalingGrid->y);
-		number_t rightborder = number_t(chunk.width)/scalex-(leftborder+scalingGrid->width);
-		number_t bottomborder = number_t(chunk.height)/scaley-(topborder+scalingGrid->height);
+		number_t leftborder = abs(scalingGrid.Xmin);
+		number_t topborder = abs(scalingGrid.Ymin);
+		number_t rightborder = number_t(chunk.width)/scalex-(leftborder+(scalingGrid.Xmax-scalingGrid.Xmin));
+		number_t bottomborder = number_t(chunk.height)/scaley-(topborder+(scalingGrid.Ymax-scalingGrid.Ymin));
 		number_t scaledleftborder = leftborder*scalex;
 		number_t scaledtopborder = topborder*scaley;
-		number_t scaledrightborder = number_t(chunk.width)-((leftborder+scalingGrid->width)*scalex);
-		number_t scaledbottomborder = number_t(chunk.height)-((topborder+scalingGrid->height)*scaley);
+		number_t scaledrightborder = number_t(chunk.width)-((leftborder+(scalingGrid.Xmax-scalingGrid.Xmin))*scalex);
+		number_t scaledbottomborder = number_t(chunk.height)-((topborder+(scalingGrid.Ymax-scalingGrid.Ymin))*scaley);
 		number_t scaledinnerwidth = number_t(chunk.width) - (scaledrightborder+scaledleftborder);
 		number_t scaledinnerheight = number_t(chunk.height) - (scaledbottomborder+scaledtopborder);
 		number_t innerwidth = number_t(chunk.width) - (scaledrightborder+scaledleftborder);
@@ -258,9 +323,7 @@ void GLRenderContext::renderTextured(const TextureChunk& chunk, float alpha, COL
 	else
 		renderpart(matrix,chunk,0,0,chunk.width,chunk.height,chunk.xOffset/chunk.xContentScale,chunk.yOffset/chunk.yContentScale);
 
-	if (isMask)
-		engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(0);
-	if (!smooth)
+	if (smooth != SMOOTH_MODE::SMOOTH_NONE)
 	{
 		engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MIN_FILTER_GL_LINEAR();
 		engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MAG_FILTER_GL_LINEAR();
@@ -401,7 +464,7 @@ bool GLRenderContext::handleGLErrors() const
 		if(engineData && engineData->getGLError(err))
 		{
 			errorCount++;
-			LOG(LOG_ERROR,"GL error "<< err);
+			LOG(LOG_ERROR,"GL error "<< hex<<err);
 		}
 		else
 			break;
@@ -421,22 +484,24 @@ void GLRenderContext::setMatrixUniform(LSGL_MATRIX m) const
 	engineData->exec_glUniformMatrix4fv(uni, 1, false, lsMVPMatrix);
 }
 
-CairoRenderContext::CairoRenderContext(uint8_t* buf, uint32_t width, uint32_t height, bool smoothing):RenderContext(CAIRO)
+CairoRenderContext::CairoRenderContext(uint8_t* buf, uint32_t _width, uint32_t _height, bool smoothing)
 {
-	cairo_surface_t* cairoSurface=getCairoSurfaceForData(buf, width, height,width);
-	cr=cairo_create(cairoSurface);
-	cairo_surface_destroy(cairoSurface); /* cr has an reference to it */
-	cairo_set_antialias(cr,smoothing ? CAIRO_ANTIALIAS_DEFAULT : CAIRO_ANTIALIAS_NONE);
+	cairoSurface=getCairoSurfaceForData(buf, _width, _height,_width);
+	width=_width;
+	height=_height;
+	cr_list.push_back(cairo_create(cairoSurface));
+	cairo_set_antialias(cr_list.back(),smoothing ? CAIRO_ANTIALIAS_DEFAULT : CAIRO_ANTIALIAS_NONE);
 }
 
 CairoRenderContext::~CairoRenderContext()
 {
-	cairo_destroy(cr);
-	while (!masksurfaces.empty())
+	cairo_surface_destroy(cairoSurface);
+	while (!cr_list.empty())
 	{
-		cairo_surface_destroy(masksurfaces.back().first);
-		masksurfaces.pop_back();
+		cairo_destroy(cr_list.back());
+		cr_list.pop_back();
 	}
+	
 }
 
 cairo_surface_t* CairoRenderContext::getCairoSurfaceForData(uint8_t* buf, uint32_t width, uint32_t height, uint32_t stride)
@@ -448,6 +513,7 @@ cairo_surface_t* CairoRenderContext::getCairoSurfaceForData(uint8_t* buf, uint32
 void CairoRenderContext::simpleBlit(int32_t destX, int32_t destY, uint8_t* sourceBuf, uint32_t sourceTotalWidth, uint32_t sourceTotalHeight,
 		int32_t sourceX, int32_t sourceY, uint32_t sourceWidth, uint32_t sourceHeight)
 {
+	cairo_t* cr = cr_list.back();
 	cairo_surface_t* sourceSurface = getCairoSurfaceForData(sourceBuf, sourceTotalWidth, sourceTotalHeight, sourceTotalWidth);
 	cairo_pattern_t* sourcePattern = cairo_pattern_create_for_surface(sourceSurface);
 	cairo_surface_destroy(sourceSurface);
@@ -462,29 +528,26 @@ void CairoRenderContext::simpleBlit(int32_t destX, int32_t destY, uint8_t* sourc
 	cairo_fill(cr);
 }
 
-void CairoRenderContext::transformedBlit(const MATRIX& m, uint8_t* sourceBuf, uint32_t sourceTotalWidth, uint32_t sourceTotalHeight,
-		FILTER_MODE filterMode)
+void CairoRenderContext::transformedBlit(const MATRIX& m, BitmapContainer* bc, ColorTransform* ct,
+		FILTER_MODE filterMode, number_t x, number_t y, number_t w, number_t h)
 {
-	cairo_surface_t* sourceSurface = getCairoSurfaceForData(sourceBuf, sourceTotalWidth, sourceTotalHeight, sourceTotalWidth);
+	cairo_t* cr = cr_list.back();
+	uint8_t* bmp = ct ? bc->applyColorTransform(ct) : bc->getData();
+	cairo_surface_t* sourceSurface = getCairoSurfaceForData(bmp, bc->getWidth(), bc->getHeight(), bc->getWidth());
 	cairo_pattern_t* sourcePattern = cairo_pattern_create_for_surface(sourceSurface);
 	cairo_surface_destroy(sourceSurface);
 	cairo_pattern_set_filter(sourcePattern, (filterMode==FILTER_SMOOTH)?CAIRO_FILTER_BILINEAR:CAIRO_FILTER_NEAREST);
 	cairo_pattern_set_extend(sourcePattern, CAIRO_EXTEND_NONE);
-	cairo_set_matrix(cr, &m);
 	cairo_set_source(cr, sourcePattern);
+	cairo_matrix_t matrix = m.getInverted();
+	cairo_pattern_set_matrix(sourcePattern, &matrix);
 	cairo_pattern_destroy(sourcePattern);
-	cairo_rectangle(cr, 0, 0, sourceTotalWidth, sourceTotalHeight);
+	cairo_rectangle(cr, x, y, w, h);
 	cairo_fill(cr);
 }
 
-void CairoRenderContext::renderTextured(const TextureChunk& chunk, float alpha, COLOR_MODE colorMode,
-			float redMultiplier, float greenMultiplier, float blueMultiplier, float alphaMultiplier,
-			float redOffset, float greenOffset, float blueOffset, float alphaOffset,
-			bool isMask, bool hasMask, float directMode, RGB directColor, SMOOTH_MODE smooth, const MATRIX& matrix, Rectangle* scalingGrid, AS_BLENDMODE blendmode)
+void CairoRenderContext::setupRenderState(cairo_t* cr,AS_BLENDMODE blendmode,bool isMask,SMOOTH_MODE smooth)
 {
-	if (colorMode != RGB_MODE)
-		LOG(LOG_NOT_IMPLEMENTED,"CairoRenderContext.renderTextured colorMode not implemented:"<<(int)colorMode);
-	cairo_save(cr);
 	switch (blendmode)
 	{
 		case BLENDMODE_NORMAL:
@@ -531,6 +594,7 @@ void CairoRenderContext::renderTextured(const TextureChunk& chunk, float alpha, 
 		switch (smooth)
 		{
 			case SMOOTH_MODE::SMOOTH_NONE:
+				cairo_set_antialias(cr,CAIRO_ANTIALIAS_NONE);
 				break;
 			case SMOOTH_MODE::SMOOTH_SUBPIXEL:
 				cairo_set_antialias(cr,CAIRO_ANTIALIAS_SUBPIXEL);
@@ -540,183 +604,5 @@ void CairoRenderContext::renderTextured(const TextureChunk& chunk, float alpha, 
 				break;
 		}
 	}
-
-	MATRIX m = matrix.multiplyMatrix(MATRIX(1, 1, 0, 0, chunk.xOffset / chunk.xContentScale, chunk.yOffset / chunk.yContentScale));
-	cairo_set_matrix(cr, &m);
-
-	uint8_t* buf=(uint8_t*)chunk.chunks;
-	cairo_surface_t* chunkSurface;
-	if (scalingGrid && scalingGrid->width+abs(scalingGrid->x) < chunk.width/chunk.xContentScale && scalingGrid->height+abs(scalingGrid->y) < chunk.height/chunk.yContentScale && matrix.getRotation()==0)
-	{
-		// rendering with scalingGrid
-
-		int bytestartpos = 0;
-		number_t scalex = chunk.xContentScale;
-		number_t scaley = chunk.yContentScale;
-		number_t xoffset=0;
-		number_t yoffset=0;
-		number_t scaledleftborder = scalingGrid->x*scalex;
-		number_t scaledtopborder = scalingGrid->y*scaley;
-		number_t scaledrightborder = number_t(chunk.width)-((scalingGrid->x+scalingGrid->width)*scalex);
-		number_t scaledbottomborder = number_t(chunk.height)-((scalingGrid->y+scalingGrid->height)*scaley);
-		number_t innerwidth = number_t(chunk.width) - (scaledrightborder+scaledleftborder);
-		number_t innerheight = number_t(chunk.height) - (scaledbottomborder+scaledtopborder);
-		number_t innerscalex = innerwidth/(number_t(chunk.width) - (scaledrightborder+scaledleftborder)/scalex);
-		number_t innerscaley = innerheight/(number_t(chunk.height) - (scaledbottomborder+scaledtopborder)/scaley);
-
-		// 1) render unscaled upper left corner
-		chunkSurface = getCairoSurfaceForData(buf, ceil(scaledleftborder), ceil(scaledtopborder), chunk.width);
-		cairo_save(cr);
-		cairo_scale(cr, 1.0 / (scalex*scalex), 1.0 / (scaley*scaley) );
-		cairo_set_source_surface(cr, chunkSurface, 0,0);
-		cairo_paint_with_alpha(cr,alpha);
-		cairo_surface_destroy(chunkSurface);
-		cairo_restore(cr);
-
-		// 2) render unscaled upper right corner
-		bytestartpos = int(int(scalingGrid->x+scalingGrid->width)*scalex)*4;
-		xoffset = chunk.width*scalex-scaledrightborder;
-		yoffset = 0;
-		chunkSurface = getCairoSurfaceForData(buf+bytestartpos, ceil(scaledrightborder), ceil(scaledtopborder), chunk.width);
-		cairo_save(cr);
-		cairo_scale(cr, 1.0 / (scalex*scalex), 1.0 / (scaley*scaley) );
-		cairo_set_source_surface(cr, chunkSurface, xoffset,yoffset);
-		cairo_paint_with_alpha(cr,alpha);
-		cairo_surface_destroy(chunkSurface);
-		cairo_restore(cr);
-
-		// 3) render unscaled lower right corner
-		bytestartpos = int(int((scalingGrid->y+scalingGrid->height)*scaley)*chunk.width+int(scalingGrid->x+scalingGrid->width)*scalex)*4;
-		xoffset = chunk.width*scalex-scaledrightborder;
-		yoffset = chunk.height*scaley-scaledbottomborder;
-		chunkSurface = getCairoSurfaceForData(buf+bytestartpos, ceil(scaledrightborder), ceil(scaledbottomborder), chunk.width);
-		cairo_save(cr);
-		cairo_scale(cr, 1.0 / (scalex*scalex), 1.0 / (scaley*scaley) );
-		cairo_set_source_surface(cr, chunkSurface, xoffset,yoffset);
-		cairo_paint_with_alpha(cr,alpha);
-		cairo_surface_destroy(chunkSurface);
-		cairo_restore(cr);
-
-		// 4) render unscaled lower left corner
-		bytestartpos = int(int((scalingGrid->y+scalingGrid->height)*scaley)*chunk.width)*4;
-		xoffset = 0;
-		yoffset = chunk.height*scaley-scaledbottomborder;
-		chunkSurface = getCairoSurfaceForData(buf+bytestartpos, ceil(scaledleftborder), ceil(scaledbottomborder), chunk.width);
-		cairo_save(cr);
-		cairo_scale(cr, 1.0 / (scalex*scalex), 1.0 / (scaley*scaley) );
-		cairo_set_source_surface(cr, chunkSurface, xoffset,yoffset);
-		cairo_paint_with_alpha(cr,alpha);
-		cairo_surface_destroy(chunkSurface);
-		cairo_restore(cr);
-
-		// 5) render x-scaled upper border
-		bytestartpos = int(int(scalingGrid->x)*scalex)*4;
-		xoffset = scalingGrid->x*innerscalex;
-		yoffset = 0;
-		chunkSurface = getCairoSurfaceForData(buf+bytestartpos, ceil(innerwidth), ceil(scaledtopborder), chunk.width);
-		cairo_save(cr);
-		cairo_scale(cr, 1.0 / (scalex*innerscalex), 1.0 / (scaley*scaley) );
-		cairo_set_source_surface(cr, chunkSurface, xoffset,yoffset);
-		cairo_paint_with_alpha(cr,alpha);
-		cairo_surface_destroy(chunkSurface);
-		cairo_restore(cr);
-
-
-		// 6) render y-scaled right border
-		bytestartpos = int(int((scalingGrid->y)*scaley)*chunk.width+int(scalingGrid->x+scalingGrid->width)*scalex)*4;
-		xoffset = chunk.width*scalex-scaledrightborder;
-		yoffset = scalingGrid->y*innerscaley;
-		chunkSurface = getCairoSurfaceForData(buf+bytestartpos, ceil(scaledrightborder), ceil(innerheight), chunk.width);
-		cairo_save(cr);
-		cairo_scale(cr, 1.0 / (scalex*scalex), 1.0 / (scaley*innerscaley) );
-		cairo_set_source_surface(cr, chunkSurface, xoffset,yoffset);
-		cairo_paint_with_alpha(cr,alpha);
-		cairo_surface_destroy(chunkSurface);
-		cairo_restore(cr);
-
-		// 7) render x-scaled bottom border
-		bytestartpos = int(int((scalingGrid->y+scalingGrid->height)*scaley)*chunk.width+int(scalingGrid->x)*scalex)*4;
-		xoffset = scalingGrid->x*innerscalex;
-		yoffset = chunk.height*scaley-scaledbottomborder;
-		chunkSurface = getCairoSurfaceForData(buf+bytestartpos, ceil(innerwidth), ceil(scaledbottomborder), chunk.width);
-		cairo_save(cr);
-		cairo_scale(cr, 1.0 / (scalex*innerscalex), 1.0 / (scaley*scaley) );
-		cairo_set_source_surface(cr, chunkSurface, xoffset,yoffset);
-		cairo_paint_with_alpha(cr,alpha);
-		cairo_surface_destroy(chunkSurface);
-		cairo_restore(cr);
-
-		// 8) render y-scaled left border
-		bytestartpos = int(int((scalingGrid->y)*scaley)*chunk.width)*4;
-		xoffset = 0;
-		yoffset = scalingGrid->y*innerscaley;
-		chunkSurface = getCairoSurfaceForData(buf+bytestartpos, ceil(scaledrightborder), ceil(innerheight), chunk.width);
-		cairo_save(cr);
-		cairo_scale(cr, 1.0 / (scalex*scalex), 1.0 / (scaley*innerscaley) );
-		cairo_set_source_surface(cr, chunkSurface, xoffset,yoffset);
-		cairo_paint_with_alpha(cr,alpha);
-		cairo_surface_destroy(chunkSurface);
-		cairo_restore(cr);
-
-		// 9) render scaled center
-		bytestartpos = int(int(scalingGrid->y*scaley)*chunk.width+int(scalingGrid->x*scalex))*4;
-		chunkSurface = getCairoSurfaceForData(buf+bytestartpos, ceil(innerwidth), ceil(innerheight), chunk.width);
-		xoffset = scalingGrid->x*innerscalex;
-		yoffset = scalingGrid->y*innerscaley;
-		cairo_scale(cr, 1 / (scalex*innerscalex), 1 / (scaley*innerscaley));
-		cairo_set_source_surface(cr, chunkSurface, xoffset,yoffset);
-	}
-	else
-	{
-		chunkSurface = getCairoSurfaceForData(buf, chunk.width, chunk.height, chunk.width);
-		cairo_scale(cr, 1 / chunk.xContentScale, 1 / chunk.yContentScale);
-		cairo_set_source_surface(cr, chunkSurface, 0,0);
-	}
-
-	if(isMask)
-	{
-		MATRIX maskmatrix;
-		cairo_get_matrix(cr, &maskmatrix);
-		masksurfaces.push_back(make_pair(chunkSurface,maskmatrix));
-	}
-	if (hasMask)
-	{
-		for (auto it=masksurfaces.begin(); it!=masksurfaces.end(); it++)
-		{
-			// apply mask
-			cairo_save(cr);
-			cairo_set_matrix(cr,&it->second);
-			cairo_mask_surface(cr,it->first,0,0);
-			cairo_restore(cr);
-		}
-	}
-	else if(!isMask)
-		cairo_paint_with_alpha(cr,alpha);
-
-	if (!isMask)
-		cairo_surface_destroy(chunkSurface);
-	cairo_restore(cr);
-}
-
-const CachedSurface& CairoRenderContext::getCachedSurface(const DisplayObject* d) const
-{
-	auto ret=customSurfaces.find(d);
-	if(ret==customSurfaces.end())
-	{
-		//No surface is stored, return an invalid one
-		return invalidSurface;
-	}
-	return ret->second;
-}
-
-CachedSurface& CairoRenderContext::allocateCustomSurface(const DisplayObject* d, uint8_t* texBuf, bool isBufferOwner)
-{
-	auto ret=customSurfaces.insert(make_pair(d, CachedSurface()));
-//	assert(ret.second);
-	CachedSurface& surface=ret.first->second;
-	if (surface.tex==nullptr)
-		surface.tex=new TextureChunk();
-	surface.tex->chunks=(uint32_t*)texBuf;
-	surface.isChunkOwner=isBufferOwner;
-	return surface;
+	
 }

@@ -25,10 +25,15 @@
 #include "scripting/argconv.h"
 #include <algorithm>
 #include "scripting/flash/ui/gameinput.h"
+#include "scripting/toplevel/IFunction.h"
 #include "scripting/toplevel/Number.h"
 #include "scripting/toplevel/UInteger.h"
+#include "scripting/toplevel/Undefined.h"
+#include "scripting/flash/geom/Rectangle.h"
 #include "scripting/flash/utils/ByteArray.h"
 #include "scripting/flash/net/flashnet.h"
+#include "scripting/flash/display/Loader.h"
+#include "scripting/flash/display/RootMovieClip.h"
 
 using namespace std;
 using namespace lightspark;
@@ -137,22 +142,18 @@ void Event::sinit(Class_base* c)
 	c->setVariableAtomByQName("VIDEO_FRAME",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"videoFrame"),DECLARED_TRAIT);
 	c->setVariableAtomByQName("WORKER_STATE",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"workerState"),DECLARED_TRAIT);
 
-	c->setDeclaredMethodByQName("formatToString","",Class<IFunction>::getFunction(c->getSystemState(),formatToString),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("isDefaultPrevented","",Class<IFunction>::getFunction(c->getSystemState(),_isDefaultPrevented),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("preventDefault","",Class<IFunction>::getFunction(c->getSystemState(),_preventDefault),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("clone","",Class<IFunction>::getFunction(c->getSystemState(),clone),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("stopPropagation","",Class<IFunction>::getFunction(c->getSystemState(),stopPropagation),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("stopImmediatePropagation","",Class<IFunction>::getFunction(c->getSystemState(),stopImmediatePropagation),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("formatToString","",c->getSystemState()->getBuiltinFunction(formatToString),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("isDefaultPrevented","",c->getSystemState()->getBuiltinFunction(_isDefaultPrevented),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("preventDefault","",c->getSystemState()->getBuiltinFunction(_preventDefault),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("clone","",c->getSystemState()->getBuiltinFunction(clone),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("stopPropagation","",c->getSystemState()->getBuiltinFunction(stopPropagation),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("stopImmediatePropagation","",c->getSystemState()->getBuiltinFunction(stopImmediatePropagation),NORMAL_METHOD,true);
 	REGISTER_GETTER_RESULTTYPE(c,currentTarget,ASObject);
 	REGISTER_GETTER_RESULTTYPE(c,target,ASObject);
 	REGISTER_GETTER_RESULTTYPE(c,type,ASString);
 	REGISTER_GETTER_RESULTTYPE(c,eventPhase,UInteger);
 	REGISTER_GETTER_RESULTTYPE(c,bubbles,Boolean);
 	REGISTER_GETTER_RESULTTYPE(c,cancelable,Boolean);
-}
-
-void Event::buildTraits(ASObject* o)
-{
 }
 
 ASFUNCTIONBODY_ATOM(Event,_constructor)
@@ -340,7 +341,7 @@ void TimerEvent::sinit(Class_base* c)
 	CLASS_SETUP(c, Event, _constructor, CLASS_SEALED);
 	c->setVariableAtomByQName("TIMER",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"timer"),DECLARED_TRAIT);
 	c->setVariableAtomByQName("TIMER_COMPLETE",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"timerComplete"),DECLARED_TRAIT);
-	c->setDeclaredMethodByQName("updateAfterEvent","",Class<IFunction>::getFunction(c->getSystemState(),updateAfterEvent),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("updateAfterEvent","",c->getSystemState()->getBuiltinFunction(updateAfterEvent),NORMAL_METHOD,true);
 }
 ASFUNCTIONBODY_ATOM(TimerEvent,updateAfterEvent)
 {
@@ -368,7 +369,7 @@ void MouseEvent::sinit(Class_base* c)
 	c->setVariableAtomByQName("MIDDLE_MOUSE_UP",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"middleMouseUp"),DECLARED_TRAIT);
 	c->setVariableAtomByQName("CONTEXT_MENU",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"contextMenu"),DECLARED_TRAIT);
 	c->setVariableAtomByQName("RELEASE_OUTSIDE",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"releaseOutside"),DECLARED_TRAIT);
-	c->setDeclaredMethodByQName("updateAfterEvent","",Class<IFunction>::getFunction(c->getSystemState(),updateAfterEvent),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("updateAfterEvent","",c->getSystemState()->getBuiltinFunction(updateAfterEvent),NORMAL_METHOD,true);
 
 	REGISTER_GETTER_SETTER(c,relatedObject);
 	REGISTER_GETTER(c,stageX);
@@ -559,6 +560,67 @@ ASFUNCTIONBODY_ATOM(NativeDragEvent,_constructor)
 	LOG(LOG_NOT_IMPLEMENTED,"NativeDragEvent: constructor");
 }
 
+NativeWindowBoundsEvent::NativeWindowBoundsEvent(ASWorker* wrk, Class_base* c) : Event(wrk,c, "")
+{
+	subtype=SUBTYPE_NATIVEWINDOWBOUNDSEVENT;
+}
+
+NativeWindowBoundsEvent::NativeWindowBoundsEvent(ASWorker* wrk, Class_base* c, const tiny_string& t, _NR<Rectangle> _beforeBounds, _NR<Rectangle> _afterBounds)
+ : Event(wrk,c,t),afterBounds(_afterBounds),beforeBounds(_beforeBounds)
+{
+	subtype=SUBTYPE_NATIVEWINDOWBOUNDSEVENT;
+}
+
+void NativeWindowBoundsEvent::sinit(Class_base* c)
+{
+	CLASS_SETUP(c, Event, _constructor, CLASS_SEALED);
+	c->setVariableAtomByQName("MOVE",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"move"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("MOVING",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"moving"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("RESIZE",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"resize"),CONSTANT_TRAIT);
+	c->setVariableAtomByQName("RESIZING",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"resizing"),CONSTANT_TRAIT);
+	c->setDeclaredMethodByQName("toString","",c->getSystemState()->getBuiltinFunction(_toString,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	
+	REGISTER_GETTER_RESULTTYPE(c,afterBounds,Rectangle);
+	REGISTER_GETTER_RESULTTYPE(c,beforeBounds,Rectangle);
+}
+
+Event* NativeWindowBoundsEvent::cloneImpl() const
+{
+	return Class<NativeWindowBoundsEvent>::getInstanceS(getInstanceWorker(),type, beforeBounds,afterBounds);
+}
+
+ASFUNCTIONBODY_GETTER(NativeWindowBoundsEvent,afterBounds)
+ASFUNCTIONBODY_GETTER(NativeWindowBoundsEvent,beforeBounds)
+
+ASFUNCTIONBODY_ATOM(NativeWindowBoundsEvent,_constructor)
+{
+	NativeWindowBoundsEvent* th=asAtomHandler::as<NativeWindowBoundsEvent>(obj);
+	ARG_CHECK(ARG_UNPACK(th->type)(th->bubbles, false)(th->cancelable, false)(th->beforeBounds,NullRef)(th->afterBounds,NullRef));
+
+}
+ASFUNCTIONBODY_ATOM(NativeWindowBoundsEvent,_toString)
+{
+	NativeWindowBoundsEvent* th=asAtomHandler::as<NativeWindowBoundsEvent>(obj);
+	tiny_string res = "[NativeWindowBoundsEvent type=";
+	res += th->type;
+	res += " bubbles=";
+	res += th->bubbles ? "true" : "false";
+	res += " cancelable=";
+	res += th->cancelable ? "true" : "false";
+	res += " previousDisplayState=";
+	if (th->beforeBounds)
+		res += th->beforeBounds->toString();
+	else
+		res += "null";
+	res += " currentDisplayState=";
+	if (th->afterBounds)
+		res += th->afterBounds->toString();
+	else
+		res += "null";
+	res += "]";
+	ret = asAtomHandler::fromString(wrk->getSystemState(),res);
+}
+		
 IOErrorEvent::IOErrorEvent(ASWorker* wrk, Class_base* c, const tiny_string& t, const std::string& e, int id) : ErrorEvent(wrk,c, t,e,id)
 {
 }
@@ -626,8 +688,11 @@ void EventDispatcher::prepareShutdown()
 		{
 			ASObject* f = asAtomHandler::getObject((*it2).f);
 			if (f)
+			{
 				f->prepareShutdown();
-			it2++;
+				f->removeStoredMember();
+			}
+			it2 = it->second.erase(it2);
 		}
 		it++;
 	}
@@ -654,10 +719,10 @@ void EventDispatcher::sinit(Class_base* c)
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_SEALED);
 	c->addImplementedInterface(InterfaceClass<IEventDispatcher>::getClass(c->getSystemState()));
 
-	c->setDeclaredMethodByQName("addEventListener","",Class<IFunction>::getFunction(c->getSystemState(),addEventListener),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("hasEventListener","",Class<IFunction>::getFunction(c->getSystemState(),_hasEventListener,1,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("removeEventListener","",Class<IFunction>::getFunction(c->getSystemState(),removeEventListener),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("dispatchEvent","",Class<IFunction>::getFunction(c->getSystemState(),dispatchEvent,1,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("addEventListener","",c->getSystemState()->getBuiltinFunction(addEventListener),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("hasEventListener","",c->getSystemState()->getBuiltinFunction(_hasEventListener,1,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("removeEventListener","",c->getSystemState()->getBuiltinFunction(removeEventListener),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("dispatchEvent","",c->getSystemState()->getBuiltinFunction(dispatchEvent,1,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
 
 	IEventDispatcher::linkTraits(c);
 }
@@ -679,15 +744,15 @@ ASFUNCTIONBODY_ATOM(EventDispatcher,addEventListener)
 		//throw RunTimeException("Type mismatch in EventDispatcher::addEventListener");
 		return;
 
+	bool useWeakReference=false;
 	bool useCapture=false;
 	int32_t priority=0;
-
 	if(argslen>=3)
 		useCapture=asAtomHandler::Boolean_concrete(args[2]);
 	if(argslen>=4)
 		priority=asAtomHandler::toInt(args[3]);
-	if(argslen>=5 &&asAtomHandler::toInt(args[4]))
-		LOG(LOG_NOT_IMPLEMENTED,"EventDispatcher::addEventListener parameter useWeakReference is ignored");
+	if(argslen>=5)
+		useWeakReference = asAtomHandler::Boolean_concrete(args[4]);
 
 	const tiny_string& eventName=asAtomHandler::toString(args[0],wrk);
 	if(wrk->isPrimordial // don't register frame listeners for background workers
@@ -707,6 +772,8 @@ ASFUNCTIONBODY_ATOM(EventDispatcher,addEventListener)
 		//Ordered insertion
 		list<listener>::iterator insertionPoint=lower_bound(listeners.begin(),listeners.end(),newListener);
 		IFunction* newfunc = asAtomHandler::as<IFunction>(args[1]);
+		if (useWeakReference && !newfunc->inClass)
+			LOG(LOG_NOT_IMPLEMENTED,"EventDispatcher::addEventListener parameter useWeakReference is ignored");
 		// check if a listener that matches type, use_capture and function is already registered
 		if (insertionPoint != listeners.end() && (*insertionPoint).use_capture == newListener.use_capture)
 		{
@@ -798,6 +865,7 @@ ASFUNCTIONBODY_ATOM(EventDispatcher,dispatchEvent)
 	e->getVariableByMultiname(target,m,GET_VARIABLE_OPTION::NONE,wrk);
 	if(asAtomHandler::isValid(target) && !asAtomHandler::isNull(target) && !asAtomHandler::isUndefined(target))
 	{
+		ASATOM_DECREF(target);
 		//Object must be cloned, cloning is implemented with the clone AS method
 		asAtom cloned=asAtomHandler::invalidAtom;
 		e->executeASMethod(cloned,"clone", {""}, nullptr, 0);
@@ -808,7 +876,6 @@ ASFUNCTIONBODY_ATOM(EventDispatcher,dispatchEvent)
 			return;
 		}
 
-		ASATOM_INCREF(cloned);
 		e = _MR(asAtomHandler::getObject(cloned)->as<Event>());
 	}
 	if(asAtomHandler::isValid(th->forcedTarget))
@@ -1001,6 +1068,7 @@ void KeyboardEvent::sinit(Class_base* c)
 	REGISTER_GETTER_SETTER_RESULTTYPE(c, shiftKey,Boolean);
 	c->setVariableAtomByQName("KEY_DOWN",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"keyDown"),DECLARED_TRAIT);
 	c->setVariableAtomByQName("KEY_UP",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"keyUp"),DECLARED_TRAIT);
+	c->setDeclaredMethodByQName("updateAfterEvent","",c->getSystemState()->getBuiltinFunction(updateAfterEvent),NORMAL_METHOD,true);
 }
 
 ASFUNCTIONBODY_ATOM(KeyboardEvent,_constructor)
@@ -1103,6 +1171,11 @@ ASFUNCTIONBODY_ATOM(KeyboardEvent, _setter_shiftKey)
 {
 	KeyboardEvent* th=static_cast<KeyboardEvent*>(asAtomHandler::getObject(obj));
 	th->modifiers |= KMOD_SHIFT;
+}
+
+ASFUNCTIONBODY_ATOM(KeyboardEvent,updateAfterEvent)
+{
+	LOG(LOG_NOT_IMPLEMENTED,"KeyboardEvent::updateAfterEvent not implemented");
 }
 
 Event* KeyboardEvent::cloneImpl() const
@@ -1316,12 +1389,29 @@ void ParseRPCMessageEvent::finalize()
 	responder.reset();
 }
 
+Event* StatusEvent::cloneImpl() const
+{
+	StatusEvent *clone = Class<StatusEvent>::getInstanceS(getInstanceWorker());
+	clone->code = code;
+	clone->level = level;
+	// Event
+	clone->type = type;
+	clone->bubbles = bubbles;
+	clone->cancelable = cancelable;
+	return clone;
+}
+
 void StatusEvent::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, Event, _constructor, CLASS_SEALED);
 	/* TODO: dispatch this event */
 	c->setVariableAtomByQName("STATUS",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"status"),DECLARED_TRAIT);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, code, ASString);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, level, ASString);
 }
+
+ASFUNCTIONBODY_GETTER_SETTER(StatusEvent, code)
+ASFUNCTIONBODY_GETTER_SETTER(StatusEvent, level)
 
 void DataEvent::sinit(Class_base* c)
 {
@@ -1577,6 +1667,15 @@ Event* ContextMenuEvent::cloneImpl() const
 	return clone;
 }
 
+ContextMenuEvent::ContextMenuEvent(ASWorker* wrk, Class_base* c) : Event(wrk,c, "ContextMenuEvent")
+{
+}
+
+ContextMenuEvent::ContextMenuEvent(ASWorker* wrk, Class_base* c, tiny_string t, _NR<InteractiveObject> target, _NR<InteractiveObject> owner)
+	: Event(wrk,c, t,false,false,SUBTYPE_CONTEXTMENUEVENT),mouseTarget(target),contextMenuOwner(owner)
+{
+}
+
 void TouchEvent::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, Event, _constructor, CLASS_SEALED);
@@ -1632,7 +1731,7 @@ void SampleDataEvent::sinit(Class_base* c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, Event, CLASS_SEALED);
 	c->setVariableAtomByQName("SAMPLE_DATA",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"sampleData"),DECLARED_TRAIT);
-	c->setDeclaredMethodByQName("toString","",Class<IFunction>::getFunction(c->getSystemState(),_toString,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("toString","",c->getSystemState()->getBuiltinFunction(_toString,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
 	
 	REGISTER_GETTER_SETTER_RESULTTYPE(c, data,ByteArray);
 	REGISTER_GETTER_SETTER_RESULTTYPE(c, position,Number);
@@ -1703,7 +1802,7 @@ void ThrottleEvent::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, Event, _constructor, CLASS_SEALED);
 	c->setVariableAtomByQName("THROTTLE",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),"Throttle"),DECLARED_TRAIT);
-	c->setDeclaredMethodByQName("toString","",Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("toString","",c->getSystemState()->getBuiltinFunction(_toString),NORMAL_METHOD,true);
 	
 	REGISTER_GETTER(c, state);
 	REGISTER_GETTER(c, targetFrameRate);
@@ -1806,3 +1905,48 @@ Event* GameInputEvent::cloneImpl() const
 	return clone;
 }
 
+
+LocalConnectionEvent::LocalConnectionEvent(uint32_t _nameID, uint32_t _methodID, asAtom* _args, uint32_t _numargs): Event(nullptr,nullptr,"LocalConnectionEvent")
+  ,nameID(_nameID),methodID(_methodID)
+{
+	numargs=_numargs;
+	args = new asAtom[numargs];
+	for (uint32_t i = 0; i < numargs; i++)
+	{
+		args[i]=_args[i];
+		ASATOM_INCREF(args[i]);
+	}
+}
+
+LocalConnectionEvent::~LocalConnectionEvent()
+{
+	for (uint32_t i = 0; i < numargs; i++)
+	{
+		ASATOM_DECREF(args[i]);
+	}
+	
+}
+
+SetLoaderContentEvent::SetLoaderContentEvent(_NR<DisplayObject> m, _NR<Loader> _loader): Event(nullptr,nullptr,"SetLoaderContentEvent"),content(m),loader(_loader)
+{
+}
+
+InitFrameEvent::InitFrameEvent(_NR<DisplayObject> m) : Event(nullptr,nullptr, "InitFrameEvent"),clip(m)
+{
+}
+
+ExecuteFrameScriptEvent::ExecuteFrameScriptEvent(_NR<DisplayObject> m):Event(nullptr,nullptr, "ExecuteFrameScriptEvent"),clip(m)
+{
+}
+
+AdvanceFrameEvent::AdvanceFrameEvent(_NR<DisplayObject> m): Event(nullptr,nullptr,"AdvanceFrameEvent"),clip(m)
+{
+}
+
+RootConstructedEvent::RootConstructedEvent(_NR<DisplayObject> m, bool explicit_): Event(nullptr,nullptr,"RootConstructedEvent"),clip(m),_explicit(explicit_)
+{
+}
+
+TextInputEvent::TextInputEvent(_NR<InteractiveObject> m, const tiny_string& s) : Event(nullptr,nullptr, "TextInputEvent"),target(m),text(s)
+{
+}

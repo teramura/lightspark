@@ -23,13 +23,13 @@
 #include <vector>
 #include "backends/geometry.h"
 #include "backends/graphics.h"
-#include "scripting/flash/display/DisplayObject.h"
-#include "scripting/flash/display/Graphics.h"
+#include "forwards/scripting/toplevel/Vector.h"
+#include "forwards/scripting/flash/display/DisplayObject.h"
+#include "forwards/scripting/flash/display/Graphics.h"
 
 namespace lightspark
 {
-
-class DisplayObject;
+class RenderContext;
 class InteractiveObject;
 class DefineMorphShapeTag;
 
@@ -40,8 +40,6 @@ class TokenContainer
 	friend class TextField;
 public:
 	DisplayObject* owner;
-	number_t redMultiplier,greenMultiplier,blueMultiplier,alphaMultiplier;
-	number_t redOffset,greenOffset,blueOffset,alphaOffset;
 	/* multiply shapes' coordinates by this
 	 * value to get pixel.
 	 * DefineShapeTags set a scaling of 1/20,
@@ -62,17 +60,14 @@ public:
 	uint16_t getCurrentLineWidth() const;
 	float scaling;
 	bool renderWithNanoVG;
+	void fillGraphicsData(Vector* v);
 protected:
 	TokenContainer(DisplayObject* _o);
 	TokenContainer(DisplayObject* _o, const tokensVector& _tokens, float _scaling);
-	IDrawable* invalidate(DisplayObject* target, const MATRIX& initialMatrix, SMOOTH_MODE smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap, bool fromgraphics);
+	IDrawable* invalidate(SMOOTH_MODE smoothing, bool fromgraphics);
 	void requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh=false);
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) const
-	{
-		return boundsRectFromTokens(tokens,scaling,xmin,xmax,ymin,ymax);
-	}
-	bool hitTestImpl(number_t x, number_t y) const;
-	bool renderImpl(RenderContext& ctxt);
+	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) const;
+	bool hitTestImpl(const Vector2f& point) const;
 	bool tokensEmpty() const { return tokens.empty(); }
 };
 

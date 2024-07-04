@@ -19,11 +19,14 @@
 #include "swftypes.h"
 #include "scripting/abc.h"
 #include "scripting/class.h"
-#include "scripting/flash/geom/flashgeom.h"
+#include "scripting/flash/geom/Rectangle.h"
 #include "scripting/flash/display/flashdisplay.h"
 #include "scripting/toplevel/toplevel.h"
+#include "scripting/toplevel/AVM1Function.h"
+#include "scripting/toplevel/Global.h"
 #include "scripting/toplevel/Number.h"
 #include "scripting/avm1/avm1display.h"
+#include "scripting/avm1/avm1array.h"
 #include "parsing/tags.h"
 #include "backends/audio.h"
 
@@ -400,7 +403,10 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 				asAtom str = PopStack(stack);
 				tiny_string a = asAtomHandler::toString(str,wrk);
 				// start parameter seems to be 1-based
-				tiny_string b = a.substr(asAtomHandler::toInt(index)-1,asAtomHandler::toInt(count));
+				int startindex = asAtomHandler::toInt(index)-1;
+				tiny_string b;
+				if (uint32_t(startindex) <= a.numChars())
+					b = a.substr(startindex,asAtomHandler::toInt(count));
 				ASATOM_DECREF(count);
 				ASATOM_DECREF(index);
 				ASATOM_DECREF(str);
@@ -466,11 +472,21 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 				}
 				else if (context->keepLocals && s.find(".") == tiny_string::npos)
 				{
-					auto it = locals.find(clip->getSystemState()->getUniqueStringId(s.lowercase()));
+					uint32_t nameidlower=clip->getSystemState()->getUniqueStringId(s.lowercase());
+					auto it = locals.find(nameidlower);
 					if (it != locals.end()) // local variable
 					{
 						res = it->second;
 						ASATOM_INCREF(res);
+					}
+					else if (!caller)
+					{
+						auto it = clip->avm1locals.find(nameidlower);
+						if (it != clip->avm1locals.end())
+						{
+							res = it->second;
+							ASATOM_INCREF(res);
+						}
 					}
 				}
 				if (asAtomHandler::isInvalid(res) && !clip_isTarget)
@@ -581,12 +597,23 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 				if (context->keepLocals && s.find(".") == tiny_string::npos)
 				{
 					// variable names are case insensitive
-					auto it = locals.find(clip->getSystemState()->getUniqueStringId(s.lowercase()));
+					uint32_t nameidlower = clip->getSystemState()->getUniqueStringId(s.lowercase());
+					auto it = locals.find(nameidlower);
 					if (it != locals.end()) // local variable
 					{
 						ASATOM_INCREF(value);
 						ASATOM_DECREF(it->second);
 						it->second = value;
+					}
+					else if (!caller)
+					{
+						auto it = clip->avm1locals.find(nameidlower);
+						if (it != clip->avm1locals.end())
+						{
+							ASATOM_ADDSTOREDMEMBER(value);
+							ASATOM_REMOVESTOREDMEMBER(it->second);
+							it->second = value;
+						}
 					}
 				}
 				if (!curdepth && !s.startsWith("/") && !s.startsWith(":") && !clip_isTarget)
@@ -752,43 +779,42 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 				{
 					asAtom obj = asAtomHandler::fromObject(o);
 					asAtom ret=asAtomHandler::invalidAtom;
-					asAtom valueInt = asAtomHandler::fromInt(asAtomHandler::toInt(value));
 					switch (asAtomHandler::toInt(index))
 					{
 						case 0:// x
-							DisplayObject::_setX(ret,wrk,obj,&valueInt,1);
+							DisplayObject::_setX(ret,wrk,obj,&value,1);
 							ASATOM_DECREF(value);
 							break;
 						case 1:// y
-							DisplayObject::_setY(ret,wrk,obj,&valueInt,1);
+							DisplayObject::_setY(ret,wrk,obj,&value,1);
 							ASATOM_DECREF(value);
 							break;
 						case 2:// xscale
-							DisplayObject::AVM1_setScaleX(ret,wrk,obj,&valueInt,1);
+							DisplayObject::AVM1_setScaleX(ret,wrk,obj,&value,1);
 							ASATOM_DECREF(value);
 							break;
 						case 3:// xscale
-							DisplayObject::AVM1_setScaleY(ret,wrk,obj,&valueInt,1);
+							DisplayObject::AVM1_setScaleY(ret,wrk,obj,&value,1);
 							ASATOM_DECREF(value);
 							break;
 						case 6:// alpha
-							DisplayObject::AVM1_setAlpha(ret,wrk,obj,&valueInt,1);
+							DisplayObject::AVM1_setAlpha(ret,wrk,obj,&value,1);
 							ASATOM_DECREF(value);
 							break;
 						case 7:// visible
-							DisplayObject::_setVisible(ret,wrk,obj,&valueInt,1);
+							DisplayObject::_setVisible(ret,wrk,obj,&value,1);
 							ASATOM_DECREF(value);
 							break;
 						case 8:// width
-							DisplayObject::_setWidth(ret,wrk,obj,&valueInt,1);
+							DisplayObject::_setWidth(ret,wrk,obj,&value,1);
 							ASATOM_DECREF(value);
 							break;
 						case 9:// height
-							DisplayObject::_setHeight(ret,wrk,obj,&valueInt,1);
+							DisplayObject::_setHeight(ret,wrk,obj,&value,1);
 							ASATOM_DECREF(value);
 							break;
 						case 10:// rotation
-							DisplayObject::_setRotation(ret,wrk,obj,&valueInt,1);
+							DisplayObject::_setRotation(ret,wrk,obj,&value,1);
 							ASATOM_DECREF(value);
 							break;
 						case 13:// name
@@ -864,7 +890,9 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 				}
 				if (o && o->getParent() && !o->is<RootMovieClip>() && !o->legacy)
 				{
-					o->getParent()->_removeChild(o);
+					asAtom obj = asAtomHandler::fromObjectNoPrimitive(o);
+					asAtom r = asAtomHandler::invalidAtom;
+					MovieClip::AVM1RemoveMovieClip(r,wrk,obj,nullptr,0);
 				}
 				ASATOM_DECREF(target);
 				break;
@@ -1072,8 +1100,23 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 					clip->AVM1SetVariable(s,value,false);
 				}
 				uint32_t nameID = clip->getSystemState()->getUniqueStringId(asAtomHandler::toString(name,wrk).lowercase());
-				ASATOM_DECREF(locals[nameID]);
-				locals[nameID] = value;
+				if (caller)
+				{
+					ASATOM_DECREF(locals[nameID]);
+					locals[nameID] = value;
+				}
+				else
+				{
+					ASATOM_ADDSTOREDMEMBER(value);
+					auto it = clip->avm1locals.find(nameID);
+					if (it == clip->avm1locals.end())
+						clip->avm1locals.insert(make_pair(nameID,value));
+					else
+					{
+						ASATOM_REMOVESTOREDMEMBER(it->second);
+						it->second = value;
+					}
+				}
 				ASATOM_DECREF(name);
 				break;
 			}
@@ -1087,29 +1130,21 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 					args[i] = PopStack(stack);
 				LOG_CALL("AVM1:"<<clip->getTagID()<<" "<<(clip->is<MovieClip>() ? clip->as<MovieClip>()->state.FP : 0)<<" ActionCallFunction "<<asAtomHandler::toDebugString(name)<<" "<<numargs);
 				uint32_t nameID = asAtomHandler::toStringId(name,wrk);
+				tiny_string s = clip->getSystemState()->getStringFromUniqueId(nameID);
+				asAtom ret=asAtomHandler::invalidAtom;
 				AVM1Function* f =nullptr;
 				if (asAtomHandler::isUndefined(name)|| asAtomHandler::toStringId(name,wrk) == BUILTIN_STRINGS::EMPTY)
 					LOG(LOG_NOT_IMPLEMENTED, "AVM1:"<<clip->getTagID()<<" "<<(clip->is<MovieClip>() ? clip->as<MovieClip>()->state.FP : 0)<<" ActionCallFunction without name "<<asAtomHandler::toDebugString(name)<<" "<<numargs);
 				else
 				{
-					uint32_t nameIDlower = clip->getSystemState()->getUniqueStringId(asAtomHandler::toString(name,wrk).lowercase());
-					f =clip->AVM1GetFunction(nameIDlower);
-				}
-				asAtom ret=asAtomHandler::invalidAtom;
-				if (f)
-				{
-					f->call(&ret,nullptr, args,numargs,callee,&locals);
-				}
-				else
-				{
-					tiny_string s = clip->getSystemState()->getStringFromUniqueId(nameID);
+					tiny_string s = asAtomHandler::toString(name,wrk).lowercase();
 					asAtom func = clip->AVM1GetVariable(s);
 					if (asAtomHandler::isInvalid(func) && clip != originalclip)
 						func = originalclip->AVM1GetVariable(s);
 					if (asAtomHandler::is<AVM1Function>(func))
 					{
 						asAtom obj = asAtomHandler::fromObjectNoPrimitive(clip);
-						asAtomHandler::as<AVM1Function>(func)->call(&ret,&obj,args,numargs,callee,&locals);
+						asAtomHandler::as<AVM1Function>(func)->call(&ret,&obj,args,numargs,caller,&locals);
 						asAtomHandler::as<AVM1Function>(func)->decRef();
 					}
 					else if (asAtomHandler::is<Function>(func))
@@ -1137,10 +1172,22 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 							if (asAtomHandler::isInvalid(func))// get Variable from global object
 								clip->getSystemState()->avm1global->getVariableByMultiname(func,m,GET_VARIABLE_OPTION::NONE,wrk);
 						}
-						if (asAtomHandler::is<AVM1Function>(func))
+						if (asAtomHandler::isInvalid(func))
+						{
+							uint32_t nameIDlower = clip->getSystemState()->getUniqueStringId(asAtomHandler::toString(name,wrk).lowercase());
+							f =clip->AVM1GetFunction(nameIDlower);
+							if (f)
+								f->call(&ret,nullptr, args,numargs,caller,&locals);
+							else
+							{
+								LOG(LOG_NOT_IMPLEMENTED, "AVM1:"<<clip->getTagID()<<" "<<(clip->is<MovieClip>() ? clip->as<MovieClip>()->state.FP : 0)<<" ActionCallFunction function not found "<<asAtomHandler::toDebugString(name)<<" "<<asAtomHandler::toDebugString(func)<<" "<<numargs);
+								ret = asAtomHandler::undefinedAtom;
+							}
+						}
+						else if (asAtomHandler::is<AVM1Function>(func))
 						{
 							asAtom obj = asAtomHandler::fromObjectNoPrimitive(clip);
-							asAtomHandler::as<AVM1Function>(func)->call(&ret,&obj,args,numargs,callee,&locals);
+							asAtomHandler::as<AVM1Function>(func)->call(&ret,&obj,args,numargs,caller,&locals);
 							asAtomHandler::as<AVM1Function>(func)->decRef();
 						}
 						else if (asAtomHandler::is<Function>(func))
@@ -1221,7 +1268,7 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 						o->setprop_prototype(asAtomHandler::as<AVM1Function>(cls)->prototype);
 						o->setprop_prototype(asAtomHandler::as<AVM1Function>(cls)->prototype,BUILTIN_STRINGS::STRING_PROTO);
 						ret = asAtomHandler::fromObject(o);
-						asAtomHandler::as<AVM1Function>(cls)->call(nullptr,&ret, args,numargs,callee,&locals);
+						asAtomHandler::as<AVM1Function>(cls)->call(nullptr,&ret, args,numargs,caller,&locals);
 						asAtomHandler::as<AVM1Function>(cls)->decRef();
 					}
 					else
@@ -1249,7 +1296,7 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 						o->setprop_prototype(f->prototype,BUILTIN_STRINGS::STRING_PROTO);
 					}
 					ret = asAtomHandler::fromObject(o);
-					f->call(nullptr,&ret, args,numargs,callee,&locals);
+					f->call(nullptr,&ret, args,numargs,caller,&locals);
 				}
 				else if (asAtomHandler::isInvalid(ret))
 					LOG(LOG_NOT_IMPLEMENTED, "AVM1:"<<clip->getTagID()<<" "<<(clip->is<MovieClip>() ? clip->as<MovieClip>()->state.FP : 0)<<" ActionNewObject class not found "<<asAtomHandler::toDebugString(name)<<" "<<numargs);
@@ -1265,8 +1312,16 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 				LOG_CALL("AVM1:"<<clip->getTagID()<<" "<<(clip->is<MovieClip>() ? clip->as<MovieClip>()->state.FP : 0)<<" ActionDefineLocal2 "<<asAtomHandler::toDebugString(name));
 				tiny_string namelower = asAtomHandler::toString(name,wrk).lowercase();
 				uint32_t nameID = clip->getSystemState()->getUniqueStringId(namelower);
-				if (locals.find(nameID) == locals.end())
-					locals[nameID] = asAtomHandler::undefinedAtom;
+				if (caller)
+				{
+					if (locals.find(nameID) == locals.end())
+						locals[nameID] = asAtomHandler::undefinedAtom;
+				}
+				else
+				{
+					if (clip->avm1locals.find(nameID) == clip->avm1locals.end())
+						clip->avm1locals[nameID] = asAtomHandler::undefinedAtom;
+				}
 				ASATOM_DECREF(name);
 				break;
 			}
@@ -1275,7 +1330,7 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 				asAtom na = PopStack(stack);
 				uint32_t numargs = asAtomHandler::toUInt(na);
 				LOG_CALL("AVM1:"<<clip->getTagID()<<" "<<(clip->is<MovieClip>() ? clip->as<MovieClip>()->state.FP : 0)<<" ActionInitArray "<<numargs);
-				Array* ret=Class<Array>::getInstanceSNoArgs(wrk);
+				Array* ret=Class<AVM1Array>::getInstanceSNoArgs(wrk);
 				ret->resize(numargs);
 				for (uint32_t i = 0; i < numargs; i++)
 				{
@@ -1618,7 +1673,7 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 								if (var && asAtomHandler::is<AVM1Function>(var->setter))
 								{
 									ASATOM_INCREF(value);
-									asAtomHandler::as<AVM1Function>(var->setter)->call(nullptr,&scriptobject,&value,1,callee,&locals);
+									asAtomHandler::as<AVM1Function>(var->setter)->call(nullptr,&scriptobject,&value,1,caller,&locals);
 									hassetter=true;
 									break;
 								}
@@ -1633,7 +1688,8 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 					if (o->is<DisplayObject>())
 					{
 						o->as<DisplayObject>()->AVM1UpdateVariableBindings(m.name_s_id,value);
-						o->as<DisplayObject>()->AVM1SetVariableDirect(m.name_s_id,value);
+						uint32_t nameIDlower = clip->getSystemState()->getUniqueStringId(asAtomHandler::toString(name,wrk).lowercase());
+						o->as<DisplayObject>()->AVM1SetVariableDirect(nameIDlower,value);
 					}
 				}
 				else
@@ -1679,12 +1735,10 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 					if (asAtomHandler::is<Function>(scriptobject))
 					{
 						asAtomHandler::as<Function>(scriptobject)->call(ret,wrk,scopestack[0],args,numargs);
-						asAtomHandler::as<Function>(scriptobject)->decRef();
 					}
 					else if (asAtomHandler::is<AVM1Function>(scriptobject))
 					{
-						asAtomHandler::as<AVM1Function>(scriptobject)->call(&ret,&scopestack[0],args,numargs,callee,&locals);
-						asAtomHandler::as<AVM1Function>(scriptobject)->decRef();
+						asAtomHandler::as<AVM1Function>(scriptobject)->call(&ret,&scopestack[0],args,numargs,caller,&locals);
 					}
 					else if (asAtomHandler::is<Class_base>(scriptobject))
 					{
@@ -1712,7 +1766,7 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 							}
 							else if (asAtomHandler::is<AVM1Function>(constr))
 							{
-								asAtomHandler::as<AVM1Function>(constr)->call(&ret,&scopestack[0],args,numargs,callee,&locals);
+								asAtomHandler::as<AVM1Function>(constr)->call(&ret,&scopestack[0],args,numargs,caller,&locals);
 								asAtomHandler::as<AVM1Function>(constr)->decRef();
 							}
 							else if (asAtomHandler::is<Class_base>(constr))
@@ -1738,7 +1792,7 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 						AVM1Function* f = asAtomHandler::as<DisplayObject>(scriptobject)->AVM1GetFunction(nameIDlower);
 						if (f)
 						{
-							f->call(&ret,&scriptobject,args,numargs,callee,&locals);
+							f->call(&ret,&scriptobject,args,numargs,caller,&locals);
 							LOG_CALL("AVM1:"<<clip->getTagID()<<" "<<(clip->is<MovieClip>() ? clip->as<MovieClip>()->state.FP : 0)<<" ActionCallMethod from displayobject done "<<asAtomHandler::toDebugString(name)<<" "<<numargs<<" "<<asAtomHandler::toDebugString(scriptobject));
 							done=true;
 						}
@@ -1802,9 +1856,9 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 						else if (asAtomHandler::is<AVM1Function>(func))
 						{
 							if (scriptobject.uintval == super.uintval)
-								asAtomHandler::as<AVM1Function>(func)->call(&ret,&scopestack[0],args,numargs,callee,&locals);
+								asAtomHandler::as<AVM1Function>(func)->call(&ret,&scopestack[0],args,numargs,caller,&locals);
 							else
-								asAtomHandler::as<AVM1Function>(func)->call(&ret,&scriptobject,args,numargs,callee,&locals);
+								asAtomHandler::as<AVM1Function>(func)->call(&ret,&scriptobject,args,numargs,caller,&locals);
 							asAtomHandler::as<AVM1Function>(func)->decRef();
 						}
 						else
@@ -1866,6 +1920,8 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 					proto = _MNR(asAtomHandler::as<IFunction>(func)->getprop_prototype());
 					if (proto.isNull())
 						proto = asAtomHandler::as<IFunction>(func)->prototype;
+					else
+						proto->incRef();
 					if (!proto.isNull())
 					{
 						multiname mconstr(nullptr);
@@ -1888,7 +1944,7 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 				}
 				else if (asAtomHandler::is<AVM1Function>(func))
 				{
-					asAtomHandler::as<AVM1Function>(func)->call(nullptr,&ret,args,numargs,callee,&locals);
+					asAtomHandler::as<AVM1Function>(func)->call(nullptr,&ret,args,numargs,caller,&locals);
 				}
 				else if (asAtomHandler::is<Class_base>(func))
 				{
@@ -2360,7 +2416,7 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 				{
 					asAtom ret = asAtomHandler::invalidAtom;
 					if (url != "")
-						LOG(LOG_NOT_IMPLEMENTED,"AVM1: ActionGetURL2 on MovieClip with url:"<<url);
+						MovieClip::AVM1LoadMovie(ret,wrk,at,&au,1);
 					else
 					{
 						// it seems that calling ActionGetURL2 with a clip as target and no url unloads the clip
@@ -2545,6 +2601,14 @@ void ACTIONRECORD::executeActions(DisplayObject *clip, AVM1context* context, con
 				break;
 			}
 			case 0x14: // ActionStringLength
+			{
+				asAtom a = PopStack(stack);
+				tiny_string s= asAtomHandler::toString(a,wrk);
+				asAtom ret = asAtomHandler::fromInt(s.numChars());
+				ASATOM_DECREF(a);
+				PushStack(stack,ret);
+				break;
+			}
 			case 0x29: // ActionStringLess
 			case 0x31: // ActionMBStringLength
 			case 0x32: // ActionCharToAscii

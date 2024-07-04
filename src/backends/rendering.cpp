@@ -19,7 +19,11 @@
 
 #include "scripting/abc.h"
 #include "scripting/class.h"
+#include "scripting/flash/geom/Rectangle.h"
+#include "scripting/flash/display/BitmapContainer.h"
+#include "scripting/flash/display/RootMovieClip.h"
 #include "parsing/textfile.h"
+#include "backends/cachedsurface.h"
 #include "backends/rendering.h"
 #include "backends/input.h"
 #include "compat.h"
@@ -60,7 +64,8 @@ RenderThread::RenderThread(SystemState* s):GLRenderContext(),
 	m_sys(s),status(CREATED),
 	prevUploadJob(nullptr),
 	renderNeeded(false),uploadNeeded(false),resizeNeeded(false),newTextureNeeded(false),event(0),newWidth(0),newHeight(0),scaleX(1),scaleY(1),
-	offsetX(0),offsetY(0),tempBufferAcquired(false),frameCount(0),secsCount(0),initialized(0),refreshNeeded(false),screenshotneeded(false),inSettings(false),canrender(false),
+	offsetX(0),offsetY(0),tempBufferAcquired(false),frameCount(0),secsCount(0),initialized(0),refreshNeeded(false),renderToBitmapContainerNeeded(false),
+	screenshotneeded(false),inSettings(false),canrender(false),
 	cairoTextureContextSettings(nullptr),cairoTextureContext(nullptr)
 {
 	LOG(LOG_INFO,"RenderThread this=" << this);
@@ -137,11 +142,11 @@ void RenderThread::init()
 	/* This will call initialized.signal() when lighter goes out of scope */
 	SemaphoreLighter lighter(initialized);
 
-	windowWidth=engineData->width;
-	windowHeight=engineData->height;
+	windowWidth=currentframebufferWidth=engineData->width;
+	windowHeight=currentframebufferHeight=engineData->height;
 
 	engineData->InitOpenGL();
-	commonGLInit(windowWidth, windowHeight);
+	commonGLInit();
 	commonGLResize();
 	
 }
@@ -206,8 +211,8 @@ bool RenderThread::doRender(ThreadProfile* profile,Chronometer* chronometer)
 	if(resizeNeeded)
 	{
 		//Order of the operations here matters for requestResize
-		windowWidth=newWidth;
-		windowHeight=newHeight;
+		windowWidth=currentframebufferWidth=newWidth;
+		windowHeight=currentframebufferHeight=newHeight;
 		resizeNeeded=false;
 		newWidth=0;
 		newHeight=0;
@@ -232,6 +237,12 @@ bool RenderThread::doRender(ThreadProfile* profile,Chronometer* chronometer)
 		{
 			it->displayobject->updateCachedSurface(it->drawable);
 			delete it->drawable;
+			// ensure that the DisplayObject is moved to freelist in vm thread
+			if (getVm(m_sys))
+			{
+				it->displayobject->incRef();
+				getVm(m_sys)->addDeletableObject(it->displayobject.getPtr());
+			}
 			it = surfacesToRefresh.erase(it);
 		}
 		refreshNeeded=false;
@@ -243,6 +254,102 @@ bool RenderThread::doRender(ThreadProfile* profile,Chronometer* chronometer)
 		handleUpload();
 		if (profile && chronometer)
 			profile->accountTime(chronometer->checkpoint());
+		return true;
+	}
+
+	if (renderToBitmapContainerNeeded)
+	{
+		Locker l(mutexRenderToBitmapContainer);
+		auto it = displayobjectsToRender.begin();
+		while (it != displayobjectsToRender.end())
+		{
+			// upload all needed bitmaps to gpu
+			auto itup = it->uploads.begin();
+			while (itup != it->uploads.end())
+			{
+				ITextureUploadable* u = *itup;
+				u->upload(true);
+				TextureChunk& tex=u->getTexture();
+				if(newTextureNeeded)
+					handleNewTexture();
+				uint32_t w,h;
+				u->sizeNeeded(w,h);
+				u->contentScale(tex.xContentScale, tex.yContentScale);
+				u->contentOffset(tex.xOffset, tex.yOffset);
+				loadChunkBGRA(tex, w, h, u->upload(false));
+				u->uploadFence();
+				itup = it->uploads.erase(itup);
+			}
+			// refresh all surfaces
+			auto itsur = it->surfacesToRefresh.begin();
+			while (itsur != it->surfacesToRefresh.end())
+			{
+				itsur->displayobject->updateCachedSurface(itsur->drawable);
+				delete itsur->drawable;
+				itsur = it->surfacesToRefresh.erase(itsur);
+			}
+			int w = it->bitmapcontainer->getWidth();
+			int h = it->bitmapcontainer->getHeight();
+			// setup new texture to render to
+			uint32_t bmTextureID;
+			engineData->exec_glFrontFace(false);
+			engineData->exec_glDrawBuffer_GL_BACK();
+			engineData->exec_glUseProgram(gpu_program);
+			engineData->exec_glGenTextures(1, &bmTextureID);
+			uint32_t bmframebuffer = engineData->exec_glGenFramebuffer();
+			engineData->exec_glActiveTexture_GL_TEXTURE0(SAMPLEPOSITION::SAMPLEPOS_STANDARD);
+			engineData->exec_glBindTexture_GL_TEXTURE_2D(bmTextureID);
+			engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(bmframebuffer);
+			uint32_t bmrenderbuffer = engineData->exec_glGenRenderbuffer();
+			engineData->exec_glBindRenderbuffer_GL_RENDERBUFFER(bmrenderbuffer);
+			if (engineData->supportPackedDepthStencil)
+			{
+				engineData->exec_glRenderbufferStorage_GL_RENDERBUFFER_GL_DEPTH_STENCIL(w,h);
+				engineData->exec_glFramebufferRenderbuffer_GL_FRAMEBUFFER_GL_DEPTH_STENCIL_ATTACHMENT(bmrenderbuffer);
+			}
+			else
+			{
+				engineData->exec_glRenderbufferStorage_GL_RENDERBUFFER_GL_STENCIL_INDEX8(w, h);
+				engineData->exec_glFramebufferRenderbuffer_GL_FRAMEBUFFER_GL_STENCIL_ATTACHMENT(bmrenderbuffer);
+			}
+			engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MIN_FILTER_GL_NEAREST();
+			engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MAG_FILTER_GL_NEAREST();
+			engineData->exec_glFramebufferTexture2D_GL_FRAMEBUFFER(bmTextureID);
+			
+			// upload current content of bitmap container (no need for locking the bitmapcontainer as the worker thread is waiting until rendering is done)
+			// TODO should only be done if the content was already set to something
+			engineData->exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_INT_8_8_8_8_HOST(0,w,h,0,it->bitmapcontainer->getData());
+			engineData->exec_glClear(CLEARMASK::STENCIL);
+			baseFramebuffer=bmframebuffer;
+			baseRenderbuffer=bmrenderbuffer;
+			flipvertical=false; // avoid flipping resulting image vertically (as is done for normal rendering)
+			setViewPort(w,h,false);
+			
+			// render DisplayObject to texture
+			it->cachedsurface->Render(m_sys,*this,&it->initialMatrix,&(*it));
+			
+			// read rendered texture back into bitmapcontainer (no need for locking the bitmapcontainer as the worker thread is waiting until rendering is done)
+			// TODO should only be done "on demand" if pixels in bitmapcontainer are accessed later
+			engineData->exec_glReadPixels_GL_BGRA(w, h,it->bitmapcontainer->getData());
+			
+			// reset everything for normal rendering
+			baseFramebuffer=0;
+			baseRenderbuffer=0;
+			flipvertical=true;
+			resetCurrentFrameBuffer();
+			resetViewPort();
+			engineData->exec_glActiveTexture_GL_TEXTURE0(SAMPLEPOSITION::SAMPLEPOS_STANDARD);
+			
+			// cleanup
+			engineData->exec_glDeleteFramebuffers(1,&bmframebuffer);
+			engineData->exec_glDeleteRenderbuffers(1,&bmrenderbuffer);
+			engineData->exec_glDeleteTextures(1,&bmTextureID);
+			
+			// signal to waiting worker thread that rendering is complete
+			it->bitmapcontainer->renderevent.signal();
+			it = displayobjectsToRender.erase(it);
+		}
+		renderToBitmapContainerNeeded=false;
 		return true;
 	}
 
@@ -390,6 +497,109 @@ void RenderThread::renderSettingsPage()
 	mapCairoTexture(width, height,true);
 	engineData->exec_glFlush();
 }
+
+void RenderThread::resetViewPort()
+{
+	engineData->exec_glViewport(0,0,windowWidth,windowHeight);
+	currentframebufferWidth=windowWidth;
+	currentframebufferHeight=windowHeight;
+	lsglLoadIdentity();
+	lsglOrtho(0,windowWidth,0,windowHeight,-100,0);
+	//scaleY is negated to adapt the flash and gl coordinates system
+	//An additional translation is added for the same reason
+	lsglTranslatef(offsetX,windowHeight-offsetY,0);
+	lsglScalef(1.0,-1.0,1);
+	setMatrixUniform(LSGL_PROJECTION);
+	lsglLoadIdentity();
+	lsglScalef(1.0,-1.0,1);
+	lsglTranslatef(-offsetX,(windowHeight-offsetY)*(-1.0f),0);
+	setMatrixUniform(LSGL_MODELVIEW);
+}
+void RenderThread::setViewPort(uint32_t w, uint32_t h, bool flip)
+{
+	engineData->exec_glViewport(0,0,w,h);
+	currentframebufferWidth=w;
+	currentframebufferHeight=h;
+	if (flip)
+	{
+		lsglLoadIdentity();
+		lsglOrtho(0,w,0,h,-100,0);
+		//scaleY is negated to adapt the flash and gl coordinates system
+		//An additional translation is added for the same reason
+		lsglTranslatef(0,h,0);
+		lsglScalef(1.0,-1.0,1);
+		setMatrixUniform(LSGL_PROJECTION);
+		lsglLoadIdentity();
+		lsglScalef(1.0,-1.0,1);
+		lsglTranslatef(0,h*(-1.0f),0);
+		setMatrixUniform(LSGL_MODELVIEW);
+	}
+	else
+	{
+		lsglLoadIdentity();
+		lsglOrtho(0,w,0,h,-100,0);
+		lsglTranslatef(0,0,0);
+		lsglScalef(1.0,1.0,1);
+		setMatrixUniform(LSGL_PROJECTION);
+		lsglLoadIdentity();
+		lsglScalef(1.0,1.0,1);
+		lsglTranslatef(0,h*(1.0f),0);
+		setMatrixUniform(LSGL_MODELVIEW);
+	}
+}
+void RenderThread::setModelView(const MATRIX& matrix)
+{
+	float fmatrix[16];
+	matrix.get4DMatrix(fmatrix);
+	lsglLoadMatrixf(fmatrix);
+	setMatrixUniform(LSGL_MODELVIEW);
+}
+
+void RenderThread::renderTextureToFrameBuffer(uint32_t filterTextureID, uint32_t w, uint32_t h, float* filterdata, float* gradientcolors, bool isFirstFilter, bool flippedvertical, bool clearstate, bool renderstage3d)
+{
+	if (filterdata)
+	{
+		// last values of filterdata are always width and height
+		filterdata[FILTERDATA_MAXSIZE-2]=w;
+		filterdata[FILTERDATA_MAXSIZE-1]=h;
+		engineData->exec_glUniform1fv(filterdataUniform, FILTERDATA_MAXSIZE, filterdata);
+	}
+	else
+	{
+		float empty=0;
+		engineData->exec_glUniform1fv(filterdataUniform, 1, &empty);
+	}
+	if (gradientcolors)
+		engineData->exec_glUniform4fv(gradientcolorsUniform, 256, gradientcolors);
+	
+	if (clearstate)
+	{
+		engineData->exec_glUniform1f(blendModeUniform, AS_BLENDMODE::BLENDMODE_NORMAL);
+		engineData->exec_glUniform1f(alphaUniform, 1.0);
+		engineData->exec_glUniform4f(colortransMultiplyUniform, 1.0,1.0,1.0,1.0);
+		engineData->exec_glUniform4f(colortransAddUniform, 0.0,0.0,0.0,0.0);
+	}
+	engineData->exec_glUniform1f(yuvUniform, 0);
+	engineData->exec_glUniform1f(renderStage3DUniform,renderstage3d ? 1.0 : 0.0);
+	engineData->exec_glUniform1f(directUniform, 0.0);
+	engineData->exec_glUniform1f(isFirstFilterUniform, (float)isFirstFilter);
+
+	engineData->exec_glActiveTexture_GL_TEXTURE0(SAMPLEPOSITION::SAMPLEPOS_STANDARD);
+	engineData->exec_glBindTexture_GL_TEXTURE_2D(filterTextureID);
+	engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MIN_FILTER_GL_LINEAR();
+	engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MAG_FILTER_GL_LINEAR();
+	float vertex_coords[] = {0,0, float(w),0, 0,float(h), float(w),float(h)};
+	float vertex_coords_flipped[] = {0,float(h), float(w),float(h), 0,0, float(w),0};
+	float texture_coords[] = {0,0, 1,0, 0,1, 1,1};
+	engineData->exec_glVertexAttribPointer(VERTEX_ATTRIB, 0, flippedvertical ? vertex_coords_flipped : vertex_coords,FLOAT_2);
+	engineData->exec_glVertexAttribPointer(TEXCOORD_ATTRIB, 0, texture_coords,FLOAT_2);
+	
+	engineData->exec_glEnableVertexAttribArray(VERTEX_ATTRIB);
+	engineData->exec_glEnableVertexAttribArray(TEXCOORD_ATTRIB);
+	engineData->exec_glDrawArrays_GL_TRIANGLE_STRIP(0, 4);
+	engineData->exec_glDisableVertexAttribArray(VERTEX_ATTRIB);
+	engineData->exec_glDisableVertexAttribArray(TEXCOORD_ATTRIB);
+}
 void RenderThread::generateScreenshot()
 {
 	char* buf = new char[windowWidth*windowHeight*3];
@@ -438,6 +648,25 @@ void RenderThread::generateScreenshot()
 	LOG(LOG_INFO,"screenshot generated:"<<name_used);
 	g_free(name_used);
 	screenshotneeded=false;
+}
+
+void RenderThread::addRefreshableSurface(IDrawable* d, _NR<DisplayObject> o)
+{
+	Locker l(mutexRefreshSurfaces);
+	RefreshableSurface s;
+	s.displayobject = o;
+	s.drawable = d;
+	surfacesToRefresh.push_back(s);
+}
+
+void RenderThread::signalSurfaceRefresh()
+{
+	Locker l(mutexRefreshSurfaces);
+	if (!surfacesToRefresh.empty())
+	{
+		refreshNeeded=true;
+		event.signal();
+	}
 }
 
 void RenderThread::deinit()
@@ -519,45 +748,60 @@ void RenderThread::commonGLDeinit()
 	}
 	engineData->exec_glDeleteTextures(1, &cairoTextureID);
 	engineData->exec_glDeleteTextures(1, &cairoTextureIDSettings);
-	engineData->exec_glDeleteTextures(1, &maskTextureID);
 }
 
-void RenderThread::commonGLInit(int width, int height)
+void RenderThread::commonGLInit()
 {
 	//Load shaders
 	loadShaderPrograms();
 	engineData->driverInfoString = engineData->getGLDriverInfo();
+	LOG(LOG_INFO,"graphics driver:"<<engineData->driverInfoString);
+	// TODO set context3dPRofile based on available openGL driver / hardware capabilities?
+	engineData->context3dProfile = m_sys->getUniqueStringId("baseline");
 	engineData->getGlCompressedTextureFormats();
 
 	engineData->exec_glBlendFunc(BLEND_ONE,BLEND_ONE_MINUS_SRC_ALPHA);
 	engineData->exec_glEnable_GL_BLEND();
 
-	engineData->exec_glActiveTexture_GL_TEXTURE0(0);
+	engineData->exec_glActiveTexture_GL_TEXTURE0(SAMPLEPOSITION::SAMPLEPOS_STANDARD);
 	//Viewport setup is left for GLResize
 
 	//Get the maximum allowed texture size, up to 8192
-	int maxTexSize;
-	engineData->exec_glGetIntegerv_GL_MAX_TEXTURE_SIZE(&maxTexSize);
-	assert(maxTexSize>0);
-	largeTextureSize=min(maxTexSize,8192);
+	engineData->exec_glGetIntegerv_GL_MAX_TEXTURE_SIZE(&engineData->maxTextureSize);
+	assert(engineData->maxTextureSize>0);
+	largeTextureSize=min(engineData->maxTextureSize,8192);
 
 	//Set uniforms
 	engineData->exec_glUseProgram(gpu_program);
-	int tex=engineData->exec_glGetUniformLocation(gpu_program,"g_tex1");
+	int tex=engineData->exec_glGetUniformLocation(gpu_program,"g_tex_standard");
 	if(tex!=-1)
-		engineData->exec_glUniform1i(tex,0);
-	tex=engineData->exec_glGetUniformLocation(gpu_program,"g_tex2");
-	if(tex!=-1)
-		engineData->exec_glUniform1i(tex,1);
+		engineData->exec_glUniform1i(tex,SAMPLEPOSITION::SAMPLEPOS_STANDARD);
 
+	// uniform for textures used for blending 
+	tex=engineData->exec_glGetUniformLocation(gpu_program,"g_tex_blend");
+	if(tex!=-1)
+		engineData->exec_glUniform1i(tex,SAMPLEPOSITION::SAMPLEPOS_BLEND);
+
+	// uniform for textures used for filtering 
+	tex=engineData->exec_glGetUniformLocation(gpu_program,"g_tex_filter1");
+	if(tex!=-1)
+		engineData->exec_glUniform1i(tex,SAMPLEPOSITION::SAMPLEPOS_FILTER);
+	tex=engineData->exec_glGetUniformLocation(gpu_program,"g_tex_filter2");
+	if(tex!=-1)
+		engineData->exec_glUniform1i(tex,SAMPLEPOSITION::SAMPLEPOS_FILTER_DST);
+	
 	//The uniform that enables YUV->RGB transform on the texels (needed for video)
 	yuvUniform =engineData->exec_glGetUniformLocation(gpu_program,"yuv");
 	//The uniform that tells the alpha value multiplied to the alpha of every pixel
 	alphaUniform =engineData->exec_glGetUniformLocation(gpu_program,"alpha");
 	//The uniform that tells to draw directly using the selected color
 	directUniform =engineData->exec_glGetUniformLocation(gpu_program,"direct");
-	//The uniform that indicates if the object to be rendered has a mask (1) or not (0)
+	//The uniform that indicates if the object to be rendered is ca mask (1) or not (0)
 	maskUniform =engineData->exec_glGetUniformLocation(gpu_program,"mask");
+	//The uniform that indicates if this is the first filter (1), or not (0)
+	isFirstFilterUniform =engineData->exec_glGetUniformLocation(gpu_program,"isFirstFilter");
+	//The uniform that indicates if we are rendering the result of stage3D (1) or not (0)
+	renderStage3DUniform =engineData->exec_glGetUniformLocation(gpu_program,"renderStage3D");
 	//The uniform that contains the coordinate matrix
 	projectionMatrixUniform =engineData->exec_glGetUniformLocation(gpu_program,"ls_ProjectionMatrix");
 	modelviewMatrixUniform =engineData->exec_glGetUniformLocation(gpu_program,"ls_ModelViewMatrix");
@@ -565,16 +809,15 @@ void RenderThread::commonGLInit(int width, int height)
 	colortransMultiplyUniform=engineData->exec_glGetUniformLocation(gpu_program,"colorTransformMultiply");
 	colortransAddUniform=engineData->exec_glGetUniformLocation(gpu_program,"colorTransformAdd");
 	directColorUniform=engineData->exec_glGetUniformLocation(gpu_program,"directColor");
+	blendModeUniform=engineData->exec_glGetUniformLocation(gpu_program,"blendMode");
+	filterdataUniform = engineData->exec_glGetUniformLocation(gpu_program,"filterdata");
+	gradientcolorsUniform = engineData->exec_glGetUniformLocation(gpu_program,"gradientcolors");
 
 	//Texturing must be enabled otherwise no tex coord will be sent to the shaders
 	engineData->exec_glEnable_GL_TEXTURE_2D();
 
 	engineData->exec_glGenTextures(1, &cairoTextureID);
 	engineData->exec_glGenTextures(1, &cairoTextureIDSettings);
-
-	// create framebuffer for masks
-	maskframebuffer = engineData->exec_glGenFramebuffer();
-	engineData->exec_glGenTextures(1, &maskTextureID);
 
 	if(handleGLErrors())
 	{
@@ -586,6 +829,11 @@ void RenderThread::commonGLResize()
 {
 	m_sys->stageCoordinateMapping(windowWidth, windowHeight, offsetX, offsetY, scaleX, scaleY);
 	engineData->exec_glViewport(0,0,windowWidth,windowHeight);
+	//Clear the back buffer
+	RGB bg=m_sys->mainClip->getBackground();
+	engineData->exec_glClearColor(bg.Red/255.0F,bg.Green/255.0F,bg.Blue/255.0F,1);
+	engineData->exec_glClear(CLEARMASK(CLEARMASK::COLOR|CLEARMASK::DEPTH|CLEARMASK::STENCIL));
+	
 	if (cairoTextureContext)
 	{
 		cairo_destroy(cairoTextureContext);
@@ -604,20 +852,12 @@ void RenderThread::commonGLResize()
 	lsglScalef(1.0,-1.0,1);
 	setMatrixUniform(LSGL_PROJECTION);
 
-	// setup mask framebuffer
-	engineData->exec_glActiveTexture_GL_TEXTURE0(1);
-	engineData->exec_glBindTexture_GL_TEXTURE_2D(maskTextureID);
-	engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(maskframebuffer);
-	engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MIN_FILTER_GL_NEAREST();
-	engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MAG_FILTER_GL_NEAREST();
-	engineData->exec_glFramebufferTexture2D_GL_FRAMEBUFFER(maskTextureID);
-	engineData->exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_BYTE(0, windowWidth,windowHeight, 0, nullptr,true);
-	engineData->exec_glViewport(0,0,windowWidth,windowHeight);
-	engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(0);
-	engineData->exec_glActiveTexture_GL_TEXTURE0(0);
-	engineData->exec_glBindTexture_GL_TEXTURE_2D(0);
 	engineData->exec_glDisable_GL_DEPTH_TEST();
 	engineData->exec_glDisable_GL_STENCIL_TEST();
+
+	engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(0);
+	engineData->exec_glActiveTexture_GL_TEXTURE0(SAMPLEPOSITION::SAMPLEPOS_STANDARD);
+	engineData->exec_glBindTexture_GL_TEXTURE_2D(0);
 }
 
 void RenderThread::requestResize(uint32_t w, uint32_t h, bool force)
@@ -643,8 +883,20 @@ void RenderThread::requestResize(uint32_t w, uint32_t h, bool force)
 	else if (newHeight == 0)
 		newHeight=windowHeight;
 	resizeNeeded=true;
-	m_sys->stage->incRef();
-	getVm(m_sys)->addEvent(_MR(m_sys->stage),_MR(Class<Event>::getInstanceS(m_sys->worker,"resize")));
+	if (m_sys->stage->nativeWindow && (newWidth != m_sys->getEngineData()->old_width || newHeight != m_sys->getEngineData()->old_height))
+	{
+		Rectangle *rectBefore=Class<Rectangle>::getInstanceS(m_sys->worker);
+		rectBefore->x = m_sys->getEngineData()->old_x;
+		rectBefore->y = m_sys->getEngineData()->old_y;
+		rectBefore->width = m_sys->getEngineData()->old_width;
+		rectBefore->height = m_sys->getEngineData()->old_height;
+		Rectangle *rectAfter=Class<Rectangle>::getInstanceS(m_sys->worker);
+		rectAfter->x = m_sys->getEngineData()->x;
+		rectAfter->y = m_sys->getEngineData()->y;
+		rectAfter->width = newWidth;
+		rectAfter->height = newHeight;
+		getVm(m_sys)->addEvent(_MR(m_sys->stage->nativeWindow),_MR(Class<NativeWindowBoundsEvent>::getInstanceS(m_sys->worker,"resizing",_MR(rectBefore),_MR(rectAfter))));
+	}
 	
 	event.signal();
 }
@@ -763,9 +1015,192 @@ void RenderThread::plotProfilingData()
 
 }
 
-bool RenderThread::coreRendering()
+void RenderThread::drawDebugPoint(const Vector2f& pos)
+{
+	lsglLoadIdentity();
+	lsglScalef(1.0f,1.0f,1);
+	lsglTranslatef(-offsetX,-offsetY,0);
+	MATRIX mt;
+	mt.scale(scaleX, scaleY);
+	mt.translate(offsetX,offsetY);
+
+	setMatrixUniform(LSGL_MODELVIEW);
+
+	cairo_t *cr = getCairoContext(windowWidth, windowHeight);
+
+	MATRIX m;
+	cairo_get_matrix(cr, &m);
+	cairo_set_matrix(cr, &mt);
+	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+	cairo_set_source_rgb(cr, 1, 0, 1);
+	cairo_set_line_width(cr, 1);
+	cairo_rectangle(cr, pos.x-2, pos.y-2, 4, 4);
+	cairo_fill(cr);
+	
+
+	engineData->exec_glUniform1f(directUniform, 0);
+	engineData->exec_glUniform1f(alphaUniform, 1);
+	engineData->exec_glUniform4f(colortransMultiplyUniform, 1.0,1.0,1.0,1.0);
+	engineData->exec_glUniform4f(colortransAddUniform, 0.0,0.0,0.0,0.0);
+	mapCairoTexture(windowWidth, windowHeight);
+
+	cairo_set_matrix(cr, &m);
+	cairo_save(cr);
+	cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+	cairo_paint(cr);
+	cairo_restore(cr);
+}
+
+void RenderThread::drawDebugLine(const Vector2f &a, const Vector2f &b)
+{
+	//Locker l(mutexRendering);
+	lsglLoadIdentity();
+	lsglScalef(1.0f,1.0f,1);
+	lsglTranslatef(-offsetX,-offsetY,0);
+	MATRIX stageMatrix;
+	stageMatrix.scale(scaleX, scaleY);
+	stageMatrix.translate(offsetX,offsetY);
+
+	setMatrixUniform(LSGL_MODELVIEW);
+
+	cairo_t *cr = getCairoContext(windowWidth, windowHeight);
+
+	MATRIX m;
+	cairo_get_matrix(cr, &m);
+	cairo_set_matrix(cr, &stageMatrix);
+
+	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+	cairo_set_source_rgb(cr, 0, 1, 0);
+	cairo_set_line_width(cr, 2);
+	cairo_move_to(cr, a.x, a.y);
+	cairo_line_to(cr, b.x, b.y);
+	cairo_close_path(cr);
+	cairo_stroke(cr);
+	
+
+	engineData->exec_glUniform1f(directUniform, 0);
+	engineData->exec_glUniform1f(alphaUniform, 1);
+	engineData->exec_glUniform4f(colortransMultiplyUniform, 1.0,1.0,1.0,1.0);
+	engineData->exec_glUniform4f(colortransAddUniform, 0.0,0.0,0.0,0.0);
+	mapCairoTexture(windowWidth, windowHeight);
+
+	cairo_set_matrix(cr, &m);
+	cairo_save(cr);
+	cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+	cairo_paint(cr);
+	cairo_restore(cr);
+}
+
+void RenderThread::drawDebugRect(float x, float y, float width, float height, const MATRIX &matrix, bool onlyTranslate)
+{
+	lsglLoadIdentity();
+	lsglScalef(1.0f,1.0f,1);
+	lsglTranslatef(-offsetX,-offsetY,0);
+	MATRIX mt = matrix;
+	if (onlyTranslate)
+	{
+		auto tx = mt.x0;
+		auto ty = mt.y0;
+		mt = MATRIX();
+		mt.x0 = tx;
+		mt.y0 = ty;
+	}
+	mt.scale(scaleX, scaleY);
+	mt.translate(offsetX,offsetY);
+
+	setMatrixUniform(LSGL_MODELVIEW);
+
+	cairo_t *cr = getCairoContext(windowWidth, windowHeight);
+
+	MATRIX m;
+	cairo_get_matrix(cr, &m);
+	cairo_set_matrix(cr, &mt);
+	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+	cairo_set_source_rgb(cr, 0.0, 0.5, 1);
+	cairo_set_line_width(cr, 1);
+	cairo_rectangle(cr, x, y, width, height);
+	cairo_stroke(cr);
+	
+
+	engineData->exec_glUniform1f(directUniform, 0);
+	engineData->exec_glUniform1f(alphaUniform, 1);
+	engineData->exec_glUniform4f(colortransMultiplyUniform, 1.0,1.0,1.0,1.0);
+	engineData->exec_glUniform4f(colortransAddUniform, 0.0,0.0,0.0,0.0);
+	mapCairoTexture(windowWidth, windowHeight);
+
+	cairo_set_matrix(cr, &m);
+	cairo_save(cr);
+	cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+	cairo_paint(cr);
+	cairo_restore(cr);
+}
+
+void RenderThread::drawDebugText(const tiny_string& str, const Vector2f& pos)
+{
+	std::list<tiny_string> lines = str.split('\n');
+	lsglLoadIdentity();
+	lsglScalef(1.0f,1.0f,1);
+	lsglTranslatef(-offsetX,-offsetY,0);
+	Vector2f realPos = Vector2f(pos.x * scaleX, pos.y * scaleY) + Vector2f(offsetX, offsetY);
+	cairo_t *cr = getCairoContext(windowWidth, windowHeight);
+
+	cairo_set_source_rgb(cr, 0.8, 0.8, 0.8);
+	for (auto it : lines)
+	{
+		cairo_move_to(cr, realPos.x, realPos.y);
+		cairo_save(cr);
+		cairo_show_text(cr, it.raw_buf());
+		cairo_restore(cr);
+		realPos.y += 20;
+	}
+
+	engineData->exec_glUniform1f(directUniform, 0);
+	engineData->exec_glUniform1f(alphaUniform, 1);
+	engineData->exec_glUniform4f(colortransMultiplyUniform, 1.0,1.0,1.0,1.0);
+	engineData->exec_glUniform4f(colortransAddUniform, 0.0,0.0,0.0,0.0);
+	mapCairoTexture(windowWidth, windowHeight);
+	cairo_restore(cr);
+	cairo_save(cr);
+	cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+	cairo_paint(cr);
+	cairo_restore(cr);
+
+}
+
+void RenderThread::addDebugRect(DisplayObject* obj, const MATRIX& matrix, bool scaleDown, const Vector2f& pos, const Vector2f& size, bool onlyTranslate)
+{
+	MATRIX _matrix = matrix;
+	Vector2f _size = size;
+	if (obj != nullptr)
+	{
+		number_t bxmin, bxmax, bymin, bymax;
+		obj->getBounds(bxmin, bxmax, bymin, bymax, MATRIX(), false);
+		if (_size == Vector2f())
+		{
+;			float width = bxmin < 0 ? -bxmin+bxmax : bxmax-bxmin;
+			float height = bymin < 0 ? -bymin+bymax : bymax-bymin;
+			_size = Vector2f(width, height);
+		}
+		_matrix.translate(bxmin,bymin);
+	}
+	if (scaleDown)
+		_matrix.scale(1/scaleX, 1/scaleY);
+	if (_size != Vector2f())
+		debugRects.push_back(DebugRect { obj, _matrix, pos, _size, onlyTranslate });
+}
+
+void RenderThread::removeDebugRect()
+{
+	if (!debugRects.empty())
+		debugRects.pop_back();
+}
+
+void RenderThread::coreRendering()
 {
 	Locker l(mutexRendering);
+	baseFramebuffer=0;
+	baseRenderbuffer=0;
+	flipvertical=true;
 	engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(0);
 	engineData->exec_glFrontFace(false);
 	engineData->exec_glDrawBuffer_GL_BACK();
@@ -774,19 +1209,30 @@ bool RenderThread::coreRendering()
 		//Clear the back buffer
 		RGB bg=m_sys->mainClip->getBackground();
 		engineData->exec_glClearColor(bg.Red/255.0F,bg.Green/255.0F,bg.Blue/255.0F,1);
-		engineData->exec_glClear_GL_COLOR_BUFFER_BIT();
+		engineData->exec_glClear(CLEARMASK(CLEARMASK::COLOR|CLEARMASK::DEPTH|CLEARMASK::STENCIL));
 	}
 	engineData->exec_glUseProgram(gpu_program);
 	lsglLoadIdentity();
 	setMatrixUniform(LSGL_MODELVIEW);
+	Vector2f scale = getScale();
+	MATRIX initialMatrix;
+	initialMatrix.scale(scale.x, scale.y);
+	m_sys->stage->render(*this,&initialMatrix);
 
-	bool ret = m_sys->stage->Render(*this);
+	for (auto it : debugRects)
+		drawDebugRect(it.pos.x, it.pos.y, it.size.x, it.size.y, it.matrix, it.onlyTranslate);
+	debugRects.clear();
 
 	if(m_sys->showProfilingData)
 		plotProfilingData();
 
+	while (!texturesToDelete.empty())
+	{
+		uint32_t id = texturesToDelete.front();
+		engineData->exec_glDeleteTextures(1,&id);
+		texturesToDelete.pop_front();
+	}
 	handleGLErrors();
-	return ret;
 }
 
 //Renders the error message which caused the VM to stop.
@@ -894,6 +1340,7 @@ void RenderThread::draw(bool force)
 		LOG(LOG_INFO,"FPS: " << dec << frameCount<<" "<<(getVm(m_sys) ? getVm(m_sys)->getEventQueueSize() : 0));
 		frameCount=0;
 		secsCount++;
+		m_sys->stage->cleanupRemovedDisplayObjects();
 	}
 	else
 		frameCount++;
@@ -943,15 +1390,20 @@ uint32_t RenderThread::allocateNewGLTexture() const
 	return tmp;
 }
 
-RenderThread::LargeTexture& RenderThread::allocateNewTexture()
+RenderThread::LargeTexture& RenderThread::allocateNewTexture(bool direct)
 {
-	//Signal that a new texture is needed
-	newTextureNeeded=true;
+	if (!direct)
+	{
+		//Signal that a new texture is needed
+		newTextureNeeded=true;
+	}
 	//Let's allocate the bitmap for the texture blocks, minumum block size is CHUNKSIZE
 	uint32_t bitmapSize=(largeTextureSize/CHUNKSIZE)*(largeTextureSize/CHUNKSIZE)/8;
 	uint8_t* bitmap=new uint8_t[bitmapSize];
 	memset(bitmap,0,bitmapSize);
 	largeTextures.emplace_back(bitmap);
+	if (direct)
+		handleNewTexture();
 	return largeTextures.back();
 }
 
@@ -1041,7 +1493,7 @@ bool RenderThread::allocateChunkOnTextureSparse(LargeTexture& tex, TextureChunk&
 	}
 }
 
-TextureChunk RenderThread::allocateTexture(uint32_t w, uint32_t h, bool compact)
+TextureChunk RenderThread::allocateTexture(uint32_t w, uint32_t h, bool compact, bool direct)
 {
 	assert(w && h);
 	Locker l(mutexLargeTexture);
@@ -1071,7 +1523,7 @@ TextureChunk RenderThread::allocateTexture(uint32_t w, uint32_t h, bool compact)
 		}
 	}
 	//No place found, allocate a new one and try on that
-	LargeTexture& tex=allocateNewTexture();
+	LargeTexture& tex=allocateNewTexture(direct);
 	bool done;
 	if(compact)
 		done=allocateChunkOnTextureCompact(tex, ret, blocksW, blocksH);
@@ -1080,7 +1532,7 @@ TextureChunk RenderThread::allocateTexture(uint32_t w, uint32_t h, bool compact)
 	if(!done)
 	{
 		//We were not able to allocate the whole surface on a single page
-		LOG(LOG_NOT_IMPLEMENTED,"Support multi page surface allocation");
+		LOG(LOG_NOT_IMPLEMENTED,"Support multi page surface allocation:"<<w<<"x"<<h);
 		ret.makeEmpty();
 	}
 	else
@@ -1093,6 +1545,7 @@ void RenderThread::loadChunkBGRA(const TextureChunk& chunk, uint32_t w, uint32_t
 	//Fast bailout if the TextureChunk is not valid
 	if(chunk.chunks==nullptr || data == nullptr)
 		return;
+	engineData->exec_glActiveTexture_GL_TEXTURE0(SAMPLEPOSITION::SAMPLEPOS_STANDARD);
 	engineData->exec_glBindTexture_GL_TEXTURE_2D(largeTextures[chunk.texId].id);
 	//TODO: Detect continuos
 	//The size is ok if doesn't grow over the allocated size
@@ -1137,3 +1590,23 @@ void RenderThread::loadChunkBGRA(const TextureChunk& chunk, uint32_t w, uint32_t
 		engineData->exec_glTexSubImage2D_GL_TEXTURE_2D(0, blockX, blockY, sizeX, sizeY, data_clamp);
 	}
 }
+void RenderThread::renderDisplayObjectToBimapContainer(_NR<DisplayObject> o, const MATRIX &initialMatrix, bool smoothing, AS_BLENDMODE blendMode, ColorTransformBase *ct, _NR<BitmapContainer> bm)
+{
+	if(m_sys->isShuttingDown())
+		return;
+	mutexRenderToBitmapContainer.lock();
+	RenderDisplayObjectToBitmapContainer r;
+	r.cachedsurface = o->getCachedSurface();
+	r.initialMatrix = initialMatrix;
+	r.bitmapcontainer = bm;
+	r.smoothing = smoothing;
+	r.blendMode = blendMode;
+	r.ct = ct;
+	o->invalidateForRenderToBitmap(&r);
+	displayobjectsToRender.push_back(r);
+	renderToBitmapContainerNeeded=true;
+	mutexRenderToBitmapContainer.unlock();
+	event.signal();
+	bm->renderevent.wait(); // wait until render thread has completed rendering to BitmapContainer
+}
+

@@ -211,7 +211,7 @@
 
 /* registers getter/setter with Class_base. To be used in ::sinit()-functions */
 #define REGISTER_GETTER_RESULTTYPE(c,name,cls) \
-	c->setDeclaredMethodByQName(#name,"",Class<IFunction>::getFunction(c->getSystemState(),_getter_##name,0,Class<cls>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true)
+	c->setDeclaredMethodByQName(#name,"",c->getSystemState()->getBuiltinFunction(_getter_##name,0,Class<cls>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true)
 
 
 #define REGISTER_GETTER_SETTER_RESULTTYPE(c,name,cls) \
@@ -219,23 +219,23 @@
 		REGISTER_SETTER(c,name)
 
 #define REGISTER_GETTER(c,name) \
-	c->setDeclaredMethodByQName(#name,"",Class<IFunction>::getFunction(c->getSystemState(),_getter_##name),GETTER_METHOD,true)
+	c->setDeclaredMethodByQName(#name,"",c->getSystemState()->getBuiltinFunction(_getter_##name),GETTER_METHOD,true)
 
 #define REGISTER_SETTER(c,name) \
-	c->setDeclaredMethodByQName(#name,"",Class<IFunction>::getFunction(c->getSystemState(),_setter_##name),SETTER_METHOD,true)
+	c->setDeclaredMethodByQName(#name,"",c->getSystemState()->getBuiltinFunction(_setter_##name),SETTER_METHOD,true)
 
 #define REGISTER_GETTER_SETTER(c,name) \
 		REGISTER_GETTER(c,name); \
 		REGISTER_SETTER(c,name)
 
 #define REGISTER_GETTER_STATIC(c,name) \
-	c->setDeclaredMethodByQName(#name,"",Class<IFunction>::getFunction(c->getSystemState(),_getter_##name),GETTER_METHOD,false)
+	c->setDeclaredMethodByQName(#name,"",c->getSystemState()->getBuiltinFunction(_getter_##name),GETTER_METHOD,false)
 
 #define REGISTER_SETTER_STATIC(c,name) \
-	c->setDeclaredMethodByQName(#name,"",Class<IFunction>::getFunction(c->getSystemState(),_setter_##name),SETTER_METHOD,false)
+	c->setDeclaredMethodByQName(#name,"",c->getSystemState()->getBuiltinFunction(_setter_##name),SETTER_METHOD,false)
 
 #define REGISTER_GETTER_STATIC_RESULTTYPE(c,name,cls) \
-	c->setDeclaredMethodByQName(#name,"",Class<IFunction>::getFunction(c->getSystemState(),_getter_##name,0,Class<cls>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false)
+	c->setDeclaredMethodByQName(#name,"",c->getSystemState()->getBuiltinFunction(_getter_##name,0,Class<cls>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false)
 
 #define REGISTER_GETTER_SETTER_STATIC(c,name) \
 		REGISTER_GETTER_STATIC(c,name); \
@@ -258,11 +258,11 @@
 
 #define CLASS_SETUP(c, superClass, constructor, attributes) \
 	CLASS_SETUP_NO_CONSTRUCTOR(c, superClass, attributes); \
-	c->setConstructor(Class<IFunction>::getFunction(c->getSystemState(),constructor));
+	c->setConstructor(c->getSystemState()->getBuiltinFunction(constructor));
 
 #define CLASS_SETUP_CONSTRUCTOR_LENGTH(c, superClass, constructor, ctorlength, attributes) \
 	CLASS_SETUP_NO_CONSTRUCTOR(c, superClass, attributes); \
-	c->setConstructor(Class<IFunction>::getFunction(c->getSystemState(),(constructor), (ctorlength)));
+	c->setConstructor(c->getSystemState()->getBuiltinFunction((constructor), (ctorlength)));
 
 using namespace std;
 namespace lightspark
@@ -541,8 +541,8 @@ public:
 	static FORCE_INLINE void setNull(asAtom& a);
 	static FORCE_INLINE void setUndefined(asAtom& a);
 	static void setFunction(asAtom& a, ASObject* obj, ASObject* closure, ASWorker* wrk);
-	static FORCE_INLINE void increment(asAtom& a, ASWorker* wrk);
-	static FORCE_INLINE void decrement(asAtom& a, ASWorker* wrk);
+	static FORCE_INLINE bool increment(asAtom& a, ASWorker* wrk, bool replace);
+	static FORCE_INLINE bool decrement(asAtom& a, ASWorker* wrk, bool refplace);
 	static FORCE_INLINE void increment_i(asAtom& a, ASWorker* wrk, int32_t amount=1);
 	static FORCE_INLINE void decrement_i(asAtom& a, ASWorker* wrk, int32_t amount=1);
 	static bool add(asAtom& a, asAtom& v2, ASWorker *wrk, bool forceint);
@@ -592,7 +592,7 @@ struct variable
 	union
 	{
 		multiname* traitTypemname;
-		const Type* type;
+		Type* type;
 		void* typeUnion;
 	};
 	asAtom setter;
@@ -606,14 +606,14 @@ struct variable
 	bool isrefcounted:1;
 	variable(TRAIT_KIND _k,const nsNameAndKind& _ns)
 		: var(asAtomHandler::invalidAtom),typeUnion(nullptr),setter(asAtomHandler::invalidAtom),getter(asAtomHandler::invalidAtom),ns(_ns),slotid(0),kind(_k),isResolved(false),isenumerable(true),issealed(false),isrefcounted(true) {}
-	variable(TRAIT_KIND _k, asAtom _v, multiname* _t, const Type* type, const nsNameAndKind &_ns, bool _isenumerable);
+	variable(TRAIT_KIND _k, asAtom _v, multiname* _t, Type* type, const nsNameAndKind &_ns, bool _isenumerable);
 	void setVar(ASWorker* wrk, asAtom v, bool _isrefcounted = true);
 	/*
 	 * To be used only if the value is guaranteed to be of the right type
 	 */
 	void setVarNoCoerce(asAtom &v);
 
-	void setResultType(const Type* t)
+	void setResultType(Type* t)
 	{
 		isResolved=true;
 		type=t;
@@ -1145,16 +1145,20 @@ public:
 	 */
 	void initializeVariableByMultiname(multiname &name, asAtom& o, multiname* typemname,
 			ABCContext* context, TRAIT_KIND traitKind, uint32_t slot_id, bool isenumerable);
-	virtual bool deleteVariableByMultiname(const multiname& name, ASWorker* wrk);
+	virtual bool deleteVariableByMultiname(const multiname& name, ASWorker* wrk)
+	{
+		return deleteVariableByMultiname_intern(name, wrk);
+	}
+	bool deleteVariableByMultiname_intern(const multiname& name, ASWorker* wrk);
 	void setVariableByQName(const tiny_string& name, const tiny_string& ns, ASObject* o, TRAIT_KIND traitKind, bool isEnumerable = true);
 	void setVariableByQName(const tiny_string& name, const nsNameAndKind& ns, ASObject* o, TRAIT_KIND traitKind, bool isEnumerable = true);
 	variable *setVariableByQName(uint32_t nameId, const nsNameAndKind& ns, ASObject* o, TRAIT_KIND traitKind, bool isEnumerable = true);
 	variable *setVariableAtomByQName(const tiny_string& name, const nsNameAndKind& ns, asAtom o, TRAIT_KIND traitKind, bool isEnumerable = true);
 	variable *setVariableAtomByQName(uint32_t nameId, const nsNameAndKind& ns, asAtom o, TRAIT_KIND traitKind, bool isEnumerable = true, bool isRefcounted = true);
 	//NOTE: the isBorrowed flag is used to distinguish methods/setters/getters that are inside a class but on behalf of the instances
-	void setDeclaredMethodByQName(const tiny_string& name, const tiny_string& ns, IFunction* o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
-	void setDeclaredMethodByQName(const tiny_string& name, const nsNameAndKind& ns, IFunction* o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
-	void setDeclaredMethodByQName(uint32_t nameId, const nsNameAndKind& ns, IFunction* o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
+	void setDeclaredMethodByQName(const tiny_string& name, const tiny_string& ns, ASObject* o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
+	void setDeclaredMethodByQName(const tiny_string& name, const nsNameAndKind& ns, ASObject* o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
+	void setDeclaredMethodByQName(uint32_t nameId, const nsNameAndKind& ns, ASObject* o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
 	void setDeclaredMethodAtomByQName(const tiny_string& name, const tiny_string& ns, asAtom o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
 	void setDeclaredMethodAtomByQName(const tiny_string& name, const nsNameAndKind& ns, asAtom o, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
 	void setDeclaredMethodAtomByQName(uint32_t nameId, const nsNameAndKind& ns, asAtom f, METHOD_TYPE type, bool isBorrowed, bool isEnumerable = true);
@@ -1280,11 +1284,15 @@ public:
 	virtual void nextValue(asAtom &ret, uint32_t index);
 
 	//Called when the object construction is completed. Used by MovieClip implementation
-	inline virtual void constructionComplete()
+	inline virtual void constructionComplete(bool _explicit = false)
+	{
+	}
+	// Called before the object's ActionScript constructor is executed. Mainly used by MovieClip, and DisplayObject.
+	inline virtual void beforeConstruction(bool _explicit = false)
 	{
 	}
 	//Called after the object Actionscript constructor was executed. Used by MovieClip implementation
-	inline virtual void afterConstruction()
+	inline virtual void afterConstruction(bool _explicit = false)
 	{
 	}
 
@@ -1397,16 +1405,21 @@ FORCE_INLINE void variable::setVarNoCoerce(asAtom &v)
 }
 
 
-class AVM1Function;
 class Activation_object;
 class ApplicationDomain;
+class ArgumentError;
 class Array;
 class ASCondition;
+class ASError;
 class ASFile;
 class ASMutex;
 class ASQName;
 class ASString;
 class ASWorker;
+class AVM1Function;
+class AVM1MovieClip;
+class AVM1MovieClipLoader;
+class AVM1Sound;
 class BevelFilter;
 class Bitmap;
 class BitmapData;
@@ -1426,12 +1439,15 @@ class ContextMenuEvent;
 class CubeTexture;
 class DatagramSocket;
 class Date;
+class DefinitionError;
 class Dictionary;
 class DisplacementFilter;
 class DisplayObject;
 class DisplayObjectContainer;
 class DropShadowFilter;
+class EastAsianJustifier;
 class ElementFormat;
+class EvalError;
 class Event;
 class ExtensionContext;
 class FileMode;
@@ -1446,11 +1462,16 @@ class Global;
 class GlowFilter;
 class GradientGlowFilter;
 class GradientBevelFilter;
+class GraphicsEndFill;
+class GraphicsPath;
+class GraphicsSolidFill;
 class IFunction;
 class Integer;
 class InteractiveObject;
 class IndexBuffer3D;
 class KeyboardEvent;
+class LocalConnection;
+class Loader;
 class LoaderContext;
 class LoaderInfo;
 class Matrix;
@@ -1461,6 +1482,7 @@ class MouseEvent;
 class MovieClip;
 class Namespace;
 class NativeWindow;
+class NativeWindowBoundsEvent;
 class NetStream;
 class Null;
 class Number;
@@ -1469,37 +1491,47 @@ class Point;
 class Program3D;
 class ProgressEvent;
 class Proxy;
+class RangeError;
 class Rectangle;
 class RectangleTexture;
+class ReferenceError;
 class RegExp;
 class RootMovieClip;
 class SampleDataEvent;
+class SecurityError;
 class ShaderFilter;
 class SharedObject;
 class Shape;
 class SimpleButton;
 class Sound;
 class SoundChannel;
+class SpaceJustifier;
 class Sprite;
 class Stage;
 class Stage3D;
+class SyntaxError;
 class Template_base;
 class TextBlock;
 class TextElement;
 class TextField;
 class TextFormat;
+class TextJustifier;
 class TextLine;
 class TextLineMetrics;
 class Texture;
 class TextureBase;
 class ThrottleEvent;
 class Type;
+class TypeError;
 class UInteger;
 class Undefined;
+class UninitializedError;
+class URIError;
 class URLLoader;
 class URLRequest;
 class Vector;
 class Vector3D;
+class VerifyError;
 class VertexBuffer3D;
 class Video;
 class VideoTexture;
@@ -1513,17 +1545,23 @@ class XMLList;
 
 // this is used to avoid calls to dynamic_cast when testing for some classes
 // keep in mind that when adding a class here you have to take care of the class inheritance and add the new SUBTYPE_ to all apropriate is<> methods 
-template<> inline bool ASObject::is<AVM1Function>() const { return subtype==SUBTYPE_AVM1FUNCTION; }
 template<> inline bool ASObject::is<Activation_object>() const { return subtype==SUBTYPE_ACTIVATIONOBJECT; }
 template<> inline bool ASObject::is<ApplicationDomain>() const { return subtype==SUBTYPE_APPLICATIONDOMAIN; }
+template<> inline bool ASObject::is<ArgumentError>() const { return subtype==SUBTYPE_ARGUMENTERROR; }
 template<> inline bool ASObject::is<Array>() const { return type==T_ARRAY; }
 template<> inline bool ASObject::is<ASCondition>() const { return subtype==SUBTYPE_CONDITION; }
+template<> inline bool ASObject::is<ASError>() const { return subtype==SUBTYPE_ERROR || subtype==SUBTYPE_SECURITYERROR || subtype==SUBTYPE_ARGUMENTERROR || subtype==SUBTYPE_DEFINITIONERROR || subtype==SUBTYPE_EVALERROR || subtype==SUBTYPE_RANGEERROR || subtype==SUBTYPE_REFERENCEERROR || subtype==SUBTYPE_SYNTAXERROR || subtype==SUBTYPE_TYPEERROR || subtype==SUBTYPE_URIERROR || subtype==SUBTYPE_VERIFYERROR || subtype==SUBTYPE_UNINITIALIZEDERROR; }
 template<> inline bool ASObject::is<ASFile>() const { return subtype==SUBTYPE_FILE; }
 template<> inline bool ASObject::is<ASMutex>() const { return subtype==SUBTYPE_MUTEX; }
 template<> inline bool ASObject::is<ASObject>() const { return true; }
 template<> inline bool ASObject::is<ASQName>() const { return type==T_QNAME; }
 template<> inline bool ASObject::is<ASString>() const { return type==T_STRING; }
 template<> inline bool ASObject::is<ASWorker>() const { return subtype==SUBTYPE_WORKER; }
+template<> inline bool ASObject::is<AVM1Function>() const { return subtype==SUBTYPE_AVM1FUNCTION; }
+template<> inline bool ASObject::is<AVM1Movie>() const { return subtype == SUBTYPE_AVM1MOVIE; }
+template<> inline bool ASObject::is<AVM1MovieClip>() const { return subtype == SUBTYPE_AVM1MOVIECLIP; }
+template<> inline bool ASObject::is<AVM1MovieClipLoader>() const { return subtype == SUBTYPE_AVM1MOVIECLIPLOADER; }
+template<> inline bool ASObject::is<AVM1Sound>() const { return subtype == SUBTYPE_AVM1SOUND; }
 template<> inline bool ASObject::is<BevelFilter>() const { return subtype==SUBTYPE_BEVELFILTER; }
 template<> inline bool ASObject::is<Bitmap>() const { return subtype==SUBTYPE_BITMAP; }
 template<> inline bool ASObject::is<BitmapData>() const { return subtype==SUBTYPE_BITMAPDATA; }
@@ -1544,13 +1582,16 @@ template<> inline bool ASObject::is<ConvolutionFilter>() const { return subtype=
 template<> inline bool ASObject::is<CubeTexture>() const { return subtype==SUBTYPE_CUBETEXTURE; }
 template<> inline bool ASObject::is<Date>() const { return subtype==SUBTYPE_DATE; }
 template<> inline bool ASObject::is<DatagramSocket>() const { return subtype==SUBTYPE_DATAGRAMSOCKET; }
+template<> inline bool ASObject::is<DefinitionError>() const { return subtype==SUBTYPE_DEFINITIONERROR; }
 template<> inline bool ASObject::is<Dictionary>() const { return subtype==SUBTYPE_DICTIONARY; }
 template<> inline bool ASObject::is<DisplacementFilter>() const { return subtype==SUBTYPE_DISPLACEMENTFILTER; }
-template<> inline bool ASObject::is<DisplayObject>() const { return subtype==SUBTYPE_DISPLAYOBJECT || subtype==SUBTYPE_INTERACTIVE_OBJECT || subtype==SUBTYPE_TEXTFIELD || subtype==SUBTYPE_BITMAP || subtype==SUBTYPE_DISPLAYOBJECTCONTAINER || subtype==SUBTYPE_STAGE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype==SUBTYPE_SPRITE || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_TEXTLINE || subtype == SUBTYPE_VIDEO || subtype == SUBTYPE_SIMPLEBUTTON || subtype == SUBTYPE_SHAPE || subtype == SUBTYPE_MORPHSHAPE; }
-template<> inline bool ASObject::is<DisplayObjectContainer>() const { return subtype==SUBTYPE_DISPLAYOBJECTCONTAINER || subtype==SUBTYPE_STAGE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype==SUBTYPE_SPRITE || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_TEXTLINE || subtype == SUBTYPE_SIMPLEBUTTON; }
+template<> inline bool ASObject::is<DisplayObject>() const { return subtype==SUBTYPE_DISPLAYOBJECT || subtype==SUBTYPE_INTERACTIVE_OBJECT || subtype==SUBTYPE_TEXTFIELD || subtype==SUBTYPE_BITMAP || subtype==SUBTYPE_DISPLAYOBJECTCONTAINER || subtype==SUBTYPE_STAGE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype==SUBTYPE_SPRITE || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_TEXTLINE || subtype == SUBTYPE_VIDEO || subtype == SUBTYPE_SIMPLEBUTTON || subtype == SUBTYPE_SHAPE || subtype == SUBTYPE_MORPHSHAPE || subtype==SUBTYPE_LOADER || subtype == SUBTYPE_AVM1MOVIECLIP || subtype == SUBTYPE_AVM1MOVIE; }
+template<> inline bool ASObject::is<DisplayObjectContainer>() const { return subtype==SUBTYPE_DISPLAYOBJECTCONTAINER || subtype==SUBTYPE_STAGE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype==SUBTYPE_SPRITE || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_TEXTLINE || subtype == SUBTYPE_SIMPLEBUTTON || subtype==SUBTYPE_LOADER || subtype == SUBTYPE_AVM1MOVIECLIP || subtype == SUBTYPE_AVM1MOVIE; }
 template<> inline bool ASObject::is<DropShadowFilter>() const { return subtype==SUBTYPE_DROPSHADOWFILTER; }
+template<> inline bool ASObject::is<EastAsianJustifier>() const { return subtype==SUBTYPE_EASTASIANJUSTIFIER; }
 template<> inline bool ASObject::is<ElementFormat>() const { return subtype==SUBTYPE_ELEMENTFORMAT; }
-template<> inline bool ASObject::is<Event>() const { return subtype==SUBTYPE_EVENT || subtype==SUBTYPE_WAITABLE_EVENT || subtype==SUBTYPE_PROGRESSEVENT || subtype==SUBTYPE_KEYBOARD_EVENT || subtype==SUBTYPE_MOUSE_EVENT || subtype==SUBTYPE_SAMPLEDATA_EVENT || subtype == SUBTYPE_THROTTLE_EVENT || subtype == SUBTYPE_CONTEXTMENUEVENT || subtype == SUBTYPE_GAMEINPUTEVENT; }
+template<> inline bool ASObject::is<EvalError>() const { return subtype==SUBTYPE_EVALERROR; }
+template<> inline bool ASObject::is<Event>() const { return subtype==SUBTYPE_EVENT || subtype==SUBTYPE_WAITABLE_EVENT || subtype==SUBTYPE_PROGRESSEVENT || subtype==SUBTYPE_KEYBOARD_EVENT || subtype==SUBTYPE_MOUSE_EVENT || subtype==SUBTYPE_SAMPLEDATA_EVENT || subtype == SUBTYPE_THROTTLE_EVENT || subtype == SUBTYPE_CONTEXTMENUEVENT || subtype == SUBTYPE_GAMEINPUTEVENT || subtype == SUBTYPE_NATIVEWINDOWBOUNDSEVENT; }
 template<> inline bool ASObject::is<ExtensionContext>() const { return subtype==SUBTYPE_EXTENSIONCONTEXT; }
 template<> inline bool ASObject::is<FontDescription>() const { return subtype==SUBTYPE_FONTDESCRIPTION; }
 template<> inline bool ASObject::is<FileMode>() const { return subtype==SUBTYPE_FILEMODE; }
@@ -1564,62 +1605,78 @@ template<> inline bool ASObject::is<Global>() const { return subtype==SUBTYPE_GL
 template<> inline bool ASObject::is<GlowFilter>() const { return subtype==SUBTYPE_GLOWFILTER; }
 template<> inline bool ASObject::is<GradientGlowFilter>() const { return subtype==SUBTYPE_GRADIENTGLOWFILTER; }
 template<> inline bool ASObject::is<GradientBevelFilter>() const { return subtype==SUBTYPE_GRADIENTBEVELFILTER; }
+template<> inline bool ASObject::is<GraphicsEndFill>() const { return subtype==SUBTYPE_GRAPHICSENDFILL; }
+template<> inline bool ASObject::is<GraphicsPath>() const { return subtype==SUBTYPE_GRAPHICSPATH; }
+template<> inline bool ASObject::is<GraphicsSolidFill>() const { return subtype==SUBTYPE_GRAPHICSSOLIDFILL; }
 template<> inline bool ASObject::is<IFunction>() const { return type==T_FUNCTION; }
 template<> inline bool ASObject::is<IndexBuffer3D>() const { return subtype==SUBTYPE_INDEXBUFFER3D; }
 template<> inline bool ASObject::is<Integer>() const { return type==T_INTEGER; }
-template<> inline bool ASObject::is<InteractiveObject>() const { return subtype==SUBTYPE_INTERACTIVE_OBJECT || subtype==SUBTYPE_TEXTFIELD || subtype==SUBTYPE_DISPLAYOBJECTCONTAINER || subtype==SUBTYPE_STAGE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype==SUBTYPE_SPRITE || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_SIMPLEBUTTON; }
+template<> inline bool ASObject::is<InteractiveObject>() const { return subtype==SUBTYPE_INTERACTIVE_OBJECT || subtype==SUBTYPE_TEXTFIELD || subtype==SUBTYPE_DISPLAYOBJECTCONTAINER || subtype==SUBTYPE_STAGE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype==SUBTYPE_SPRITE || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_SIMPLEBUTTON || subtype==SUBTYPE_LOADER || subtype == SUBTYPE_AVM1MOVIECLIP || subtype == SUBTYPE_AVM1MOVIE; }
+template<> inline bool ASObject::is<LocalConnection>() const { return subtype==SUBTYPE_LOCALCONNECTION; }
 template<> inline bool ASObject::is<KeyboardEvent>() const { return subtype==SUBTYPE_KEYBOARD_EVENT; }
+template<> inline bool ASObject::is<Loader>() const { return subtype==SUBTYPE_LOADER; }
 template<> inline bool ASObject::is<LoaderContext>() const { return subtype==SUBTYPE_LOADERCONTEXT; }
 template<> inline bool ASObject::is<LoaderInfo>() const { return subtype==SUBTYPE_LOADERINFO; }
-template<> inline bool ASObject::is<Namespace>() const { return type==T_NAMESPACE; }
-template<> inline bool ASObject::is<NativeWindow>() const { return subtype==SUBTYPE_NATIVEWINDOW; }
-template<> inline bool ASObject::is<NetStream>() const { return subtype==SUBTYPE_NETSTREAM; }
 template<> inline bool ASObject::is<Matrix>() const { return subtype==SUBTYPE_MATRIX; }
 template<> inline bool ASObject::is<Matrix3D>() const { return subtype==SUBTYPE_MATRIX3D; }
 template<> inline bool ASObject::is<MessageChannel>() const { return subtype==SUBTYPE_MESSAGECHANNEL; }
 template<> inline bool ASObject::is<MorphShape>() const { return subtype==SUBTYPE_MORPHSHAPE; }
 template<> inline bool ASObject::is<MouseEvent>() const { return subtype==SUBTYPE_MOUSE_EVENT; }
-template<> inline bool ASObject::is<MovieClip>() const { return subtype==SUBTYPE_ROOTMOVIECLIP || subtype == SUBTYPE_MOVIECLIP; }
+template<> inline bool ASObject::is<MovieClip>() const { return subtype==SUBTYPE_ROOTMOVIECLIP || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_AVM1MOVIECLIP; }
 template<> inline bool ASObject::is<Null>() const { return type==T_NULL; }
+template<> inline bool ASObject::is<Namespace>() const { return type==T_NAMESPACE; }
+template<> inline bool ASObject::is<NativeWindow>() const { return subtype==SUBTYPE_NATIVEWINDOW; }
+template<> inline bool ASObject::is<NativeWindowBoundsEvent>() const { return subtype==SUBTYPE_NATIVEWINDOWBOUNDSEVENT; }
+template<> inline bool ASObject::is<NetStream>() const { return subtype==SUBTYPE_NETSTREAM; }
 template<> inline bool ASObject::is<Number>() const { return type==T_NUMBER; }
 template<> inline bool ASObject::is<ObjectConstructor>() const { return subtype==SUBTYPE_OBJECTCONSTRUCTOR; }
 template<> inline bool ASObject::is<Point>() const { return subtype==SUBTYPE_POINT; }
 template<> inline bool ASObject::is<Program3D>() const { return subtype==SUBTYPE_PROGRAM3D; }
 template<> inline bool ASObject::is<ProgressEvent>() const { return subtype==SUBTYPE_PROGRESSEVENT; }
 template<> inline bool ASObject::is<Proxy>() const { return subtype==SUBTYPE_PROXY; }
+template<> inline bool ASObject::is<RangeError>() const { return subtype==SUBTYPE_RANGEERROR; }
 template<> inline bool ASObject::is<Rectangle>() const { return subtype==SUBTYPE_RECTANGLE; }
 template<> inline bool ASObject::is<RectangleTexture>() const { return subtype==SUBTYPE_RECTANGLETEXTURE; }
+template<> inline bool ASObject::is<ReferenceError>() const { return subtype==SUBTYPE_REFERENCEERROR; }
 template<> inline bool ASObject::is<RegExp>() const { return subtype==SUBTYPE_REGEXP; }
 template<> inline bool ASObject::is<RootMovieClip>() const { return subtype==SUBTYPE_ROOTMOVIECLIP; }
 template<> inline bool ASObject::is<SampleDataEvent>() const { return subtype==SUBTYPE_SAMPLEDATA_EVENT; }
 template<> inline bool ASObject::is<ShaderFilter>() const { return subtype==SUBTYPE_SHADERFILTER; }
+template<> inline bool ASObject::is<SecurityError>() const { return subtype==SUBTYPE_SECURITYERROR; }
 template<> inline bool ASObject::is<Shape>() const { return subtype==SUBTYPE_SHAPE; }
 template<> inline bool ASObject::is<SharedObject>() const { return subtype==SUBTYPE_SHAREDOBJECT; }
 template<> inline bool ASObject::is<SimpleButton>() const { return subtype==SUBTYPE_SIMPLEBUTTON; }
-template<> inline bool ASObject::is<Sound>() const { return subtype==SUBTYPE_SOUND; }
+template<> inline bool ASObject::is<Sound>() const { return subtype==SUBTYPE_SOUND || subtype == SUBTYPE_AVM1SOUND; }
 template<> inline bool ASObject::is<SoundChannel>() const { return subtype==SUBTYPE_SOUNDCHANNEL; }
 template<> inline bool ASObject::is<SoundTransform>() const { return subtype==SUBTYPE_SOUNDTRANSFORM; }
-template<> inline bool ASObject::is<Sprite>() const { return subtype==SUBTYPE_SPRITE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype == SUBTYPE_MOVIECLIP; }
+template<> inline bool ASObject::is<SpaceJustifier>() const { return subtype==SUBTYPE_SPACEJUSTIFIER; }
+template<> inline bool ASObject::is<Sprite>() const { return subtype==SUBTYPE_SPRITE || subtype==SUBTYPE_ROOTMOVIECLIP || subtype == SUBTYPE_MOVIECLIP || subtype == SUBTYPE_AVM1MOVIECLIP; }
 template<> inline bool ASObject::is<Stage>() const { return subtype==SUBTYPE_STAGE; }
 template<> inline bool ASObject::is<Stage3D>() const { return subtype==SUBTYPE_STAGE3D; }
+template<> inline bool ASObject::is<SyntaxError>() const { return subtype==SUBTYPE_SYNTAXERROR; }
 template<> inline bool ASObject::is<SyntheticFunction>() const { return subtype==SUBTYPE_SYNTHETICFUNCTION; }
 template<> inline bool ASObject::is<Template_base>() const { return type==T_TEMPLATE; }
 template<> inline bool ASObject::is<TextBlock>() const { return subtype==SUBTYPE_TEXTBLOCK; }
 template<> inline bool ASObject::is<TextElement>() const { return subtype==SUBTYPE_TEXTELEMENT; }
 template<> inline bool ASObject::is<TextField>() const { return subtype==SUBTYPE_TEXTFIELD; }
 template<> inline bool ASObject::is<TextFormat>() const { return subtype==SUBTYPE_TEXTFORMAT; }
+template<> inline bool ASObject::is<TextJustifier>() const { return subtype==SUBTYPE_TEXTJUSTIFIER || subtype==SUBTYPE_SPACEJUSTIFIER || subtype==SUBTYPE_EASTASIANJUSTIFIER; }
 template<> inline bool ASObject::is<TextLine>() const { return subtype==SUBTYPE_TEXTLINE; }
 template<> inline bool ASObject::is<TextLineMetrics>() const { return subtype==SUBTYPE_TEXTLINEMETRICS; }
 template<> inline bool ASObject::is<Texture>() const { return subtype==SUBTYPE_TEXTURE; }
 template<> inline bool ASObject::is<TextureBase>() const { return subtype==SUBTYPE_TEXTUREBASE || subtype==SUBTYPE_TEXTURE || subtype==SUBTYPE_CUBETEXTURE || subtype==SUBTYPE_RECTANGLETEXTURE || subtype==SUBTYPE_TEXTURE || subtype==SUBTYPE_VIDEOTEXTURE; }
 template<> inline bool ASObject::is<ThrottleEvent>() const { return subtype==SUBTYPE_THROTTLE_EVENT; }
 template<> inline bool ASObject::is<Type>() const { return type==T_CLASS; }
+template<> inline bool ASObject::is<TypeError>() const { return subtype==SUBTYPE_TYPEERROR; }
 template<> inline bool ASObject::is<UInteger>() const { return type==T_UINTEGER; }
 template<> inline bool ASObject::is<Undefined>() const { return type==T_UNDEFINED; }
+template<> inline bool ASObject::is<UninitializedError>() const { return subtype == SUBTYPE_UNINITIALIZEDERROR; }
+template<> inline bool ASObject::is<URIError>() const { return subtype == SUBTYPE_URIERROR; }
 template<> inline bool ASObject::is<URLLoader>() const { return subtype == SUBTYPE_URLLOADER; }
 template<> inline bool ASObject::is<URLRequest>() const { return subtype == SUBTYPE_URLREQUEST; }
 template<> inline bool ASObject::is<Vector>() const { return subtype==SUBTYPE_VECTOR; }
 template<> inline bool ASObject::is<Vector3D>() const { return subtype==SUBTYPE_VECTOR3D; }
+template<> inline bool ASObject::is<VerifyError>() const { return subtype==SUBTYPE_VERIFYERROR; }
 template<> inline bool ASObject::is<VertexBuffer3D>() const { return subtype==SUBTYPE_VERTEXBUFFER3D; }
 template<> inline bool ASObject::is<Video>() const { return subtype==SUBTYPE_VIDEO; }
 template<> inline bool ASObject::is<VideoTexture>() const { return subtype==SUBTYPE_VIDEOTEXTURE; }
@@ -1913,13 +1970,14 @@ FORCE_INLINE bool asAtomHandler::checkArgumentConversion(const asAtom& a,const a
 
 FORCE_INLINE void asAtomHandler::setInt(asAtom& a, ASWorker* wrk, int64_t val)
 {
+	const int32_t val32 = val;
 #ifdef LIGHTSPARK_64
-	a.intval = ((int64_t)val<<3)|ATOM_INTEGER;
+	a.intval = ((int64_t)val32<<3)|ATOM_INTEGER;
 #else
-	if (val >=-(1<<28)  && val <=(1<<28))
-		a.intval = (val<<3)|ATOM_INTEGER;
+	if (val32 >=-(1<<28)  && val32 <=(1<<28))
+		a.intval = (val32<<3)|ATOM_INTEGER;
 	else
-		setNumber(a,wrk,val);
+		setNumber(a,wrk,val32);
 #endif
 }
 
@@ -1948,7 +2006,7 @@ FORCE_INLINE void asAtomHandler::setUndefined(asAtom& a)
 {
 	a.uintval = ATOM_INVALID_UNDEFINED_NULL_BOOL | ATOMTYPE_UNDEFINED_BIT;
 }
-FORCE_INLINE void asAtomHandler::increment(asAtom& a, ASWorker* wrk)
+FORCE_INLINE bool asAtomHandler::increment(asAtom& a, ASWorker* wrk, bool replace)
 {
 	switch(a.uintval&0x7)
 	{
@@ -1966,7 +2024,7 @@ FORCE_INLINE void asAtomHandler::increment(asAtom& a, ASWorker* wrk)
 					setInt(a,wrk,(a.uintval & 0x80 ? 1 : 0)+1);
 					break;
 				default:
-					return;
+					return true;
 			}
 			break;
 		}
@@ -1977,8 +2035,22 @@ FORCE_INLINE void asAtomHandler::increment(asAtom& a, ASWorker* wrk)
 			setUInt(a,wrk,(a.uintval>>3)+1);
 			break;
 		case ATOM_NUMBERPTR:
-			setNumber(a,wrk,toNumber(a)+1);
+		{
+			number_t n = getObjectNoCheck(a)->toNumber();
+			if (std::isnan(n) || std::isinf(n))
+				setNumber(a,wrk,n);
+			else if(trunc(n) == n && n < INT32_MAX)
+			{
+				if (replace)
+					ASATOM_DECREF(a);
+				asAtomHandler::setInt(a,wrk,n+1);
+			}
+			else if (replace)
+				return replaceNumber(a,wrk,n+1);
+			else
+				setNumber(a,wrk,n+1);
 			break;
+		}
 		case ATOM_STRINGID:
 		{
 			ASObject* s = abstract_s(wrk,a.uintval>>3);
@@ -1990,13 +2062,21 @@ FORCE_INLINE void asAtomHandler::increment(asAtom& a, ASWorker* wrk)
 		default:
 		{
 			number_t n=toNumber(a);
-			setNumber(a,wrk,n+1);
+			if (replace)
+				ASATOM_DECREF(a);
+			if (std::isnan(n) || std::isinf(n))
+				setNumber(a,wrk,n);
+			else if(trunc(n) == n)
+				asAtomHandler::setInt(a,wrk,n+1);
+			else
+				setNumber(a,wrk,n+1);
 			break;
 		}
 	}
+	return true;
 }
 
-FORCE_INLINE void asAtomHandler::decrement(asAtom& a, ASWorker* wrk)
+FORCE_INLINE bool asAtomHandler::decrement(asAtom& a, ASWorker* wrk, bool replace)
 {
 	switch(a.uintval&0x7)
 	{
@@ -2014,7 +2094,7 @@ FORCE_INLINE void asAtomHandler::decrement(asAtom& a, ASWorker* wrk)
 					setInt(a,wrk,(a.uintval & 0x80 ? 1 : 0)-1);
 					break;
 				default:
-					return;
+					return true;
 			}
 			break;
 		}
@@ -2033,8 +2113,22 @@ FORCE_INLINE void asAtomHandler::decrement(asAtom& a, ASWorker* wrk)
 			break;
 		}
 		case ATOM_NUMBERPTR:
-			setNumber(a,wrk,toNumber(a)-1);
+		{
+			number_t n = getObjectNoCheck(a)->toNumber();
+			if (std::isnan(n) || std::isinf(n))
+				setNumber(a,wrk,n);
+			else if(trunc(n) == n && n > INT32_MIN)
+			{
+				if (replace)
+					ASATOM_DECREF(a);
+				asAtomHandler::setInt(a,wrk,n-1);
+			}
+			else if (replace)
+				return replaceNumber(a,wrk,n-1);
+			else
+				setNumber(a,wrk,n-1);
 			break;
+		}
 		case ATOM_STRINGID:
 		{
 			ASObject* s = abstract_s(wrk,a.uintval>>3);
@@ -2046,11 +2140,18 @@ FORCE_INLINE void asAtomHandler::decrement(asAtom& a, ASWorker* wrk)
 		default:
 		{
 			number_t n=toNumber(a);
-			setNumber(a,wrk,n-1);
+			if (replace)
+				ASATOM_DECREF(a);
+			if (std::isnan(n) || std::isinf(n))
+				setNumber(a,wrk,n);
+			else if(trunc(n) == n)
+				asAtomHandler::setInt(a,wrk,n-1);
+			else
+				setNumber(a,wrk,n-1);
 			break;
 		}
 	}
-
+	return true;
 }
 
 FORCE_INLINE void asAtomHandler::increment_i(asAtom& a, ASWorker* wrk, int32_t amount)
@@ -2159,7 +2260,7 @@ FORCE_INLINE void asAtomHandler::multiply(asAtom& a, ASWorker* wrk, asAtom &v2, 
 		LOG_CALL("multiplyI " << num1 << '*' << num2);
 		int64_t res = num1*num2;
 		if (forceint || (res > INT32_MIN>>3 && res < INT32_MAX>>3))
-			setInt(a,wrk,res);
+			setInt(a,wrk,int32_t(res));
 		else if (res >= 0 && res < UINT32_MAX>>3)
 			setUInt(a,wrk,res);
 		else
@@ -2186,15 +2287,24 @@ FORCE_INLINE void asAtomHandler::multiplyreplace(asAtom& ret, ASWorker* wrk, con
 		int64_t num2=toInt64(v2);
 	
 		LOG_CALL("multiplyreplaceI " << num1 << '*' << num2);
-		ASATOM_DECREF(ret);
+		
+		ASObject* o = getObject(ret);
 		int64_t res = num1*num2;
 		
 		if (forceint || (res > INT32_MIN>>3 && res < INT32_MAX>>3))
-			setInt(ret,wrk,res);
+		{
+			setInt(ret,wrk,int32_t(res));
+			if (o)
+				o->decRef();
+		}
 		else if (res >= 0 && res < UINT32_MAX>>3)
+		{
 			setUInt(ret,wrk,res);
-		else
-			setNumber(ret,wrk,res);
+			if (o)
+				o->decRef();
+		}
+		else if (replaceNumber(ret,wrk,num1*num2) && o)
+			o->decRef();
 	}
 	else
 	{
@@ -2350,7 +2460,7 @@ FORCE_INLINE void asAtomHandler::urshift(asAtom& a, ASWorker* wrk, asAtom &v1)
 	uint32_t i2=toUInt(a);
 	uint32_t i1=toUInt(v1)&0x1f;
 	LOG_CALL("urShift "<<std::hex<<i2<<">>"<<i1<<std::dec);
-	setInt(a,wrk,i2>>i1);
+	setUInt(a,wrk,i2>>i1);
 }
 FORCE_INLINE void asAtomHandler::bit_and(asAtom& a, ASWorker* wrk, asAtom &v1)
 {

@@ -20,10 +20,10 @@
 #include "parsing/flv.h"
 #include "swftypes.h"
 #include "compat.h"
+#include "backends/netutils.h"
 #include "scripting/flash/net/flashnet.h"
 #include "scripting/flash/utils/ByteArray.h"
 #include "scripting/class.h"
-#include "scripting/toplevel/toplevel.h"
 #include "amf3_generator.h"
 
 using namespace lightspark;

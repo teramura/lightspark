@@ -38,7 +38,7 @@ extern "C"
 #ifndef AVCODEC_MAX_AUDIO_FRAME_SIZE
 #define AVCODEC_MAX_AUDIO_FRAME_SIZE 192000 // 1 second of 48khz 32bit audio
 #endif
-#ifdef HAVE_AVCODECID
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(54,51,100)
 #define CodecID AVCodecID
 #define CODEC_ID_NONE AV_CODEC_ID_NONE
 #define CODEC_ID_H264 AV_CODEC_ID_H264
@@ -431,9 +431,9 @@ private:
 	std::vector<uint8_t> overflowBuffer;
 	bool fillDataAndCheckValidity();
 	CodecID LSToFFMpegCodec(LS_AUDIO_CODEC lscodec);
-#if defined HAVE_AVCODEC_DECODE_AUDIO4 || (defined HAVE_AVCODEC_SEND_PACKET && defined HAVE_AVCODEC_RECEIVE_FRAME)
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57,106,102)
 	AVFrame* frameIn;
-	int resampleFrame(void* samples);
+	void resampleFrame(uint8_t** output, int& outputsize);
 #endif
 public:
 	FFMpegAudioDecoder(EngineData* eng,LS_AUDIO_CODEC codec, uint8_t* initdata, uint32_t datalen, uint32_t buffertime);
@@ -450,7 +450,7 @@ public:
 	/*
 	   Specialized decoding used by FFMpegStreamDecoder
 	*/
-	uint32_t decodePacket(AVPacket* pkt, uint32_t time);
+	void decodePacket(AVPacket* pkt, uint32_t time);
 	void switchCodec(LS_AUDIO_CODEC audioCodec, uint8_t* initdata, uint32_t datalen) override;
 	uint32_t decodeData(uint8_t* data, int32_t datalen, uint32_t time) override;
 };

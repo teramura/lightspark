@@ -22,115 +22,34 @@
 
 #include "compat.h"
 #include "asobject.h"
+#include "backends/graphics.h"
 
 namespace lightspark
 {
 class BitmapContainer;
+class Point;
 
-class Rectangle: public ASObject
-{
-public:
-	Rectangle(ASWorker* wrk,Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_RECTANGLE),x(0),y(0),width(0),height(0){}
-	number_t x,y,width,height;
-	static void sinit(Class_base* c);
-	const RECT getRect() const;
-	bool destruct() override;
-	// properties
-	ASFUNCTION_ATOM(_getBottom);
-	ASFUNCTION_ATOM(_setBottom);
-	ASFUNCTION_ATOM(_getBottomRight);
-	ASFUNCTION_ATOM(_setBottomRight);
-	ASFUNCTION_ATOM(_getHeight);
-	ASFUNCTION_ATOM(_setHeight);
-	ASFUNCTION_ATOM(_getLeft);
-	ASFUNCTION_ATOM(_setLeft);
-	ASFUNCTION_ATOM(_getRight);
-	ASFUNCTION_ATOM(_setRight);
-	ASFUNCTION_ATOM(_getSize);
-	ASFUNCTION_ATOM(_setSize);
-	ASFUNCTION_ATOM(_getTop);
-	ASFUNCTION_ATOM(_setTop);
-	ASFUNCTION_ATOM(_getTopLeft);
-	ASFUNCTION_ATOM(_setTopLeft);
-	ASFUNCTION_ATOM(_getWidth);
-	ASFUNCTION_ATOM(_setWidth);
-
-	// methods
-	ASFUNCTION_ATOM(_constructor);
-	ASFUNCTION_ATOM(clone);
-	ASFUNCTION_ATOM(contains);
-	ASFUNCTION_ATOM(containsPoint);
-	ASFUNCTION_ATOM(containsRect);
-	ASFUNCTION_ATOM(equals);
-	ASFUNCTION_ATOM(inflate);
-	ASFUNCTION_ATOM(inflatePoint);
-	ASFUNCTION_ATOM(intersection);
-	ASFUNCTION_ATOM(intersects);
-	ASFUNCTION_ATOM(isEmpty);
-	ASFUNCTION_ATOM(offset);
-	ASFUNCTION_ATOM(offsetPoint);
-	ASFUNCTION_ATOM(setEmpty);
-	ASFUNCTION_ATOM(setTo);
-	ASFUNCTION_ATOM(_toString);
-	ASFUNCTION_ATOM(_union);
-	ASFUNCTION_ATOM(copyFrom);
-};
-
-class Point: public ASObject
-{
-private:
-	number_t x,y;
-	static number_t lenImpl(number_t x, number_t y);
-public:
-	Point(ASWorker* wrk,Class_base* c,number_t _x = 0, number_t _y = 0):ASObject(wrk,c,T_OBJECT,SUBTYPE_POINT),x(_x),y(_y){}
-	bool destruct() override;
-	static void sinit(Class_base* c);
-	ASFUNCTION_ATOM(_constructor);
-	ASFUNCTION_ATOM(_getX);
-	ASFUNCTION_ATOM(_getY);
-	ASFUNCTION_ATOM(_setX);
-	ASFUNCTION_ATOM(_setY);
-	ASFUNCTION_ATOM(_getlength);
-	ASFUNCTION_ATOM(interpolate);
-	ASFUNCTION_ATOM(distance);
-	ASFUNCTION_ATOM(add);
-	ASFUNCTION_ATOM(subtract);
-	ASFUNCTION_ATOM(clone);
-	ASFUNCTION_ATOM(equals);
-	ASFUNCTION_ATOM(normalize);
-	ASFUNCTION_ATOM(offset);
-	ASFUNCTION_ATOM(polar);
-	ASFUNCTION_ATOM(_toString);
-	ASFUNCTION_ATOM(setTo);
-	ASFUNCTION_ATOM(copyFrom);
-
-	number_t len() const;
-	number_t getX() const { return x; }
-	number_t getY() const { return y; }
-};
-
-class ColorTransform: public ASObject
+class ColorTransform: public ASObject, public ColorTransformBase
 {
 friend class Bitmap;
 friend class BitmapData;
+friend class BitmapContainer;
 friend class DisplayObject;
 friend class AVM1Color;
 friend class TokenContainer;
 friend class TextField;
-protected:
-	number_t redMultiplier,greenMultiplier,blueMultiplier,alphaMultiplier;
-	number_t redOffset,greenOffset,blueOffset,alphaOffset;
 public:
 	ColorTransform(ASWorker* wrk,Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_COLORTRANSFORM)
-	  ,redMultiplier(1.0),greenMultiplier(1.0),blueMultiplier(1.0),alphaMultiplier(1.0)
-	  ,redOffset(0.0),greenOffset(0.0),blueOffset(0.0),alphaOffset(0.0)
 	{}
+	ColorTransform(ASWorker* wrk,Class_base* c, const ColorTransformBase& r);
 	ColorTransform(ASWorker* wrk,Class_base* c, const CXFORMWITHALPHA& cx);
-	// returning r,g,b,a values are between 0.0 and 1.0
-	void applyTransformation(const RGBA &color, float& r, float& g, float& b, float &a);
-	uint8_t* applyTransformation(BitmapContainer* bm);
-	void applyTransformation(uint8_t* bm, uint32_t size);
+	ColorTransform& operator=(const ColorTransform& r)
+	{
+		ColorTransformBase::operator=(r);
+		return *this;
+	}
 	void setProperties(const CXFORMWITHALPHA& cx);
+	
 	static void sinit(Class_base* c);
 	bool destruct() override;
 	ASFUNCTION_ATOM(_constructor);
@@ -232,94 +151,10 @@ public:
 
 };
 
-class Vector3D: public ASObject
-{
-public:
-	Vector3D(ASWorker* wrk,Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_VECTOR3D),w(0),x(0),y(0),z(0){}
-	number_t w, x, y, z;
-	static void sinit(Class_base* c);
-	bool destruct() override;
-	ASFUNCTION_ATOM(_constructor);
-	
-	//Methods
-	ASFUNCTION_ATOM(add);
-	ASFUNCTION_ATOM(angleBetween);
-	ASFUNCTION_ATOM(clone);
-	ASFUNCTION_ATOM(crossProduct);
-	ASFUNCTION_ATOM(decrementBy);
-	ASFUNCTION_ATOM(distance);
-	ASFUNCTION_ATOM(dotProduct);
-	ASFUNCTION_ATOM(equals);
-	ASFUNCTION_ATOM(incrementBy);
-	ASFUNCTION_ATOM(nearEquals);
-	ASFUNCTION_ATOM(negate);
-	ASFUNCTION_ATOM(normalize);
-	ASFUNCTION_ATOM(project);
-	ASFUNCTION_ATOM(scaleBy);
-	ASFUNCTION_ATOM(subtract);
-	ASFUNCTION_ATOM(setTo);
-	ASFUNCTION_ATOM(copyFrom);
-
-	//Properties
-	ASFUNCTION_ATOM(_get_w);
-	ASFUNCTION_ATOM(_get_x);
-	ASFUNCTION_ATOM(_get_y);
-	ASFUNCTION_ATOM(_get_z);
-	ASFUNCTION_ATOM(_get_length);
-	ASFUNCTION_ATOM(_get_lengthSquared);
-
-	ASFUNCTION_ATOM(_set_w);
-	ASFUNCTION_ATOM(_set_x);
-	ASFUNCTION_ATOM(_set_y);
-	ASFUNCTION_ATOM(_set_z);
-	ASFUNCTION_ATOM(_toString);
-};
-
-class Matrix3D: public ASObject
-{
-private:
-	number_t data[4*4];
-	void append(number_t* otherdata);
-	void prepend(number_t *otherdata);
-	number_t getDeterminant();
-	void identity();
-public:
-	Matrix3D(ASWorker* wrk,Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_MATRIX3D){}
-	static void sinit(Class_base* c);
-	bool destruct() override;
-	ASFUNCTION_ATOM(_constructor);
-	ASFUNCTION_ATOM(clone);
-	ASFUNCTION_ATOM(decompose);
-	ASFUNCTION_ATOM(recompose);
-	ASFUNCTION_ATOM(deltaTransformVector);
-	ASFUNCTION_ATOM(prepend);
-	ASFUNCTION_ATOM(prependScale);
-	ASFUNCTION_ATOM(prependTranslation);
-	ASFUNCTION_ATOM(append);
-	ASFUNCTION_ATOM(appendTranslation);
-	ASFUNCTION_ATOM(appendRotation);
-	ASFUNCTION_ATOM(appendScale);
-	ASFUNCTION_ATOM(copyColumnTo);
-	ASFUNCTION_ATOM(copyRawDataFrom);
-	ASFUNCTION_ATOM(copyRawDataTo);
-	ASFUNCTION_ATOM(copyFrom);
-	ASFUNCTION_ATOM(copyToMatrix3D);
-	ASFUNCTION_ATOM(_identity);
-	ASFUNCTION_ATOM(invert);
-	ASFUNCTION_ATOM(_get_rawData);
-	ASFUNCTION_ATOM(_set_rawData);
-	ASFUNCTION_ATOM(_get_determinant);
-	ASFUNCTION_ATOM(_get_position);
-	ASFUNCTION_ATOM(_set_position);
-	ASFUNCTION_ATOM(transformVector);
-	void getRowAsFloat(uint32_t rownum,float* rowdata);
-	void getColumnAsFloat(uint32_t rownum,float* rowdata);
-	void getRawDataAsFloat(float* rowdata);
-};
 class PerspectiveProjection: public ASObject
 {
 public:
-	PerspectiveProjection(ASWorker* wrk,Class_base* c):ASObject(wrk,c),fieldOfView(0),focalLength(0) {}
+	PerspectiveProjection(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base* c);
 	bool destruct() override;
 	void finalize() override;

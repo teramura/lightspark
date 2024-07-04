@@ -24,6 +24,8 @@
 #include "scripting/argconv.h"
 #include "scripting/flash/filesystem/flashfilesystem.h"
 #include "scripting/toplevel/Vector.h"
+#include "scripting/toplevel/XML.h"
+#include "platforms/engineutils.h"
 
 using namespace std;
 using namespace lightspark;
@@ -31,12 +33,10 @@ using namespace lightspark;
 void NativeApplication::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, EventDispatcher, _constructor, CLASS_FINAL | CLASS_SEALED);
-	c->setDeclaredMethodByQName("nativeApplication", "", Class<IFunction>::getFunction(c->getSystemState(),_getNativeApplication), GETTER_METHOD, false);
-	c->setDeclaredMethodByQName("addEventListener", "", Class<IFunction>::getFunction(c->getSystemState(),addEventListener), NORMAL_METHOD, true);
-}
-
-void NativeApplication::buildTraits(ASObject* o)
-{
+	REGISTER_GETTER_STATIC_RESULTTYPE(c,nativeApplication,NativeApplication);
+	c->setDeclaredMethodByQName("applicationDescriptor", "", c->getSystemState()->getBuiltinFunction(_getApplicationDescriptor), GETTER_METHOD, true);
+	c->setDeclaredMethodByQName("addEventListener", "", c->getSystemState()->getBuiltinFunction(addEventListener), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("exit", "", c->getSystemState()->getBuiltinFunction(_exit), NORMAL_METHOD, true);
 }
 
 ASFUNCTIONBODY_ATOM(NativeApplication,_constructor)
@@ -44,10 +44,18 @@ ASFUNCTIONBODY_ATOM(NativeApplication,_constructor)
 	EventDispatcher::_constructor(ret,wrk,obj, nullptr, 0);
 }
 
-//  Should actually be a Singleton
-ASFUNCTIONBODY_ATOM(NativeApplication, _getNativeApplication)
+ASFUNCTIONBODY_GETTER_STATIC(NativeApplication, nativeApplication)
+
+ASFUNCTIONBODY_ATOM(NativeApplication, _getApplicationDescriptor)
 {
-	ret = asAtomHandler::fromObject(Class<NativeApplication>::getInstanceS(wrk));
+	tiny_string xmlstr;
+	if (wrk->getSystemState()->getEngineData()->getAIRApplicationDescriptor(wrk->getSystemState(),xmlstr))
+	{
+		XML* dsc = Class<XML>::getInstanceS(wrk,xmlstr);
+		ret = asAtomHandler::fromObject(dsc);
+	}
+	else
+		ret = asAtomHandler::undefinedAtom;
 }
 
 ASFUNCTIONBODY_ATOM(NativeApplication, addEventListener)
@@ -61,6 +69,14 @@ ASFUNCTIONBODY_ATOM(NativeApplication, addEventListener)
 	}
 }
 
+ASFUNCTIONBODY_ATOM(NativeApplication, _exit)
+{
+	int errorCode=0;
+	ARG_CHECK(ARG_UNPACK (errorCode,0));
+	wrk->getSystemState()->setExitCode(errorCode);
+	wrk->getSystemState()->setShutdownFlag();
+}
+
 void NativeDragManager::sinit(Class_base* c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_FINAL | CLASS_SEALED);
@@ -72,7 +88,7 @@ ASFUNCTIONBODY_GETTER(NativeDragManager,isSupported)
 void NativeProcess::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, EventDispatcher, _constructor, CLASS_SEALED);
-	c->setDeclaredMethodByQName("start", "", Class<IFunction>::getFunction(c->getSystemState(),start), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("start", "", c->getSystemState()->getBuiltinFunction(start), NORMAL_METHOD, true);
 	REGISTER_GETTER_RESULTTYPE(c,isSupported,Boolean);
 }
 ASFUNCTIONBODY_GETTER(NativeProcess,isSupported)

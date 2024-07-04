@@ -371,7 +371,7 @@ uint64_t readUInt64 (ByteArray* byteArray)
 	return ((uint64_t)high)<<32 | low;
 }
 
-tiny_string AGALtoGLSL(ByteArray* agal,bool isVertexProgram,std::vector<SamplerRegister>& samplerState,std::vector<RegisterMapEntry>& constants,std::vector<RegisterMapEntry>& attributes)
+tiny_string AGALtoGLSL(ByteArray* agal,bool isVertexProgram,std::vector<SamplerRegister>& samplerState,std::vector<RegisterMapEntry>& constants,std::vector<RegisterMapEntry>& attributes,RegisterMap& vertexregistermap)
 {
 	agal->setPosition(0);
 	uint8_t by;
@@ -388,10 +388,6 @@ tiny_string AGALtoGLSL(ByteArray* agal,bool isVertexProgram,std::vector<SamplerR
 	}
 	uint32_t version;
 	agal->readUnsignedInt(version);
-	if (version != 1) {
-		LOG(LOG_ERROR,"invalid version for AGAL:"<<version);
-		return "";
-	}
 	agal->readByte(by);
 	if (by != 0xA1) {
 		LOG(LOG_ERROR,"invalid shaderTypeID for AGAL:"<<hex<<(uint32_t)by);
@@ -563,7 +559,10 @@ tiny_string AGALtoGLSL(ByteArray* agal,bool isVertexProgram,std::vector<SamplerR
 				//destination.y = (source1.x * source2[1].x) + (source1.y * source2[1].y) + (source1.z * source2[1].z)
 				//destination.z = (source1.x * source2[2].x) + (source1.y * source2[2].y) + (source1.z * source2[2].z)
 				RegisterUsage existingUsage = map.getRegisterUsage (sr2);
-				if (existingUsage != RegisterUsage::VECTOR_4 && existingUsage != RegisterUsage::VECTOR_4_ARRAY) {
+				RegisterUsage existingUsageVertex = vertexregistermap.getRegisterUsage (sr2);
+				if (existingUsage != RegisterUsage::VECTOR_4 && existingUsage != RegisterUsage::VECTOR_4_ARRAY
+					&& existingUsageVertex != RegisterUsage::VECTOR_4 && existingUsageVertex != RegisterUsage::VECTOR_4_ARRAY)
+				{
 					sb += dr.toGLSL () + " = " + sr1.toGLSL () + " * mat3(" + sr2.toGLSL (false) + "); // m33";
 					map.addDR (dr, RegisterUsage::VECTOR_4);
 					map.addSR (sr1, RegisterUsage::VECTOR_4);
@@ -591,7 +590,10 @@ tiny_string AGALtoGLSL(ByteArray* agal,bool isVertexProgram,std::vector<SamplerR
 				//destination.z = (source1.x * source2[2].x) + (source1.y * source2[2].y) + (source1.z * source2[2].z)+ (source1.w * source2[2].w)
 				//destination.w = (source1.x * source2[3].x) + (source1.y * source2[3].y) + (source1.z * source2[3].z)+ (source1.w * source2[3].w)
 				RegisterUsage existingUsage = map.getRegisterUsage (sr2);
-				if (existingUsage != RegisterUsage::VECTOR_4 && existingUsage != RegisterUsage::VECTOR_4_ARRAY) {
+				RegisterUsage existingUsageVertex = vertexregistermap.getRegisterUsage (sr2);
+				if (existingUsage != RegisterUsage::VECTOR_4 && existingUsage != RegisterUsage::VECTOR_4_ARRAY
+					&& existingUsageVertex != RegisterUsage::VECTOR_4 && existingUsageVertex != RegisterUsage::VECTOR_4_ARRAY)
+				{
 					sb += dr.toGLSL () + " = " + sr1.toGLSL () + " * " + sr2.toGLSL (false) + "; // m44";
 					map.addDR (dr, RegisterUsage::VECTOR_4);
 					map.addSR (sr1, RegisterUsage::VECTOR_4);
@@ -622,7 +624,10 @@ tiny_string AGALtoGLSL(ByteArray* agal,bool isVertexProgram,std::vector<SamplerR
 				// prevent w from being written for a m34
 				dr.mask &= 7;
 				RegisterUsage existingUsage = map.getRegisterUsage (sr2);
-				if (existingUsage != RegisterUsage::VECTOR_4 && existingUsage != RegisterUsage::VECTOR_4_ARRAY) {
+				RegisterUsage existingUsageVertex = vertexregistermap.getRegisterUsage (sr2);
+				if (existingUsage != RegisterUsage::VECTOR_4 && existingUsage != RegisterUsage::VECTOR_4_ARRAY
+					&& existingUsageVertex != RegisterUsage::VECTOR_4 && existingUsageVertex != RegisterUsage::VECTOR_4_ARRAY)
+				{
 					sb += dr.toGLSL () + " = vec3(" + sr1.toGLSL (false) + " * " + sr2.toGLSL (false) + "); // m34";
 					map.addDR (dr, RegisterUsage::VECTOR_4);
 					map.addSR (sr1, RegisterUsage::VECTOR_4);
@@ -644,6 +649,32 @@ tiny_string AGALtoGLSL(ByteArray* agal,bool isVertexProgram,std::vector<SamplerR
 				}
 				break;
 			}
+			case 0x1c: //AGAL2 ife
+				sb += tiny_string("if (") + sr1.toGLSL () + " == " + sr2.toGLSL () + "){ // ife";
+				map.addSR (sr1, RegisterUsage::VECTOR_4);
+				map.addSR (sr2, RegisterUsage::VECTOR_4);
+				break;
+			case 0x1d: //AGAL2 ine
+				sb += tiny_string("if (") + sr1.toGLSL () + " != " + sr2.toGLSL () + "){ // ine";
+				map.addSR (sr1, RegisterUsage::VECTOR_4);
+				map.addSR (sr2, RegisterUsage::VECTOR_4);
+				break;
+			case 0x1e: //AGAL2 ifg
+				sb += tiny_string("if (") + sr1.toGLSL () + " > " + sr2.toGLSL () + "){ // ifg";
+				map.addSR (sr1, RegisterUsage::VECTOR_4);
+				map.addSR (sr2, RegisterUsage::VECTOR_4);
+				break;
+			case 0x1f: //AGAL2 ifl
+				sb += tiny_string("if (") + sr1.toGLSL () + " < " + sr2.toGLSL () + "){ // ifl";
+				map.addSR (sr1, RegisterUsage::VECTOR_4);
+				map.addSR (sr2, RegisterUsage::VECTOR_4);
+				break;
+			case 0x20: //AGAL2 els
+				sb += "} else { // els";
+				break;
+			case 0x21: //AGAL2 eif
+				sb += "}; // eif";
+				break;
 			case 0x27: // kill /  discard
 				if (true) { //(openfl.display.Stage3D.allowDiscard) {
 					// ensure we have a full source mask since there is no destination register
@@ -659,21 +690,22 @@ tiny_string AGALtoGLSL(ByteArray* agal,bool isVertexProgram,std::vector<SamplerR
 				switch (sampler.d)
 				{
 					case 0: // 2d texture
-						if (sampler.t == 2)
-						{ // dxt5, sampler alpha
-							sr1.sourceMask = 0x3;
-							map.addSaR(sampler, RegisterUsage::SAMPLER_2D_ALPHA);
-							sb += "if (";
-							sb += sampler.toGLSL() + "_alphaEnabled) {\n";
-							sb += "\t\t";
-							sb += dr.toGLSL() + " = vec4(texture2D(" + sampler.toGLSL() + ", " + sr1.toGLSL() + ").xyz, texture2D("
-								+ sampler.toGLSL() + "_alpha, " + sr1.toGLSL() + ").x); // tex + alpha\n";
-							sb += "\t} else {\n";
-							sb += "\t\t";
-							sb += dr.toGLSL() + " = texture2D(" + sampler.toGLSL() + ", " + sr1.toGLSL() + "); // tex\n";
-							sb += "\t}";
-						}
-						else
+						// we don't need extra handling for dxt5 textures, as they are uploaded as normal textures
+						// if (sampler.t == 2)
+						// { // dxt5, sampler alpha
+						// 	sr1.sourceMask = 0x3;
+						// 	map.addSaR(sampler, RegisterUsage::SAMPLER_2D_ALPHA);
+						// 	sb += "if (";
+						// 	sb += sampler.toGLSL() + "_alphaEnabled) {\n";
+						// 	sb += "\t\t";
+						// 	sb += dr.toGLSL() + " = vec4(texture2D(" + sampler.toGLSL() + ", " + sr1.toGLSL() + ").xyz, texture2D("
+						// 		+ sampler.toGLSL() + "_alpha, " + sr1.toGLSL() + ").x); // tex + alpha\n";
+						// 	sb += "\t} else {\n";
+						// 	sb += "\t\t";
+						// 	sb += dr.toGLSL() + " = texture2D(" + sampler.toGLSL() + ", " + sr1.toGLSL() + "); // tex\n";
+						// 	sb += "\t}";
+						// }
+						// else
 						{
 							sr1.sourceMask = 0x3;
 							map.addSaR (sampler, RegisterUsage::SAMPLER_2D);
@@ -681,22 +713,23 @@ tiny_string AGALtoGLSL(ByteArray* agal,bool isVertexProgram,std::vector<SamplerR
 						}
 						break;
 					case 1: // cube texture
-						if (sampler.t == 2)
-						{ // dxt5, sampler alpha
+						// we don't need extra handling for dxt5 textures, as they are uploaded as normal textures
+						// if (sampler.t == 2)
+						// { // dxt5, sampler alpha
 
-							sr1.sourceMask = 0x7;
-							map.addSaR(sampler, RegisterUsage::SAMPLER_CUBE_ALPHA);
-							sb += "if (";
-							sb += sampler.toGLSL() + "_alphaEnabled) {\n";
-							sb += "\t\t";
-							sb += dr.toGLSL() + " = vec4(textureCube(" + sampler.toGLSL() + ", " + sr1.toGLSL() + ").xyz, textureCube("
-								+ sampler.toGLSL() + "_alpha, " + sr1.toGLSL() + ").x); // tex + alpha\n";
-							sb += "\t} else {\n";
-							sb += "\t\t";
-							sb += dr.toGLSL() + " = textureCube(" + sampler.toGLSL() + ", " + sr1.toGLSL() + "); // tex";
-							sb += "\t}";
-						}
-						else
+						// 	sr1.sourceMask = 0x7;
+						// 	map.addSaR(sampler, RegisterUsage::SAMPLER_CUBE_ALPHA);
+						// 	sb += "if (";
+						// 	sb += sampler.toGLSL() + "_alphaEnabled) {\n";
+						// 	sb += "\t\t";
+						// 	sb += dr.toGLSL() + " = vec4(textureCube(" + sampler.toGLSL() + ", " + sr1.toGLSL() + ").xyz, textureCube("
+						// 		+ sampler.toGLSL() + "_alpha, " + sr1.toGLSL() + ").x); // tex + alpha\n";
+						// 	sb += "\t} else {\n";
+						// 	sb += "\t\t";
+						// 	sb += dr.toGLSL() + " = textureCube(" + sampler.toGLSL() + ", " + sr1.toGLSL() + "); // tex";
+						// 	sb += "\t}";
+						// }
+						// else
 						{
 							sr1.sourceMask = 0x7;
 							sb += dr.toGLSL () + " = textureCube(" + sampler.toGLSL () + ", " + sr1.toGLSL () + "); // tex";
@@ -766,6 +799,7 @@ tiny_string AGALtoGLSL(ByteArray* agal,bool isVertexProgram,std::vector<SamplerR
 	if (isVertexProgram) {
 		// this is needed for flipping render textures upside down
 		glsl += "uniform vec4 vcPositionScale;\n";
+		vertexregistermap=map;
 	}
 	glsl += "void main() {\n";
 	glsl += map.toGLSL (true);

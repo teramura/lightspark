@@ -21,6 +21,7 @@
 #include "backends/audio.h"
 #include "backends/input.h"
 #include "backends/rendering.h"
+#include "scripting/flash/display/RootMovieClip.h"
 #include "compat.h"
 #include "scripting/class.h"
 #include <algorithm>
@@ -31,7 +32,14 @@
 using namespace lightspark;
 using namespace std;
 
-InputThread::InputThread(SystemState* s):m_sys(s),engineData(nullptr),terminated(false),
+DEFINE_AND_INITIALIZE_TLS(inputThread);
+InputThread* lightspark::getInputThread()
+{
+	InputThread* ret = (InputThread*)tls_get(inputThread);
+	return ret;
+}
+
+InputThread::InputThread(SystemState* s):m_sys(s),engineData(nullptr),status(CREATED),
 	curDragged(),currentMouseOver(),lastMouseDownTarget(),
 	lastKeyUp(SDLK_UNKNOWN), dragLimit(nullptr),button1pressed(false)
 {
@@ -40,24 +48,84 @@ InputThread::InputThread(SystemState* s):m_sys(s),engineData(nullptr),terminated
 
 void InputThread::start(EngineData* e)
 {
+	status = STARTED;
 	engineData = e;
+	t = SDL_CreateThread(InputThread::worker,"InputThread",this);
 }
 
 InputThread::~InputThread()
 {
 	wait();
+	LOG(LOG_INFO, "~InputThread this=" << this);
 }
 
 void InputThread::wait()
 {
-	if(terminated)
-		return;
-	terminated=true;
+	if(status==STARTED)
+	{
+		SDL_Event event;
+		SDL_zero(event);
+		event.type = SDL_QUIT;
+		inputEventQueue.push_back(event);
+		eventCond.signal();
+		SDL_WaitThread(t,nullptr);
+	}
 }
 
-bool InputThread::worker(SDL_Event *event)
+int InputThread::worker(void* d)
 {
-	bool ret=false;
+	InputThread *th = (InputThread *)d;
+	setTLSSys(th->m_sys);
+	setTLSWorker(th->m_sys->worker);
+	// Set TLS variable for `getInputThread()`.
+	tls_set(inputThread, th);
+
+	while (true)
+	{
+		SDL_Event event;
+		{
+			Locker l(th->mutexQueue);
+			while (th->inputEventQueue.empty())
+				th->eventCond.wait(th->mutexQueue);
+			event = th->inputEventQueue.front();
+			th->inputEventQueue.pop_front();
+		}
+		if (th->handleEvent(&event) < 0)
+			break;
+	}
+	th->status = TERMINATED;
+	return 0;
+}
+
+bool InputThread::queueEvent(SDL_Event& event)
+{
+	if ((event.type == SDL_WINDOWEVENT && event.window.event != SDL_WINDOWEVENT_LEAVE) || event.type == SDL_QUIT)
+		return false;
+	else
+	{
+		Locker l(mutexQueue);
+		if (!inputEventQueue.empty() && event.type == inputEventQueue.back().type)
+		{
+			switch (event.type)
+			{
+				case SDL_MOUSEMOTION:
+				case SDL_MOUSEWHEEL:
+					inputEventQueue.back() = event;
+					return false;
+					break;
+				default:
+					break;
+			}
+		}
+		inputEventQueue.push_back(event);
+	}
+	eventCond.signal();
+	return true;
+}
+
+int InputThread::handleEvent(SDL_Event* event)
+{
+	bool ret = false;
 	if (m_sys && m_sys->getEngineData() && m_sys->getEngineData()->inContextMenu())
 	{
 		ret = handleContextMenuEvent(event);
@@ -85,7 +153,7 @@ bool InputThread::worker(SDL_Event *event)
 		}
 	}
 	if (!m_sys || m_sys->isShuttingDown())
-		return false;
+		return -1;
 	switch(event->type)
 	{
 		case SDL_KEYDOWN:
@@ -124,6 +192,8 @@ bool InputThread::worker(SDL_Event *event)
 				Locker locker(mutexListeners);
 				button1pressed=false;
 			}
+			mousePosStart.x = event->button.x;
+			mousePosStart.y = event->button.y;
 			if(event->button.button == SDL_BUTTON_LEFT)
 			{
 				//Grab focus, to receive keypresses
@@ -149,6 +219,7 @@ bool InputThread::worker(SDL_Event *event)
 		case SDL_MOUSEBUTTONUP:
 		{
 			int stageX, stageY;
+			m_sys->setWindowMoveMode(false);
 			m_sys->windowToStageCoordinates(event->button.x,event->button.y,stageX,stageY);
 			handleMouseUp(stageX,stageY,SDL_GetModState(),event->button.state == SDL_PRESSED,event->button.button);
 			ret=true;
@@ -161,20 +232,31 @@ bool InputThread::worker(SDL_Event *event)
 		}
 		case SDL_MOUSEMOTION:
 		{
+			ret=true;
 			int stageX, stageY;
 			if (m_sys->getRenderThread()->inSettings)
 			{
 				stageX=event->motion.x;
 				stageY=event->motion.y;
 			}
-			else
+			else if (m_sys->getInWindowMoveMode())
+			{
+				int globalX;
+				int globalY;
+				m_sys->getEngineData()->getWindowPosition(&globalX,&globalY);
+				m_sys->getEngineData()->setWindowPosition(globalX+event->motion.x-mousePosStart.x
+														  ,globalY+event->motion.y-mousePosStart.y
+														  ,m_sys->getEngineData()->width
+														  ,m_sys->getEngineData()->height);
+				break;
+			}
+			else	
 				m_sys->windowToStageCoordinates(event->motion.x,event->motion.y,stageX,stageY);
 			handleMouseMove(stageX,stageY,SDL_GetModState(),event->motion.state == SDL_PRESSED);
 			{
 				Locker locker(mutexListeners);
 				button1pressed=false;
 			}
-			ret=true;
 			break;
 		}
 		case SDL_MOUSEWHEEL:
@@ -274,7 +356,8 @@ _NR<InteractiveObject> InputThread::getMouseTarget(uint32_t x, uint32_t y, Displ
 		return selected;
 	try
 	{
-		_NR<DisplayObject> dispobj=m_sys->stage->hitTest(x,y, type,true);
+		Vector2f point(x, y);
+		_NR<DisplayObject> dispobj=m_sys->stage->hitTest(point, point, type,true);
 		if(!dispobj.isNull() && dispobj->is<InteractiveObject>())
 		{
 			dispobj->incRef();
@@ -296,7 +379,7 @@ void InputThread::handleMouseDown(uint32_t x, uint32_t y, SDL_Keymod buttonState
 {
 	if(m_sys->currentVm == nullptr)
 		return;
-	_NR<InteractiveObject> selected = getMouseTarget(x, y, DisplayObject::MOUSE_CLICK);
+	_NR<InteractiveObject> selected = getMouseTarget(x, y, DisplayObject::MOUSE_CLICK_HIT);
 	if (selected.isNull())
 		return;
 	number_t localX, localY;
@@ -311,10 +394,10 @@ void InputThread::handleMouseDoubleClick(uint32_t x, uint32_t y, SDL_Keymod butt
 {
 	if(m_sys->currentVm == nullptr)
 		return;
-	_NR<InteractiveObject> selected = getMouseTarget(x, y, DisplayObject::DOUBLE_CLICK);
+	_NR<InteractiveObject> selected = getMouseTarget(x, y, DisplayObject::DOUBLE_CLICK_HIT);
 	if (selected.isNull())
 		return;
-	if (!selected->isHittable(DisplayObject::DOUBLE_CLICK))
+	if (!selected->isHittable(DisplayObject::DOUBLE_CLICK_HIT))
 	{
 		// no double click hit found, add additional down-up-click sequence
 		if (lastMouseUpTarget)
@@ -340,7 +423,7 @@ void InputThread::handleMouseUp(uint32_t x, uint32_t y, SDL_Keymod buttonState, 
 {
 	if(m_sys->currentVm == nullptr)
 		return;
-	_NR<InteractiveObject> selected = getMouseTarget(x, y, DisplayObject::MOUSE_CLICK);
+	_NR<InteractiveObject> selected = getMouseTarget(x, y, DisplayObject::MOUSE_CLICK_HIT);
 	if (selected.isNull())
 		return;
 	number_t localX, localY;
@@ -386,7 +469,7 @@ void InputThread::handleMouseMove(uint32_t x, uint32_t y, SDL_Keymod buttonState
 	mousePos.y=y;
 	if (m_sys->getRenderThread()->inSettings)
 		return;
-	_NR<InteractiveObject> selected = getMouseTarget(x, y, DisplayObject::MOUSE_CLICK);
+	_NR<InteractiveObject> selected = getMouseTarget(x, y, DisplayObject::MOUSE_CLICK_HIT);
 	mutexDragged.lock();
 	if(curDragged)
 	{
@@ -458,7 +541,7 @@ void InputThread::handleScrollEvent(uint32_t x, uint32_t y, uint32_t direction, 
 		return;
 #endif
 
-	_NR<InteractiveObject> selected = getMouseTarget(x, y, DisplayObject::MOUSE_CLICK);
+	_NR<InteractiveObject> selected = getMouseTarget(x, y, DisplayObject::MOUSE_CLICK_HIT);
 	if (selected.isNull())
 		return;
 	number_t localX, localY;
@@ -485,7 +568,7 @@ bool InputThread::handleKeyboardShortcuts(const SDL_KeyboardEvent *keyevent)
 		int x, y;
 		SDL_GetMouseState(&x,&y);
 		m_sys->windowToStageCoordinates(x,y,stageX,stageY);
-		_NR<InteractiveObject> selected = getMouseTarget(stageX,stageY, DisplayObject::MOUSE_CLICK);
+		_NR<InteractiveObject> selected = getMouseTarget(stageX,stageY, DisplayObject::MOUSE_CLICK_HIT);
 		if (!selected.isNull())
 		{
 			number_t localX, localY;

@@ -20,10 +20,11 @@
 #ifndef SCRIPTING_FLASH_NET_URLSTREAM_H
 #define SCRIPTING_FLASH_NET_URLSTREAM_H 1
 
+#include "interfaces/backends/netutils.h"
 #include "compat.h"
 #include "asobject.h"
 #include "scripting/flash/events/flashevents.h"
-#include "thread_pool.h"
+#include "backends/urlutils.h"
 #include "backends/netutils.h"
 #include "scripting/flash/utils/flashutils.h"
 

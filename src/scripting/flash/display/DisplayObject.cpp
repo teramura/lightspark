@@ -22,15 +22,34 @@
 #include "swf.h"
 #include "scripting/flash/display/DisplayObject.h"
 #include "backends/rendering.h"
+#include "backends/cachedsurface.h"
 #include "backends/input.h"
 #include "scripting/argconv.h"
 #include "scripting/flash/geom/flashgeom.h"
+#include "scripting/flash/geom/Matrix3D.h"
+#include "scripting/flash/geom/Point.h"
+#include "scripting/flash/geom/Rectangle.h"
 #include "scripting/flash/accessibility/flashaccessibility.h"
+#include "scripting/flash/display/Bitmap.h"
 #include "scripting/flash/display/BitmapData.h"
+#include "scripting/flash/display/LoaderInfo.h"
+#include "scripting/flash/display/flashdisplay.h"
+#include "scripting/flash/display/RootMovieClip.h"
 #include "scripting/flash/geom/flashgeom.h"
 #include "scripting/flash/filters/flashfilters.h"
+#include "scripting/flash/filters/BevelFilter.h"
+#include "scripting/flash/filters/BlurFilter.h"
+#include "scripting/flash/filters/ColorMatrixFilter.h"
+#include "scripting/flash/filters/ConvolutionFilter.h"
+#include "scripting/flash/filters/DisplacementMapFilter.h"
+#include "scripting/flash/filters/DropShadowFilter.h"
+#include "scripting/flash/filters/GlowFilter.h"
+#include "scripting/flash/filters/GradientBevelFilter.h"
+#include "scripting/flash/filters/GradientGlowFilter.h"
+#include "scripting/toplevel/AVM1Function.h"
+#include "scripting/toplevel/Array.h"
+#include "scripting/toplevel/Global.h"
 #include "scripting/toplevel/Number.h"
-#include "parsing/tags.h"
 #include <algorithm>
 
 // adobe seems to use twips as the base of the internal coordinate system, so we have to "round" coordinates to twips
@@ -50,12 +69,12 @@ Vector2f DisplayObject::getXY()
 	return ret;
 }
 
-bool DisplayObject::getBounds(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax, const MATRIX& m)
+bool DisplayObject::getBounds(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax, const MATRIX& m, bool visibleOnly)
 {
 	if(!legacy && !isConstructed())
 		return false;
 
-	bool ret=boundsRect(xmin,xmax,ymin,ymax);
+	bool ret=boundsRect(xmin,xmax,ymin,ymax,visibleOnly);
 	if(ret)
 	{
 		number_t tmpX[4];
@@ -74,6 +93,39 @@ bool DisplayObject::getBounds(number_t& xmin, number_t& xmax, number_t& ymin, nu
 	return ret;
 }
 
+RectF DisplayObject::boundsRectWithRenderTransform(const MATRIX& matrix, bool includeOwnFilters, const MATRIX& initialMatrix)
+{
+	RectF bounds;
+	boundsRectWithoutChildren(bounds.min.x, bounds.max.x, bounds.min.y, bounds.max.y, false);
+	bounds *= matrix;
+	if (is<DisplayObjectContainer>())
+	{
+		std::vector<_R<DisplayObject>> list;
+		as<DisplayObjectContainer>()->cloneDisplayList(list);
+		for (auto child : list)
+		{
+			MATRIX m = matrix.multiplyMatrix(child->getMatrix());
+			bounds = bounds._union(child->boundsRectWithRenderTransform(m, true, initialMatrix));
+		}
+	}
+	if (includeOwnFilters && !filters.isNull())
+	{
+		number_t filterborder = 0;
+		for (uint32_t i = 0; i < filters->size(); i++)
+		{
+			asAtom f = asAtomHandler::invalidAtom;
+			filters->at_nocheck(f,i);
+			if (asAtomHandler::is<BitmapFilter>(f))
+				filterborder = max(filterborder,asAtomHandler::as<BitmapFilter>(f)->getMaxFilterBorder());
+		}
+		bounds.min.x -= filterborder*initialMatrix.getScaleX();
+		bounds.max.x += filterborder*initialMatrix.getScaleX();
+		bounds.min.y -= filterborder*initialMatrix.getScaleY();
+		bounds.max.y += filterborder*initialMatrix.getScaleY();
+	}
+	return bounds;
+}
+
 number_t DisplayObject::getNominalWidth()
 {
 	number_t xmin, xmax, ymin, ymax;
@@ -81,7 +133,7 @@ number_t DisplayObject::getNominalWidth()
 	if(!isConstructed())
 		return 0;
 
-	bool ret=boundsRect(xmin,xmax,ymin,ymax);
+	bool ret=boundsRect(xmin,xmax,ymin,ymax,false);
 	return ret?(xmax-xmin):0;
 }
 
@@ -92,36 +144,49 @@ number_t DisplayObject::getNominalHeight()
 	if(!isConstructed())
 		return 0;
 
-	bool ret=boundsRect(xmin,xmax,ymin,ymax);
+	bool ret=boundsRect(xmin,xmax,ymin,ymax,false);
 	return ret?(ymax-ymin):0;
 }
 
-bool DisplayObject::Render(RenderContext& ctxt, bool force)
+bool DisplayObject::inMask() const
 {
-	if((!legacy && !isConstructed()) || (!force && skipRender()) || clippedAlpha()==0.0)
-		return false;
-	return renderImpl(ctxt);
+	if (mask || this->getClipDepth())
+		return true;
+	if (parent)
+		return parent->inMask();
+	return false;
+}
+bool DisplayObject::belongsToMask() const
+{
+	if (ismask)
+		return true;
+	if (parent)
+		return parent->belongsToMask();
+	return false;
 }
 
 DisplayObject::DisplayObject(ASWorker* wrk, Class_base* c):EventDispatcher(wrk,c),matrix(Class<Matrix>::getInstanceS(wrk)),tx(0),ty(0),rotation(0),
-	sx(1),sy(1),alpha(1.0),blendMode(BLENDMODE_NORMAL),isLoadedRoot(false),ismask(false),ClipDepth(0),
-	avm1PrevDisplayObject(nullptr),avm1NextDisplayObject(nullptr),parent(nullptr),constructed(false),useLegacyMatrix(true),
-	needsTextureRecalculation(true),textureRecalculationSkippable(false),avm1mouselistenercount(0),avm1framelistenercount(0),onStage(false),
-	visible(true),mask(),invalidateQueueNext(),loaderInfo(),cachedAsBitmapOf(nullptr),loadedFrom(wrk->rootClip.getPtr()),hasChanged(true),legacy(false),markedForLegacyDeletion(false),cacheAsBitmap(false),
-	name(BUILTIN_STRINGS::EMPTY)
+	sx(1),sy(1),alpha(1.0),blendMode(BLENDMODE_NORMAL),isLoadedRoot(false),ismask(false),filterlistHasChanged(false),maxfilterborder(0),ClipDepth(0),
+	avm1PrevDisplayObject(nullptr),avm1NextDisplayObject(nullptr),parent(nullptr),cachedSurface(new CachedSurface()),
+	constructed(false),useLegacyMatrix(true),
+	needsTextureRecalculation(true),textureRecalculationSkippable(false),
+	avm1mouselistenercount(0),avm1framelistenercount(0),
+	onStage(false),visible(true),
+	mask(nullptr),maskee(nullptr),clipMask(nullptr),
+	invalidateQueueNext(),loaderInfo(),loadedFrom(wrk->rootClip.getPtr()),hasChanged(true),legacy(false),placeFrame(UINT32_MAX),markedForLegacyDeletion(false),cacheAsBitmap(false),placedByActionScript(false),skipFrame(false),
+	name(BUILTIN_STRINGS::EMPTY),
+	opaqueBackground(asAtomHandler::nullAtom)
 {
 	subtype=SUBTYPE_DISPLAYOBJECT;
-//	name = tiny_string("instance") + Integer::toString(ATOMIC_INCREMENT(instanceCount));
 }
 
 void DisplayObject::markAsChanged()
 {
-	if (!computeCacheAsBitmap())
-	{
-		hasChanged = true;
-		if (onStage)
-			requestInvalidation(getSystemState());
-	}
+	hasChanged = true;
+	if (onStage)
+		requestInvalidation(getSystemState());
+	else
+		requestInvalidationFilterParent();
 }
 
 DisplayObject::~DisplayObject()
@@ -133,11 +198,17 @@ void DisplayObject::finalize()
 	getSystemState()->stage->AVM1RemoveDisplayObject(this);
 	removeAVM1Listeners();
 	EventDispatcher::finalize();
-	cachedBitmap.reset();
-	cachedAsBitmapOf=nullptr;
 	parent=nullptr;
 	eventparentmap.clear();
-	mask.reset();
+	if (mask)
+		mask->removeStoredMember();
+	mask=nullptr;
+	if (maskee)
+		maskee->removeStoredMember();
+	maskee=nullptr;
+	if (clipMask)
+		clipMask->removeStoredMember();
+	clipMask=nullptr;
 	matrix.reset();
 	loaderInfo.reset();
 	colorTransform.reset();
@@ -146,19 +217,20 @@ void DisplayObject::finalize()
 	scalingGrid.reset();
 	for (auto it = avm1variables.begin(); it != avm1variables.end(); it++)
 	{
-		ASATOM_DECREF(it->second);
+		ASObject* o = asAtomHandler::getObject(it->second);
+		if (o)
+			o->removeStoredMember();
 	}
 	avm1variables.clear();
+	for (auto it = avm1locals.begin(); it != avm1locals.end(); it++)
+	{
+		ASATOM_REMOVESTOREDMEMBER(it->second);
+	}
+	avm1locals.clear();
 	variablebindings.clear();
 	loadedFrom=getSystemState()->mainClip;
 	hasChanged = true;
 	needsTextureRecalculation=true;
-	if (!cachedSurface.isChunkOwner)
-		cachedSurface.tex=nullptr;
-	cachedSurface.isChunkOwner=true;
-	cachedSurface.isValid=false;
-	cachedSurface.isInitialized=false;
-	cachedSurface.wasUpdated=false;
 	avm1mouselistenercount=0;
 	avm1framelistenercount=0;
 	EventDispatcher::finalize();
@@ -169,18 +241,27 @@ bool DisplayObject::destruct()
 	// TODO make all DisplayObject derived classes reusable
 	getSystemState()->stage->AVM1RemoveDisplayObject(this);
 	removeAVM1Listeners();
-	cachedBitmap.reset();
-	cachedAsBitmapOf=nullptr;
 	ismask=false;
+	filterlistHasChanged=false;
+	maxfilterborder=0;
 	parent=nullptr;
 	eventparentmap.clear();
-	mask.reset();
+	if (mask)
+		mask->removeStoredMember();
+	mask=nullptr;
+	if (maskee)
+		maskee->removeStoredMember();
+	maskee=nullptr;
+	if (clipMask)
+		clipMask->removeStoredMember();
+	clipMask=nullptr;
 	matrix.reset();
 	loaderInfo.reset();
 	invalidateQueueNext.reset();
 	accessibilityProperties.reset();
 	colorTransform.reset();
 	scalingGrid.reset();
+	scrollRect.reset();
 	loadedFrom=getSystemState()->mainClip;
 	hasChanged = true;
 	needsTextureRecalculation=true;
@@ -206,18 +287,18 @@ bool DisplayObject::destruct()
 	name=BUILTIN_STRINGS::EMPTY;
 	for (auto it = avm1variables.begin(); it != avm1variables.end(); it++)
 	{
-		ASATOM_DECREF(it->second);
+		ASObject* o = asAtomHandler::getObject(it->second);
+		if (o)
+			o->removeStoredMember();
 	}
 	avm1variables.clear();
+	for (auto it = avm1locals.begin(); it != avm1locals.end(); it++)
+	{
+		ASATOM_REMOVESTOREDMEMBER(it->second);
+	}
+	avm1locals.clear();
 	variablebindings.clear();
-	if (!cachedSurface.isChunkOwner)
-		cachedSurface.tex=nullptr;
-	if (cachedSurface.tex)
-		cachedSurface.tex->makeEmpty();
-	cachedSurface.isChunkOwner=true;
-	cachedSurface.isValid=false;
-	cachedSurface.isInitialized=false;
-	cachedSurface.wasUpdated=false;
+	placeFrame=UINT32_MAX;
 	return EventDispatcher::destruct();
 }
 
@@ -227,10 +308,6 @@ void DisplayObject::prepareShutdown()
 		return;
 	EventDispatcher::prepareShutdown();
 
-	if (cachedSurface.mask)
-		cachedSurface.mask->prepareShutdown();
-	if (cachedBitmap)
-		cachedBitmap->prepareShutdown();
 	if (mask)
 		mask->prepareShutdown();
 	if (matrix)
@@ -255,6 +332,14 @@ void DisplayObject::prepareShutdown()
 		if (o)
 			o->prepareShutdown();
 	}
+	for (auto it = avm1locals.begin(); it != avm1locals.end(); it++)
+	{
+		ASObject* o = asAtomHandler::getObject(it->second);
+		if (o)
+			o->prepareShutdown();
+	}
+	avm1locals.clear();
+	setParent(nullptr);
 }
 
 bool DisplayObject::countCylicMemberReferences(garbagecollectorstate& gcstate)
@@ -268,55 +353,67 @@ bool DisplayObject::countCylicMemberReferences(garbagecollectorstate& gcstate)
 		if (o)
 			ret = o->countAllCylicMemberReferences(gcstate) || ret;
 	}
+	for (auto it = avm1locals.begin(); it != avm1locals.end(); it++)
+	{
+		ASObject* o = asAtomHandler::getObject(it->second);
+		if (o)
+			ret = o->countAllCylicMemberReferences(gcstate) || ret;
+	}
+	if (mask)
+		ret = mask->countAllCylicMemberReferences(gcstate) || ret;
+	if (maskee)
+		ret = maskee->countAllCylicMemberReferences(gcstate) || ret;
+	if (clipMask)
+		ret = clipMask->countAllCylicMemberReferences(gcstate) || ret;
 	return ret;
 }
 
 void DisplayObject::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, EventDispatcher, _constructorNotInstantiatable, CLASS_SEALED);
-	c->setDeclaredMethodByQName("loaderInfo","",Class<IFunction>::getFunction(c->getSystemState(),_getLoaderInfo,0,Class<LoaderInfo>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("width","",Class<IFunction>::getFunction(c->getSystemState(),_getWidth,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("width","",Class<IFunction>::getFunction(c->getSystemState(),_setWidth),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("scaleX","",Class<IFunction>::getFunction(c->getSystemState(),_getScaleX,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("scaleX","",Class<IFunction>::getFunction(c->getSystemState(),_setScaleX),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("scaleY","",Class<IFunction>::getFunction(c->getSystemState(),_getScaleY,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("scaleY","",Class<IFunction>::getFunction(c->getSystemState(),_setScaleY),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("scaleZ","",Class<IFunction>::getFunction(c->getSystemState(),_getScaleZ,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("scaleZ","",Class<IFunction>::getFunction(c->getSystemState(),_setScaleZ),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("x","",Class<IFunction>::getFunction(c->getSystemState(),_getX,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("x","",Class<IFunction>::getFunction(c->getSystemState(),_setX),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("y","",Class<IFunction>::getFunction(c->getSystemState(),_getY,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("y","",Class<IFunction>::getFunction(c->getSystemState(),_setY),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("z","",Class<IFunction>::getFunction(c->getSystemState(),_getZ,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("z","",Class<IFunction>::getFunction(c->getSystemState(),_setZ),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("height","",Class<IFunction>::getFunction(c->getSystemState(),_getHeight,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("height","",Class<IFunction>::getFunction(c->getSystemState(),_setHeight),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("visible","",Class<IFunction>::getFunction(c->getSystemState(),_getVisible,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("visible","",Class<IFunction>::getFunction(c->getSystemState(),_setVisible),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("rotation","",Class<IFunction>::getFunction(c->getSystemState(),_getRotation,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("rotation","",Class<IFunction>::getFunction(c->getSystemState(),_setRotation),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("loaderInfo","",c->getSystemState()->getBuiltinFunction(_getLoaderInfo,0,Class<LoaderInfo>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("width","",c->getSystemState()->getBuiltinFunction(_getWidth,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("width","",c->getSystemState()->getBuiltinFunction(_setWidth),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("scaleX","",c->getSystemState()->getBuiltinFunction(_getScaleX,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("scaleX","",c->getSystemState()->getBuiltinFunction(_setScaleX),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("scaleY","",c->getSystemState()->getBuiltinFunction(_getScaleY,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("scaleY","",c->getSystemState()->getBuiltinFunction(_setScaleY),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("scaleZ","",c->getSystemState()->getBuiltinFunction(_getScaleZ,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("scaleZ","",c->getSystemState()->getBuiltinFunction(_setScaleZ),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("x","",c->getSystemState()->getBuiltinFunction(_getX,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("x","",c->getSystemState()->getBuiltinFunction(_setX),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("y","",c->getSystemState()->getBuiltinFunction(_getY,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("y","",c->getSystemState()->getBuiltinFunction(_setY),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("z","",c->getSystemState()->getBuiltinFunction(_getZ,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("z","",c->getSystemState()->getBuiltinFunction(_setZ),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("height","",c->getSystemState()->getBuiltinFunction(_getHeight,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("height","",c->getSystemState()->getBuiltinFunction(_setHeight),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("visible","",c->getSystemState()->getBuiltinFunction(_getVisible,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("visible","",c->getSystemState()->getBuiltinFunction(_setVisible),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("rotation","",c->getSystemState()->getBuiltinFunction(_getRotation,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("rotation","",c->getSystemState()->getBuiltinFunction(_setRotation),SETTER_METHOD,true);
 	REGISTER_GETTER_SETTER_RESULTTYPE(c,name,ASString);
-	c->setDeclaredMethodByQName("parent","",Class<IFunction>::getFunction(c->getSystemState(),_getParent,0,Class<DisplayObject>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("root","",Class<IFunction>::getFunction(c->getSystemState(),_getRoot,0,Class<DisplayObject>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("blendMode","",Class<IFunction>::getFunction(c->getSystemState(),_getBlendMode,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("blendMode","",Class<IFunction>::getFunction(c->getSystemState(),_setBlendMode),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("scale9Grid","",Class<IFunction>::getFunction(c->getSystemState(),_getScale9Grid,0,Class<Rectangle>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("scale9Grid","",Class<IFunction>::getFunction(c->getSystemState(),_setScale9Grid),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("stage","",Class<IFunction>::getFunction(c->getSystemState(),_getStage,0,Class<DisplayObject>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("mask","",Class<IFunction>::getFunction(c->getSystemState(),_getMask,0,Class<DisplayObject>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("mask","",Class<IFunction>::getFunction(c->getSystemState(),_setMask),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("alpha","",Class<IFunction>::getFunction(c->getSystemState(),_getAlpha,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("alpha","",Class<IFunction>::getFunction(c->getSystemState(),_setAlpha),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("getBounds","",Class<IFunction>::getFunction(c->getSystemState(),_getBounds,1,Class<Rectangle>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("getRect","",Class<IFunction>::getFunction(c->getSystemState(),_getBounds,1,Class<Rectangle>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("mouseX","",Class<IFunction>::getFunction(c->getSystemState(),_getMouseX,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("mouseY","",Class<IFunction>::getFunction(c->getSystemState(),_getMouseY,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("localToGlobal","",Class<IFunction>::getFunction(c->getSystemState(),localToGlobal,1,Class<Point>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("globalToLocal","",Class<IFunction>::getFunction(c->getSystemState(),globalToLocal,1,Class<Point>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("hitTestObject","",Class<IFunction>::getFunction(c->getSystemState(),hitTestObject,1,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("hitTestPoint","",Class<IFunction>::getFunction(c->getSystemState(),hitTestPoint,2,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("transform","",Class<IFunction>::getFunction(c->getSystemState(),_getTransform,0,Class<Transform>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("transform","",Class<IFunction>::getFunction(c->getSystemState(),_setTransform),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("parent","",c->getSystemState()->getBuiltinFunction(_getParent,0,Class<DisplayObject>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("root","",c->getSystemState()->getBuiltinFunction(_getRoot,0,Class<DisplayObject>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("blendMode","",c->getSystemState()->getBuiltinFunction(_getBlendMode,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("blendMode","",c->getSystemState()->getBuiltinFunction(_setBlendMode),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("scale9Grid","",c->getSystemState()->getBuiltinFunction(_getScale9Grid,0,Class<Rectangle>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("scale9Grid","",c->getSystemState()->getBuiltinFunction(_setScale9Grid),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("stage","",c->getSystemState()->getBuiltinFunction(_getStage,0,Class<DisplayObject>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("mask","",c->getSystemState()->getBuiltinFunction(_getMask,0,Class<DisplayObject>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("mask","",c->getSystemState()->getBuiltinFunction(_setMask),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("alpha","",c->getSystemState()->getBuiltinFunction(_getAlpha,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("alpha","",c->getSystemState()->getBuiltinFunction(_setAlpha),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("getBounds","",c->getSystemState()->getBuiltinFunction(_getBounds,1,Class<Rectangle>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getRect","",c->getSystemState()->getBuiltinFunction(_getBounds,1,Class<Rectangle>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("mouseX","",c->getSystemState()->getBuiltinFunction(_getMouseX,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("mouseY","",c->getSystemState()->getBuiltinFunction(_getMouseY,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("localToGlobal","",c->getSystemState()->getBuiltinFunction(localToGlobal,1,Class<Point>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("globalToLocal","",c->getSystemState()->getBuiltinFunction(globalToLocal,1,Class<Point>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("hitTestObject","",c->getSystemState()->getBuiltinFunction(hitTestObject,1,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("hitTestPoint","",c->getSystemState()->getBuiltinFunction(hitTestPoint,2,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("transform","",c->getSystemState()->getBuiltinFunction(_getTransform,0,Class<Transform>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("transform","",c->getSystemState()->getBuiltinFunction(_setTransform),SETTER_METHOD,true);
 	REGISTER_GETTER_SETTER_RESULTTYPE(c,accessibilityProperties,AccessibilityProperties);
 	REGISTER_GETTER_SETTER_RESULTTYPE(c,cacheAsBitmap,Boolean);
 	REGISTER_GETTER_SETTER_RESULTTYPE(c,filters,Array);
@@ -330,13 +427,122 @@ void DisplayObject::sinit(Class_base* c)
 	IBitmapDrawable::linkTraits(c);
 }
 
-ASFUNCTIONBODY_GETTER_SETTER_STRINGID(DisplayObject,name)
+ASFUNCTIONBODY_GETTER_SETTER_STRINGID_CB(DisplayObject,name,onSetName)
 ASFUNCTIONBODY_GETTER_SETTER(DisplayObject,accessibilityProperties)
-ASFUNCTIONBODY_GETTER_SETTER(DisplayObject,scrollRect)
+ASFUNCTIONBODY_GETTER_SETTER_CB(DisplayObject,scrollRect,onSetScrollRect)
 ASFUNCTIONBODY_GETTER_SETTER_NOT_IMPLEMENTED(DisplayObject, rotationX)
 ASFUNCTIONBODY_GETTER_SETTER_NOT_IMPLEMENTED(DisplayObject, rotationY)
-ASFUNCTIONBODY_GETTER_SETTER_NOT_IMPLEMENTED(DisplayObject, opaqueBackground)
 ASFUNCTIONBODY_GETTER_SETTER_NOT_IMPLEMENTED(DisplayObject, metaData)
+
+void DisplayObject::onSetName(uint32_t oldName)
+{
+	if (!needsActionScript3() && oldName != name)
+	{
+		auto parent = getParent();
+		if (parent != nullptr)
+		{
+			multiname m(nullptr);
+			m.name_type = multiname::NAME_STRING;
+			m.isAttribute = false;
+			m.name_s_id = name;
+
+			ASWorker* wrk = parent->getInstanceWorker();
+			incRef();
+			asAtom val = asAtomHandler::fromObject(this);
+			// use internal version to avoid any unwanted sideeffects (events/addChild/removeChild)
+			parent->setVariableByMultiname_intern(m, val, ASObject::CONST_NOT_ALLOWED, nullptr,nullptr, wrk);
+			
+			if (oldName != BUILTIN_STRINGS::EMPTY)
+			{
+				m.name_s_id = oldName;
+				m.ns.push_back(nsNameAndKind());
+				parent->deleteVariableByMultiname_intern(m, wrk);
+			}
+		}
+	}
+}
+void DisplayObject::onSetScrollRect(_NR<Rectangle> oldValue)
+{
+	if (oldValue == this->scrollRect)
+		return;
+	if (!oldValue.isNull())
+		oldValue->removeUser(this);
+	if (!this->scrollRect.isNull())
+	{
+		// not mentioned in the specs, but setting scrollRect actually creates a clone of the provided rect,
+		// so that any future changes to the scrollRect have no effect on the provided rect and vice versa
+		Rectangle* res=Class<Rectangle>::getInstanceS(this->getInstanceWorker());
+		res->x=this->scrollRect->x;
+		res->y=this->scrollRect->y;
+		res->width=this->scrollRect->width;
+		res->height=this->scrollRect->height;
+		
+		this->scrollRect = _MR(res);
+		this->scrollRect->addUser(this);
+	}
+	if ((this->scrollRect.isNull() && !oldValue.isNull()) ||
+		(!this->scrollRect.isNull() && oldValue.isNull()) ||
+		(!this->scrollRect.isNull() && !oldValue.isNull() &&
+		 (this->scrollRect->x != oldValue->x ||
+		  this->scrollRect->y != oldValue->y ||
+		  this->scrollRect->width != oldValue->width ||
+		  this->scrollRect->height != oldValue->height)))
+	{
+		hasChanged = true;
+		if (onStage)
+			requestInvalidation(getSystemState());
+		else
+			requestInvalidationFilterParent();
+	}
+}
+void DisplayObject::updatedRect()
+{
+	assert(!this->scrollRect.isNull());
+	hasChanged = true;
+	if (onStage)
+		requestInvalidation(getSystemState());
+	else
+		requestInvalidationFilterParent();
+	
+}
+
+ASFUNCTIONBODY_ATOM(DisplayObject,_getter_opaqueBackground)
+{
+	if(!asAtomHandler::is<DisplayObject>(obj))
+	{
+		createError<ArgumentError>(wrk,kInvalidArgumentError,"Function applied to wrong object");
+		return;
+	}
+	if(argslen != 0)
+	{
+		createError<ArgumentError>(wrk,kInvalidArgumentError,"Arguments provided in getter");
+		return;
+	}
+	DisplayObject* th=asAtomHandler::as<DisplayObject>(obj);
+	ret = th->opaqueBackground;
+}
+ASFUNCTIONBODY_ATOM(DisplayObject,_setter_opaqueBackground)
+{
+	if(!asAtomHandler::is<DisplayObject>(obj))
+	{
+		createError<ArgumentError>(wrk,kInvalidArgumentError,"Function applied to wrong object");
+		return;
+	}
+	if(argslen != 1)
+	{
+		createError<ArgumentError>(wrk,kInvalidArgumentError,"Arguments provided in getter");
+		return;
+	}
+	DisplayObject* th=asAtomHandler::as<DisplayObject>(obj);
+	if (asAtomHandler::isNull(args[0]) || asAtomHandler::isUndefined(args[0]))
+		th->opaqueBackground = asAtomHandler::nullAtom;
+	else
+	{
+		// convert argument to uint and ignore alpha component
+		th->opaqueBackground =asAtomHandler::fromUInt(asAtomHandler::toUInt(args[0])&0xffffff) ;
+	}
+	th->requestInvalidation(wrk->getSystemState());
+}
 
 ASFUNCTIONBODY_ATOM(DisplayObject,_getter_filters)
 {
@@ -369,58 +575,76 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_setter_filters)
 		return;
 	}
 	DisplayObject* th=asAtomHandler::as<DisplayObject>(obj);
+
 	th->filters =ArgumentConversionAtom<_NR<Array>>::toConcrete(wrk,args[0],th->filters);
-	if (th->computeCacheAsBitmap() && !th->cachedAsBitmapOf && th->is<DisplayObjectContainer>())
-		th->as<DisplayObjectContainer>()->setChildrenCachedAsBitmapOf(th);
-	
-	th->requestInvalidation(wrk->getSystemState(),true);
-}
-bool DisplayObject::computeCacheAsBitmap(bool checksize)
-{
-	if (cacheAsBitmap || (!filters.isNull() && filters->size()!=0) || blendMode==BLENDMODE_LAYER)
+	th->maxfilterborder=0;
+	th->filterlistHasChanged=true;
+	for (uint32_t i = 0; i < th->filters->size(); i++)
 	{
-		if (checksize)
-		{
-			number_t bxmin,bxmax,bymin,bymax;
-			boundsRect(bxmin,bxmax,bymin,bymax);
-			// check if size of resulting bitmap is too large (see Adobe reference for DisplayObject.cacheAsBitmap)
-			uint32_t w=(ceil(bxmax-bxmin));
-			uint32_t h=(ceil(bymax-bymin));
-			return (w <= 8192 && h <= 8192 && (w * h) <= 16777216);
-		}
-		return true;
+		asAtom f = asAtomHandler::invalidAtom;
+		th->filters->at_nocheck(f,i);
+		if (asAtomHandler::is<BitmapFilter>(f))
+			th->maxfilterborder = max(th->maxfilterborder,asAtomHandler::as<BitmapFilter>(f)->getMaxFilterBorder());
 	}
-	return false;
+	th->requestInvalidation(wrk->getSystemState());
+}
+bool DisplayObject::needsCacheAsBitmap() const
+{
+	return cacheAsBitmap
+		   || blendMode == BLENDMODE_MULTIPLY
+		   || blendMode == BLENDMODE_ADD
+		   || blendMode == BLENDMODE_SCREEN
+		   || blendMode == BLENDMODE_DARKEN
+		   || blendMode == BLENDMODE_DIFFERENCE
+		   || blendMode == BLENDMODE_HARDLIGHT
+		   || blendMode == BLENDMODE_LIGHTEN
+		   || blendMode == BLENDMODE_OVERLAY
+		   || blendMode == BLENDMODE_ERASE
+		   || hasFilters();
+}
+bool DisplayObject::hasFilters() const
+{
+	return filters && filters->size();
 }
 
-bool DisplayObject::requestInvalidationForCacheAsBitmap(InvalidateQueue* q)
+void DisplayObject::requestInvalidationFilterParent(InvalidateQueue* q)
 {
-	if (q->getCacheAsBitmapObject())
+	if (cachedSurface->cachedFilterTextureID != UINT32_MAX
+		|| (!cachedSurface->isInitialized && (this->hasFilters()
+											 || this->inMask()
+											 || isShaderBlendMode(getBlendMode()))
+		))
 	{
-		if (this->computeCacheAsBitmap() && this !=q->getCacheAsBitmapObject().getPtr())
-		{
-			this->incRef();
-			q->addToInvalidateQueue(_MR(this));
-			return true;
-		}
+		if (cachedSurface->getState())
+			cachedSurface->getState()->needsFilterRefresh=true;
+		this->hasChanged=true;
+		requestInvalidationIncludingChildren(q);
 	}
-	else
+	DisplayObject* p = getParent();
+	while (p)
 	{
-		if (!isMask() && cachedAsBitmapOf && cachedAsBitmapOf->computeCacheAsBitmap() && (q && !q->isSoftwareQueue))
+		if (p->cachedSurface->cachedFilterTextureID != UINT32_MAX
+			|| (!p->cachedSurface->isInitialized && (p->hasFilters()
+													|| p->inMask()
+													|| isShaderBlendMode(p->getBlendMode()))
+			))
 		{
-			cachedAsBitmapOf->hasChanged=true;
-			if (getNeedsTextureRecalculation())
-			{
-				cachedAsBitmapOf->setNeedsTextureRecalculation(true);
-				if (hasGraphics() || legacy)
-					resetNeedsTextureRecalculation();
-			}
-			cachedAsBitmapOf->incRef();
-			q->addToInvalidateQueue(_MR(cachedAsBitmapOf));
-			return true;
-		}
+			p->requestInvalidationFilterParent(q);
+			break;
+		}	
+		p = p->getParent();
 	}
-	return false;
+}
+void DisplayObject::requestInvalidationIncludingChildren(InvalidateQueue* q)
+{
+	this->hasChanged=true;
+	if (q)
+	{
+		this->incRef();
+		q->addToInvalidateQueue(_MR(this));
+		if(mask)
+			mask->requestInvalidationIncludingChildren(q);
+	}
 }
 ASFUNCTIONBODY_ATOM(DisplayObject,_getter_cacheAsBitmap)
 {
@@ -435,7 +659,7 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_getter_cacheAsBitmap)
 		return;
 	}
 	DisplayObject* th=asAtomHandler::as<DisplayObject>(obj);
-	ret = asAtomHandler::fromBool(th->computeCacheAsBitmap());
+	ret = asAtomHandler::fromBool(th->cacheAsBitmap);
 }
 ASFUNCTIONBODY_ATOM(DisplayObject,_setter_cacheAsBitmap)
 {
@@ -450,15 +674,11 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_setter_cacheAsBitmap)
 		return;
 	}
 	DisplayObject* th=asAtomHandler::as<DisplayObject>(obj);
-	if (th->filters.isNull() || th->filters->size()==0)
+	if (th->cacheAsBitmap != asAtomHandler::toInt(args[0]))
 	{
-		if (th->cacheAsBitmap != asAtomHandler::toInt(args[0]))
-		{
-			th->cacheAsBitmap = asAtomHandler::toInt(args[0]);
-			if (th->computeCacheAsBitmap() && !th->cachedAsBitmapOf && th->is<DisplayObjectContainer>())
-				th->as<DisplayObjectContainer>()->setChildrenCachedAsBitmapOf(th);
-			th->requestInvalidation(wrk->getSystemState(),true);
-		}
+		th->hasChanged=true;
+		th->cacheAsBitmap = asAtomHandler::toInt(args[0]);
+		th->requestInvalidation(wrk->getSystemState());
 	}
 }
 
@@ -508,10 +728,13 @@ void DisplayObject::setMatrix(_NR<Matrix> m)
 			mustInvalidate=true;
 		}
 	}
-	if(mustInvalidate && onStage)
+	if(mustInvalidate)
 	{
 		hasChanged=true;
-		requestInvalidation(getSystemState());
+		if (onStage)
+			requestInvalidation(getSystemState());
+		else
+			requestInvalidationFilterParent();
 	}
 }
 
@@ -534,10 +757,13 @@ void DisplayObject::setMatrix3D(_NR<Matrix3D> m)
 		geometryChanged();
 		mustInvalidate=true;
 	}
-	if(mustInvalidate && onStage)
+	if(mustInvalidate)
 	{
 		hasChanged=true;
-		requestInvalidation(getSystemState());
+		if (onStage)
+			requestInvalidation(getSystemState());
+		else
+			requestInvalidationFilterParent();
 	}
 }
 
@@ -563,10 +789,13 @@ void DisplayObject::setLegacyMatrix(const lightspark::MATRIX& m)
 			mustInvalidate=true;
 		}
 	}
-	if(mustInvalidate && onStage)
+	if(mustInvalidate)
 	{
 		hasChanged=true;
-		requestInvalidation(getSystemState());
+		if (onStage)
+			requestInvalidation(getSystemState());
+		else
+			requestInvalidationFilterParent();
 	}
 }
 
@@ -576,39 +805,70 @@ void DisplayObject::setFilters(const FILTERLIST& filterlist)
 	{
 		if (filters.isNull())
 			filters = _MR(Class<Array>::getInstanceS(getInstanceWorker()));
+		else
+		{
+			// check if filterlist has really changed
+			if (!filterlistHasChanged && filters->size() == filterlist.Filters.size())
+			{
+				for (uint32_t i =0; i < filters->size(); i++)
+				{
+					asAtom f=filters->at(i);
+					if (!asAtomHandler::is<BitmapFilter>(f))
+					{
+						filterlistHasChanged=true;
+						break;
+					}
+					if (!asAtomHandler::as<BitmapFilter>(f)->compareFILTER(filterlist.Filters.at(i)))
+					{
+						filterlistHasChanged=true;
+						break;
+					}
+				}
+				if (!filterlistHasChanged)
+					return;
+			}
+		}
+		filterlistHasChanged=true;
+		maxfilterborder=0;
 		filters->resize(0);
 		auto it = filterlist.Filters.cbegin();
 		while (it != filterlist.Filters.cend())
 		{
+			BitmapFilter* f = nullptr;
 			switch(it->FilterID)
 			{
-				case 0:
-					filters->push(asAtomHandler::fromObject(Class<DropShadowFilter>::getInstanceS(getInstanceWorker(),it->DropShadowFilter)));
+				case FILTER::FILTER_DROPSHADOW:
+					f=Class<DropShadowFilter>::getInstanceS(getInstanceWorker(),it->DropShadowFilter);
 					break;
-				case 1:
-					filters->push(asAtomHandler::fromObject(Class<BlurFilter>::getInstanceS(getInstanceWorker(),it->BlurFilter)));
+				case FILTER::FILTER_BLUR:
+					f=Class<BlurFilter>::getInstanceS(getInstanceWorker(),it->BlurFilter);
 					break;
-				case 2:
-					filters->push(asAtomHandler::fromObject(Class<GlowFilter>::getInstanceS(getInstanceWorker(),it->GlowFilter)));
+				case FILTER::FILTER_GLOW:
+					f=Class<GlowFilter>::getInstanceS(getInstanceWorker(),it->GlowFilter);
 					break;
-				case 3:
-					filters->push(asAtomHandler::fromObject(Class<BevelFilter>::getInstanceS(getInstanceWorker(),it->BevelFilter)));
+				case FILTER::FILTER_BEVEL:
+					f=Class<BevelFilter>::getInstanceS(getInstanceWorker(),it->BevelFilter);
 					break;
-				case 4:
-					filters->push(asAtomHandler::fromObject(Class<GradientGlowFilter>::getInstanceS(getInstanceWorker(),it->GradientGlowFilter)));
+				case FILTER::FILTER_GRADIENTGLOW:
+					f=Class<GradientGlowFilter>::getInstanceS(getInstanceWorker(),it->GradientGlowFilter);
 					break;
-				case 5:
-					filters->push(asAtomHandler::fromObject(Class<ConvolutionFilter>::getInstanceS(getInstanceWorker(),it->ConvolutionFilter)));
+				case FILTER::FILTER_CONVOLUTION:
+					f=Class<ConvolutionFilter>::getInstanceS(getInstanceWorker(),it->ConvolutionFilter);
 					break;
-				case 6:
-					filters->push(asAtomHandler::fromObject(Class<ColorMatrixFilter>::getInstanceS(getInstanceWorker(),it->ColorMatrixFilter)));
+				case FILTER::FILTER_COLORMATRIX:
+					f=Class<ColorMatrixFilter>::getInstanceS(getInstanceWorker(),it->ColorMatrixFilter);
 					break;
-				case 7:
-					filters->push(asAtomHandler::fromObject(Class<GradientBevelFilter>::getInstanceS(getInstanceWorker(),it->GradientBevelFilter)));
+				case FILTER::FILTER_GRADIENTBEVEL:
+					f=Class<GradientBevelFilter>::getInstanceS(getInstanceWorker(),it->GradientBevelFilter);
 					break;
 				default:
 					LOG(LOG_ERROR,"Unsupported Filter Id " << (int)it->FilterID);
 					break;
+			}
+			if (f)
+			{
+				filters->push(asAtomHandler::fromObject(f));
+				maxfilterborder = max(maxfilterborder,f->getMaxFilterBorder());
 			}
 			it++;
 		}
@@ -618,40 +878,127 @@ void DisplayObject::setFilters(const FILTERLIST& filterlist)
 	}
 	else
 	{
+		maxfilterborder=0;
 		if (!filters.isNull() && filters->size())
 		{
 			filters->resize(0);
 			hasChanged=true;
-			LOG(LOG_ERROR,"setFilters2:"<<this->toDebugString());
 			setNeedsTextureRecalculation();
 			requestInvalidation(getSystemState());
 		}
 	}
-	
+}
+
+void DisplayObject::refreshSurfaceState()
+{
+}
+void DisplayObject::setupSurfaceState(IDrawable* d)
+{
+	SurfaceState* state = d->getState();
+	assert(state);
+#ifndef _NDEBUG
+	state->src=this; // keep track of the DisplayObject when debugging
+#endif
+	if (this->mask)
+		state->mask = this->mask->getCachedSurface();
+	else
+		state->mask.reset();
+	if (maskee)
+		state->maskee = maskee->getCachedSurface();
+	else
+		state->maskee.reset();
+	state->clipdepth = this->getClipDepth();
+	state->depth = this->getDepth();
+	state->isMask = this->ismask;
+	state->visible = this->visible;
+	state->alpha = this->alpha;
+	state->allowAsMask = this->allowAsMask();
+	state->maxfilterborder = this->getMaxFilterBorder();
+	if (this->filterlistHasChanged)
+	{
+		state->filters.clear();
+		state->filters.reserve(this->filters->size()*2);
+		for (uint32_t i = 0; i < this->filters->size(); i++)
+		{
+			asAtom f = asAtomHandler::invalidAtom;
+			this->filters->at_nocheck(f,i);
+			if (asAtomHandler::is<BitmapFilter>(f))
+			{
+				FilterData fdata;
+				asAtomHandler::as<BitmapFilter>(f)->getRenderFilterGradientColors(fdata.gradientcolors);
+				uint32_t step = 0;
+				while (true)
+				{
+					asAtomHandler::as<BitmapFilter>(f)->getRenderFilterArgs(step,fdata.filterdata);
+					state->filters.push_back(fdata);
+					if (fdata.filterdata[0] == 0)
+						break;
+					step++;
+				}
+			}
+		}
+	}
+	this->boundsRectWithoutChildren(state->bounds.min.x, state->bounds.max.x, state->bounds.min.y, state->bounds.max.y, false);
+	if (this->scrollRect)
+		state->scrollRect=this->scrollRect->getRect();
+	else
+		state->scrollRect= RECT();
+	if (this->is<RootMovieClip>())
+	{
+		state->hasOpaqueBackground = true;
+		state->renderWithNanoVG = true;
+		state->opaqueBackground=this->as<RootMovieClip>()->getBackground();
+		this->boundsRect(state->bounds.min.x, state->bounds.max.x, state->bounds.min.y, state->bounds.max.y, false);
+	}
+	else
+	{
+		state->hasOpaqueBackground = !asAtomHandler::isNull(this->opaqueBackground);
+		if (state->hasOpaqueBackground)
+			state->opaqueBackground=RGB(asAtomHandler::toUInt(this->opaqueBackground));
+	}
+		
 }
 
 void DisplayObject::setMask(_NR<DisplayObject> m)
 {
-	bool mustInvalidate=(mask!=m || (m && m->hasChanged)) && onStage;
+	bool mustInvalidate=(mask!=m.getPtr() || (m && m->hasChanged));
 
-	if(!mask.isNull())
+	if(mask)
 	{
 		//Remove previous mask
 		mask->ismask=false;
+		mask->maskee->removeStoredMember();
+		mask->maskee=nullptr;
 	}
 
-	mask=m;
-	if(!mask.isNull())
+	mask=m.getPtr();
+	if(mask)
 	{
 		//Use new mask
 		mask->ismask=true;
+		mask->incRef();
+		mask->addStoredMember();
 	}
 
-	if(mustInvalidate && onStage)
+	if(mustInvalidate)
 	{
 		hasChanged=true;
-//		needsTextureRecalculation=true;
-		requestInvalidation(getSystemState());
+		if (onStage)
+			requestInvalidation(getSystemState());
+		else
+			requestInvalidationFilterParent();
+	}
+}
+
+void DisplayObject::setClipMask(_NR<DisplayObject> m)
+{
+	if (clipMask)
+		clipMask->removeStoredMember();
+	clipMask = m.getPtr();
+	if (clipMask)
+	{
+		clipMask->incRef();
+		clipMask->addStoredMember();
 	}
 }
 void DisplayObject::setBlendMode(UI8 blendmode)
@@ -662,6 +1009,13 @@ void DisplayObject::setBlendMode(UI8 blendmode)
 	{
 		this->blendMode = (AS_BLENDMODE)(uint8_t)blendmode;
 	}
+}
+
+bool DisplayObject::isShaderBlendMode(AS_BLENDMODE bl)
+{
+	// TODO add shader for other extended blendmodes
+	return bl == AS_BLENDMODE::BLENDMODE_OVERLAY
+			|| bl == BLENDMODE_HARDLIGHT;
 }
 MATRIX DisplayObject::getConcatenatedMatrix(bool includeRoot) const
 {
@@ -692,6 +1046,11 @@ float DisplayObject::getConcatenatedAlpha() const
 		return clippedAlpha();
 	else
 		return parent->getConcatenatedAlpha()*clippedAlpha();
+}
+
+float DisplayObject::getScaleFactor() const
+{
+	return TWIPS_SCALING_FACTOR;
 }
 
 void DisplayObject::onNewEvent(Event* ev)
@@ -749,6 +1108,11 @@ MATRIX DisplayObject::getMatrix(bool includeRotation) const
 	return ret;
 }
 
+bool DisplayObject::isConstructed() const
+{
+	return ACQUIRE_READ(constructed);
+}
+
 void DisplayObject::extractValuesFromMatrix()
 {
 	//Extract the base components from the matrix and leave in
@@ -762,7 +1126,7 @@ void DisplayObject::extractValuesFromMatrix()
 	//Deapply translation
 	matrix->matrix.translate(-tx,-ty);
 	//Deapply rotation
-	matrix->matrix.rotate(-rotation*M_PI/180);
+	matrix->matrix.rotate(-rotation*M_PI/180.0);
 	//Deapply scaling
 	matrix->matrix.scale(1.0/sx,1.0/sy);
 }
@@ -774,41 +1138,23 @@ bool DisplayObject::skipRender() const
 
 bool DisplayObject::defaultRender(RenderContext& ctxt)
 {
-	// TODO: use scrollRect
-	const CachedSurface& surface=ctxt.getCachedSurface(this);
+	const Transform2D& t = ctxt.transformStack().transform();
+	const CachedSurface* surface=ctxt.getCachedSurface(this);
 	/* surface is only modified from within the render thread
 	 * so we need no locking here */
-	if(!surface.isValid || !surface.isInitialized || !surface.tex || !surface.tex->isValid())
+	if(!surface->isValid || !surface->isInitialized || !surface->tex || !surface->tex->isValid())
 		return true;
-	if (surface.tex->width == 0 || surface.tex->height == 0)
+	if (surface->tex->width == 0 || surface->tex->height == 0)
 		return true;
 
-	AS_BLENDMODE bl = surface.blendmode; // surface.blendmode may be set to something different when rendering to bitmap
-	if (bl == BLENDMODE_NORMAL) 
-	{
-		DisplayObject* obj = this;
-		while (obj && bl == BLENDMODE_NORMAL)
-		{
-			bl = obj->getBlendMode();
-			obj = obj->getParent();
-		}
-	}
 	Rectangle* r = this->scalingGrid.getPtr();
 	if (!r && getParent())
 		r = getParent()->scalingGrid.getPtr();
 	ctxt.lsglLoadIdentity();
-	if (ctxt.contextType == RenderContext::GL)
-	{
-		if (surface.isMask)
-			ctxt.currentMask=this;
-		// ensure that the matching mask is rendered before rendering this DisplayObject
-		if (surface.mask && ctxt.currentMask != surface.mask.getPtr())
-			surface.mask->defaultRender(ctxt);
-	}
-	ctxt.renderTextured(*surface.tex, surface.alpha, RenderContext::RGB_MODE,
-			surface.redMultiplier, surface.greenMultiplier, surface.blueMultiplier, surface.alphaMultiplier,
-			surface.redOffset, surface.greenOffset, surface.blueOffset, surface.alphaOffset,
-			surface.isMask, !surface.mask.isNull(),0.0,RGB(),surface.smoothing,surface.matrix,r,bl);
+	ColorTransformBase ct = t.colorTransform;
+	MATRIX m = t.matrix;
+	ctxt.renderTextured(*surface->tex, surface->getState()->alpha, RenderContext::RGB_MODE,
+						ct, false,0.0,RGB(),surface->getState()->smoothing,m,r->getRect(),t.blendmode);
 	return false;
 }
 
@@ -844,62 +1190,78 @@ void DisplayObject::computeBoundsForTransformedRect(number_t xmin, number_t xmax
 	outHeight = maxy - miny;
 }
 
-IDrawable* DisplayObject::invalidate(DisplayObject* target, const MATRIX& initialMatrix, bool smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap)
+IDrawable* DisplayObject::invalidate(bool smoothing)
 {
 	//Not supposed to be called
 	throw RunTimeException("DisplayObject::invalidate");
+}
+void DisplayObject::invalidateForRenderToBitmap(RenderDisplayObjectToBitmapContainer* container)
+{
+	if (this->mask)
+		this->mask->invalidateForRenderToBitmap(container);
+	IDrawable* d = this->invalidate(container->smoothing);
+	if (d)
+	{
+		setupSurfaceState(d);
+		if (getNeedsTextureRecalculation() || !d->isCachedSurfaceUsable(this))
+		{
+			this->incRef();
+			AsyncDrawJob* j = new AsyncDrawJob(d,_MR(this));
+			j->execute();
+			j->threadAbort(); // avoid addUploadJob in jobFence()
+			container->uploads.push_back(j);
+		}
+		else
+		{
+			RefreshableSurface s;
+			this->incRef();
+			s.displayobject = _MR(this);
+			s.drawable = d;
+			container->surfacesToRefresh.push_back(s);
+		}
+	}
 }
 
 void DisplayObject::requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh)
 {
 	//Let's invalidate also the mask
-	if(!mask.isNull())
-		mask->requestInvalidation(q);
+	if(mask && (mask->hasChanged || forceTextureRefresh))
+		mask->requestInvalidation(q,forceTextureRefresh);
 }
 
 void DisplayObject::updateCachedSurface(IDrawable *d)
 {
 	// this is called only from rendering thread, so no locking done here
-	cachedSurface.xOffset=d->getXOffset();
-	cachedSurface.yOffset=d->getYOffset();
-	cachedSurface.xOffsetTransformed=d->getXOffsetTransformed();
-	cachedSurface.yOffsetTransformed=d->getYOffsetTransformed();
-	cachedSurface.widthTransformed=d->getWidthTransformed();
-	cachedSurface.heightTransformed=d->getHeightTransformed();
-	cachedSurface.alpha=d->getAlpha();
-	cachedSurface.rotation=d->getRotation();
-	cachedSurface.xscale=d->getXScale();
-	cachedSurface.yscale=d->getYScale();
-	cachedSurface.isMask=d->getIsMask();
-	cachedSurface.mask=d->getMask();
-	cachedSurface.smoothing=d->getSmoothing();
-	cachedSurface.redMultiplier=d->getRedMultiplier();
-	cachedSurface.greenMultiplier=d->getGreenMultiplier();
-	cachedSurface.blueMultiplier=d->getBlueMultiplier();
-	cachedSurface.alphaMultiplier=d->getAlphaMultiplier();
-	cachedSurface.redOffset=d->getRedOffset();
-	cachedSurface.greenOffset=d->getGreenOffset();
-	cachedSurface.blueOffset=d->getBlueOffset();
-	cachedSurface.alphaOffset=d->getAlphaOffset();
-	cachedSurface.matrix=d->getMatrix();
-	cachedSurface.isValid=true;
-	cachedSurface.isInitialized=true;
-	cachedSurface.wasUpdated=true;
+	cachedSurface->SetState(d->getState());
+	refreshSurfaceState();
+	cachedSurface->isValid=true;
+	cachedSurface->isInitialized=true;
+	cachedSurface->wasUpdated=true;
 }
 //TODO: Fix precision issues, Adobe seems to do the matrix mult with twips and rounds the results, 
 //this way they have less pb with precision.
 void DisplayObject::localToGlobal(number_t xin, number_t yin, number_t& xout, number_t& yout) const
 {
-	getMatrix().multiply2D(xin, yin, xout, yout);
-	if(parent)
-		parent->localToGlobal(xout, yout, xout, yout);
+	if (this == getSystemState()->mainClip)
+	{
+		// don't compute current scaling of the main clip into coordinates
+		xout=xin;
+		yout=yin;
+		xout += tx;
+		yout += ty;
+	}
+	else
+	{
+		getMatrix().multiply2D(xin, yin, xout, yout);
+		if(parent)
+			parent->localToGlobal(xout, yout, xout, yout);
+	}
 }
 //TODO: Fix precision issues
 void DisplayObject::globalToLocal(number_t xin, number_t yin, number_t& xout, number_t& yout) const
 {
 	getConcatenatedMatrix().getInverted().multiply2D(xin, yin, xout, yout);
 }
-
 void DisplayObject::setOnStage(bool staged, bool force,bool inskipping)
 {
 	bool changed = false;
@@ -911,13 +1273,12 @@ void DisplayObject::setOnStage(bool staged, bool force,bool inskipping)
 		if(staged==true)
 		{
 			hasChanged=true;
-			if (!this->cachedAsBitmapOf)
-				requestInvalidation(getSystemState());
+			requestInvalidation(getSystemState());
 		}
 		if(getVm(getSystemState())==nullptr)
 			return;
 		changed = true;
-		invalidateCachedAsBitmapOf();
+		this->requestInvalidationFilterParent();
 	}
 	if (force || changed)
 	{
@@ -928,29 +1289,17 @@ void DisplayObject::setOnStage(bool staged, bool force,bool inskipping)
 		  asynchronous uses of setOnStage are removed the code can be simplified
 		  by removing the !isVmThread case.
 		*/
-		if(onStage==true)
+		if(onStage==true && isConstructed())
 		{
-			if (this->is<MovieClip>())
-				getSystemState()->stage->removeHiddenObject(this->as<MovieClip>());
-			// ensure that DisplayObject constructor is called if this was added by PlaceObjectTag
-			// so that event listeners for "addedToStage" defined in constructor are added
-			if (!this->getConstructIndicator() && this->legacy && !inskipping
-					&& this->getClass()->hasConstructor() && getClass()->getConstructor()->getMethodInfo() && getClass()->getConstructor()->getMethodInfo()->numArgs()==0)
-			{
-				asAtom obj = asAtomHandler::fromObjectNoPrimitive(this);
-				getClass()->handleConstruction(obj,nullptr,0,true);
-			}
-
 			_R<Event> e=_MR(Class<Event>::getInstanceS(getInstanceWorker(),"addedToStage"));
-			// the main clip is added to stage after the base class is constructed,
-			// but there may be addedToStage event handlers added in the constructor of the derived class,
-			// so we can't execute the event directly for the main clip
-			if(isVmThread() && this != getSystemState()->mainClip)
+			// the main clip is added to stage after the builtin MovieClip is constructed, but before the constructor call is completed.
+			// So the EventListeners for "addedToStage" may not be registered yet and we can't execute the event directly
+			if(isVmThread()	&& this != getSystemState()->mainClip) 
 				ABCVm::publicHandleEvent(this,e);
 			else
 			{
 				this->incRef();
-				getVm(getSystemState())->prependEvent(_MR(this),e);
+				getVm(getSystemState())->addEvent(_MR(this),e);
 			}
 		}
 		else if(onStage==false)
@@ -985,14 +1334,20 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_setAlpha)
 	if (!th->loadedFrom->usesActionScript3) // AVM1 uses alpha values from 0-100
 		val /= 100.0;
 	
+	if (th->colorTransform.isNull())
+		th->colorTransform = _NR<ColorTransform>(Class<ColorTransform>::getInstanceS(th->getInstanceWorker()));
+
 	/* The stored value is not clipped, _getAlpha will return the
 	 * stored value even if it is outside the [0, 1] range. */
-	if(th->alpha != val)
+	if(th->colorTransform->alphaMultiplier != val)
 	{
-		th->alpha=val;
+		th->colorTransform->alphaMultiplier = val;
 		th->hasChanged=true;
 		if(th->onStage)
-			th->requestInvalidation(wrk->getSystemState(),th->computeCacheAsBitmap());
+			th->requestInvalidation(wrk->getSystemState(),false);
+		else
+			th->requestInvalidationFilterParent();
+		
 	}
 }
 
@@ -1000,22 +1355,22 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_getAlpha)
 {
 	DisplayObject* th=asAtomHandler::as<DisplayObject>(obj);
 	if (th->loadedFrom->usesActionScript3)
-		asAtomHandler::setNumber(ret,wrk,th->alpha);
+		asAtomHandler::setNumber(ret,wrk,!th->colorTransform.isNull() ? th->colorTransform->alphaMultiplier : 1.0);
 	else // AVM1 uses alpha values from 0-100
-		asAtomHandler::setNumber(ret,wrk,th->alpha*100.0);
+		asAtomHandler::setNumber(ret,wrk,!th->colorTransform.isNull() ? th->colorTransform->alphaMultiplier*100.0 : 100.0);
 }
 
 ASFUNCTIONBODY_ATOM(DisplayObject,_getMask)
 {
 	DisplayObject* th=asAtomHandler::as<DisplayObject>(obj);
-	if(th->mask.isNull())
+	if(!th->mask)
 	{
 		asAtomHandler::setNull(ret);
 		return;
 	}
 
 	th->mask->incRef();
-	ret = asAtomHandler::fromObject(th->mask.getPtr());
+	ret = asAtomHandler::fromObject(th->mask);
 }
 
 ASFUNCTIONBODY_ATOM(DisplayObject,_setMask)
@@ -1028,6 +1383,12 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_setMask)
 		DisplayObject* newMask=asAtomHandler::as<DisplayObject>(args[0]);
 		newMask->incRef();
 		th->setMask(_MR(newMask));
+		th->incRef();
+		if (newMask->maskee)
+			newMask->maskee->removeStoredMember();
+		newMask->maskee = th;
+		newMask->maskee->incRef();
+		newMask->maskee->addStoredMember();
 	}
 	else
 		th->setMask(NullRef);
@@ -1051,6 +1412,8 @@ void DisplayObject::setScaleX(number_t val)
 		geometryChanged();
 		if(onStage)
 			requestInvalidation(getSystemState());
+		else
+			requestInvalidationFilterParent();
 	}
 }
 
@@ -1083,6 +1446,8 @@ void DisplayObject::setScaleY(number_t val)
 		geometryChanged();
 		if(onStage)
 			requestInvalidation(getSystemState());
+		else
+			requestInvalidationFilterParent();
 	}
 }
 
@@ -1116,7 +1481,15 @@ void DisplayObject::setScaleZ(number_t val)
 		geometryChanged();
 		if(onStage)
 			requestInvalidation(getSystemState());
+		else
+			requestInvalidationFilterParent();
 	}
+}
+
+void DisplayObject::setVisible(bool v)
+{
+	visible=v;
+	requestInvalidation(getSystemState());
 }
 
 ASFUNCTIONBODY_ATOM(DisplayObject,_setScaleZ)
@@ -1143,7 +1516,12 @@ void DisplayObject::setX(number_t val)
 	if(useLegacyMatrix)
 		useLegacyMatrix=false;
 	if (std::isnan(val))
-		return;
+	{
+		if (needsActionScript3())
+			val = 0;
+		else
+			return;
+	}
 	ROUND_TO_TWIPS(val);
 	//Apply translation, it's trivial
 	if(tx!=val)
@@ -1153,6 +1531,8 @@ void DisplayObject::setX(number_t val)
 		geometryChanged();
 		if(onStage)
 			requestInvalidation(getSystemState());
+		else
+			requestInvalidationFilterParent();
 	}
 }
 
@@ -1162,7 +1542,12 @@ void DisplayObject::setY(number_t val)
 	if(useLegacyMatrix)
 		useLegacyMatrix=false;
 	if (std::isnan(val))
-		return;
+	{
+		if (needsActionScript3())
+			val = 0;
+		else
+			return;
+	}
 	ROUND_TO_TWIPS(val);
 	//Apply translation, it's trivial
 	if(ty!=val)
@@ -1172,6 +1557,8 @@ void DisplayObject::setY(number_t val)
 		geometryChanged();
 		if(onStage)
 			requestInvalidation(getSystemState());
+		else
+			requestInvalidationFilterParent();
 	}
 }
 
@@ -1193,6 +1580,8 @@ void DisplayObject::setZ(number_t val)
 		geometryChanged();
 		if(onStage)
 			requestInvalidation(getSystemState());
+		else
+			requestInvalidationFilterParent();
 	}
 }
 
@@ -1289,15 +1678,9 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_getLoaderInfo)
 	 * behaviour, even though the documentation states that only
 	 * the main class should have non-null loaderInfo. */
 	_NR<RootMovieClip> r=th->getRoot();
-	if (r.isNull())
-	{
-		// if this DisplayObject is not yet added to the stage we just use the mainclip
-		r = _MR(th->loadedFrom ? th->loadedFrom : wrk->getSystemState()->mainClip);
-		r->incRef();
-	}
 	if(r.isNull() || r->loaderInfo.isNull())
 	{
-		asAtomHandler::setUndefined(ret);
+		asAtomHandler::setNull(ret);
 		return;
 	}
 	
@@ -1365,7 +1748,8 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_setBlendMode)
 	DisplayObject* th=asAtomHandler::as<DisplayObject>(obj);
 	tiny_string val;
 	ARG_CHECK(ARG_UNPACK(val));
-
+	
+	AS_BLENDMODE oldblendmode= th->blendMode;
 	th->blendMode = BLENDMODE_NORMAL;
 	if (val == "add") th->blendMode = BLENDMODE_ADD;
 	else if (val == "alpha") th->blendMode = BLENDMODE_ALPHA;
@@ -1380,9 +1764,14 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_setBlendMode)
 	else if (val == "overlay") th->blendMode = BLENDMODE_OVERLAY;
 	else if (val == "screen") th->blendMode = BLENDMODE_SCREEN;
 	else if (val == "subtract") th->blendMode = BLENDMODE_SUBTRACT;
-	if (th->computeCacheAsBitmap() && !th->cachedAsBitmapOf && th->is<DisplayObjectContainer>())
-		th->as<DisplayObjectContainer>()->setChildrenCachedAsBitmapOf(th);
-	
+	if (oldblendmode != th->blendMode)
+	{
+		th->hasChanged=true;
+		if(th->onStage)
+			th->requestInvalidation(wrk->getSystemState());
+		else
+			th->requestInvalidationFilterParent();
+	}
 }
 
 ASFUNCTIONBODY_ATOM(DisplayObject,localToGlobal)
@@ -1425,6 +1814,8 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_setRotation)
 	if(th->rotation!=val)
 	{
 		val = fmod(val+180.0, 360.0) - 180.0;
+		if (val < -180.0)
+			val += 360.0;
 		th->rotation=val;
 		th->hasChanged=true;
 		th->geometryChanged();
@@ -1443,17 +1834,11 @@ void DisplayObject::setParent(DisplayObjectContainer *p)
 			// mark old parent as dirty
 			geometryChanged();
 			getSystemState()->removeFromResetParentList(this);
-			if (p->computeCacheAsBitmap())
-			{
-				cachedAsBitmapOf = p;
-			}
-			else
-				cachedAsBitmapOf = p->cachedAsBitmapOf;
 		}
 		parent=p;
 		hasChanged=true;
 		geometryChanged();
-		if(onStage && !cachedAsBitmapOf && !getSystemState()->isShuttingDown())
+		if(onStage && !getSystemState()->isShuttingDown())
 			requestInvalidation(getSystemState());
 	}
 }
@@ -1520,8 +1905,7 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_setVisible)
 	bool newval = asAtomHandler::Boolean_concrete(args[0]);
 	if (newval != th->visible)
 	{
-		th->visible=newval;
-		th->requestInvalidation(wrk->getSystemState());
+		th->setVisible(newval);
 	}
 }
 
@@ -1561,6 +1945,21 @@ number_t DisplayObject::computeWidth()
 	return (ret)?(x2-x1):0;
 }
 
+int DisplayObject::getRawDepth()
+{
+	return (parent != nullptr) ? parent->findLegacyChildDepth(this) : 0;
+}
+
+int DisplayObject::getDepth()
+{
+	return getRawDepth() + 16384;
+}
+
+int DisplayObject::getClipDepth() const
+{
+	return ClipDepth ? ClipDepth + 16384 : 0;
+}
+
 _NR<RootMovieClip> DisplayObject::getRoot()
 {
 	if(!parent)
@@ -1589,10 +1988,12 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_setWidth)
 	number_t newwidth=asAtomHandler::toNumber(args[0]);
 	if (std::isnan(newwidth))
 		return;
+	if (std::isinf(newwidth) && th->needsActionScript3())
+		newwidth = 0;
 	ROUND_TO_TWIPS(newwidth);
 
 	number_t xmin,xmax,y1,y2;
-	if(!th->boundsRect(xmin,xmax,y1,y2))
+	if(!th->boundsRect(xmin,xmax,y1,y2,false))
 		return;
 
 	number_t width=xmax-xmin;
@@ -1619,10 +2020,12 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_setHeight)
 	number_t newheight=asAtomHandler::toNumber(args[0]);
 	if (std::isnan(newheight))
 		return;
+	if (std::isinf(newheight) && th->needsActionScript3())
+		newheight = 0;
 	ROUND_TO_TWIPS(newheight);
 
 	number_t x1,x2,ymin,ymax;
-	if(!th->boundsRect(x1,x2,ymin,ymax))
+	if(!th->boundsRect(x1,x2,ymin,ymax,false))
 		return;
 
 	number_t height=ymax-ymin;
@@ -1654,20 +2057,16 @@ ASFUNCTIONBODY_ATOM(DisplayObject,_getMouseY)
 	asAtomHandler::setNumber(ret,wrk,th->getLocalMousePos().y);
 }
 
-_NR<DisplayObject> DisplayObject::hitTest(number_t x, number_t y, HIT_TYPE type,bool interactiveObjectsOnly)
+_NR<DisplayObject> DisplayObject::hitTest(const Vector2f& globalPoint, const Vector2f& localPoint, HIT_TYPE type,bool interactiveObjectsOnly)
 {
-	if((!(visible || type == GENERIC_HIT_INVISIBLE) || !isConstructed()) && !isMask())
+	if((!(visible || type == GENERIC_HIT_INVISIBLE) || !isConstructed()) && (!isMask() || !getClipDepth()))
 		return NullRef;
 
+	const auto& mask = this->mask ? this->mask : this->clipMask;
 	//First check if there is any mask on this object, if so the point must be inside the mask to go on
-	if(!mask.isNull())
+	if(mask)
 	{
-		//First compute the global coordinates from the local ones
-		//TODO: we may also pass the global coordinates to all the calls
-		const MATRIX& thisMatrix = this->getConcatenatedMatrix();
-		number_t globalX, globalY;
-		thisMatrix.multiply2D(x,y,globalX,globalY);
-		//Now compute the coordinates local to the mask
+		//Compute the coordinates local to the mask
 		const MATRIX& maskMatrix = mask->getConcatenatedMatrix();
 		if(!maskMatrix.isInvertible())
 		{
@@ -1675,13 +2074,12 @@ _NR<DisplayObject> DisplayObject::hitTest(number_t x, number_t y, HIT_TYPE type,
 			//If the mask is zero sized then the object is not visible
 			return NullRef;
 		}
-		number_t maskX, maskY;
-		maskMatrix.getInverted().multiply2D(globalX,globalY,maskX,maskY);
-		if(mask->hitTest(maskX, maskY, type,false).isNull())
+		const auto maskPoint = maskMatrix.getInverted().multiply2D(globalPoint);
+		if(mask->hitTest(globalPoint, maskPoint, type,false).isNull())
 			return NullRef;
 	}
 
-	return hitTestImpl(x,y, type,interactiveObjectsOnly);
+	return hitTestImpl(globalPoint, localPoint, type,interactiveObjectsOnly);
 }
 
 /* Display objects have no children in general,
@@ -1721,23 +2119,39 @@ bool DisplayObject::needsActionScript3() const
 	return this->loadedFrom && this->loadedFrom->usesActionScript3;
 }
 
-void DisplayObject::constructionComplete()
+void DisplayObject::constructionComplete(bool _explicit)
 {
 	RELEASE_WRITE(constructed,true);
-}
-void DisplayObject::afterConstruction()
-{
-	if(!loaderInfo.isNull())
+	if (!placedByActionScript && needsActionScript3() && getParent() != nullptr)
 	{
-		loaderInfo->objectHasLoaded(this);
+		_R<Event> e=_MR(Class<Event>::getInstanceS(getInstanceWorker(),"added"));
+		if (isVmThread())
+			ABCVm::publicHandleEvent(this, e);
+		else
+		{
+			incRef();
+			getVm(getSystemState())->addEvent(_MR(this), e);
+		}
+		if (isOnStage())
+			setOnStage(true, true);
 	}
+}
+void DisplayObject::beforeConstruction(bool _explicit)
+{
+	skipFrame |= needsActionScript3() && _explicit;
+	placedByActionScript |= needsActionScript3() && _explicit;
+	if (needsActionScript3() && getParent() == nullptr)
+		getSystemState()->stage->addHiddenObject(this);
+}
+void DisplayObject::afterConstruction(bool _explicit)
+{
 //	hasChanged=true;
 //	needsTextureRecalculation=true;
 //	if(onStage)
-	//		requestInvalidation(getSystemState());
+//		requestInvalidation(getSystemState());
 }
 
-void DisplayObject::applyFilters(BitmapContainer* target, BitmapContainer* source, const RECT& sourceRect, int xpos, int ypos, number_t scalex, number_t scaley)
+void DisplayObject::applyFilters(BitmapContainer* target, BitmapContainer* source, const RECT& sourceRect, number_t xpos, number_t ypos, number_t scalex, number_t scaley)
 {
 	if (filters)
 	{
@@ -1746,24 +2160,8 @@ void DisplayObject::applyFilters(BitmapContainer* target, BitmapContainer* sourc
 			asAtom f = asAtomHandler::invalidAtom;
 			filters->at_nocheck(f,i);
 			if (asAtomHandler::is<BitmapFilter>(f))
-				asAtomHandler::as<BitmapFilter>(f)->applyFilter(target, source, sourceRect, xpos, ypos, scalex, scaley);
+				asAtomHandler::as<BitmapFilter>(f)->applyFilter(target, source, sourceRect, xpos, ypos, scalex, scaley, this);
 		}
-	}
-}
-
-void DisplayObject::invalidateCachedAsBitmapOf()
-{
-	DisplayObject* c = cachedAsBitmapOf;
-	while (c)
-	{
-		c->hasChanged=true;
-		c->setNeedsTextureRecalculation();
-		if (!c->cachedAsBitmapOf)
-		{
-			c->requestInvalidation(c->getSystemState());
-			break;
-		}
-		c = c->cachedAsBitmapOf;
 	}
 }
 
@@ -1771,195 +2169,59 @@ void DisplayObject::setNeedsTextureRecalculation(bool skippable)
 {
 	textureRecalculationSkippable=skippable;
 	needsTextureRecalculation=true;
-	if (!cachedSurface.isChunkOwner)
-		cachedSurface.tex=nullptr;
-	cachedSurface.isChunkOwner=true;
+	if (!cachedSurface->isChunkOwner)
+		cachedSurface->tex=nullptr;
+	cachedSurface->isChunkOwner=true;
 }
 
-void DisplayObject::gatherMaskIDrawables(std::vector<IDrawable::MaskData>& masks)
-{
-	if(mask.isNull())
-		return;
-
-	//If the mask is hard we need the drawable for each child
-	//If the mask is soft we need the rendered final result
-	IDrawable::MASK_MODE maskMode = IDrawable::HARD_MASK;
-	//For soft masking to work, both the object and the mask must be
-	//cacheAsBitmap and the mask must be on the stage
-	if(this->computeCacheAsBitmap() && mask->computeCacheAsBitmap() && mask->isOnStage())
-		maskMode = IDrawable::SOFT_MASK;
-
-	if(maskMode == IDrawable::HARD_MASK)
-	{
-		SoftwareInvalidateQueue queue(NullRef);
-		mask->requestInvalidation(&queue);
-		for(auto it=queue.queue.begin();it!=queue.queue.end();it++)
-		{
-			DisplayObject* target=(*it).getPtr();
-			//Get the drawable from each of the added objects
-			IDrawable* drawable=target->invalidate(nullptr, MATRIX(),false,nullptr,nullptr);
-			if(drawable==nullptr)
-				continue;
-			masks.emplace_back(drawable, maskMode);
-		}
-	}
-	else
-	{
-		IDrawable* drawable=nullptr;
-		if(mask->is<DisplayObjectContainer>())
-		{
-			//HACK: use bitmap temporarily
-			number_t xmin,xmax,ymin,ymax;
-			bool ret=mask->getBounds(xmin,xmax,ymin,ymax,mask->getConcatenatedMatrix());
-			if(ret==false)
-				return;
-			_R<BitmapData> data(Class<BitmapData>::getInstanceS(getInstanceWorker(),xmax-xmin,ymax-ymin));
-			//Forge a matrix. It must contain the right rotation and scaling while translation
-			//only compensate for the xmin/ymin offset
-			MATRIX m=mask->getConcatenatedMatrix();
-			m.x0 -= xmin;
-			m.y0 -= ymin;
-			data->drawDisplayObject(mask.getPtr(), m,false,false,mask->blendMode);
-			_R<Bitmap> bmp(Class<Bitmap>::getInstanceS(getInstanceWorker(),data));
-
-			//The created bitmap is already correctly scaled and rotated
-			//Just apply the needed offset
-			MATRIX m2(1,1,0,0,xmin,ymin);
-			drawable=bmp->invalidate(nullptr, m2,false,nullptr,nullptr);
-		}
-		else
-			drawable=mask->invalidate(nullptr, MATRIX(),false,nullptr,nullptr);
-
-		if(drawable==nullptr)
-			return;
-		masks.emplace_back(drawable, maskMode);
-	}
-}
-
-void DisplayObject::computeMasksAndMatrix(const DisplayObject* target, std::vector<IDrawable::MaskData>& masks, MATRIX& totalMatrix,bool includeRotation, bool &isMask, _NR<DisplayObject>&mask) const
-{
-	const DisplayObject* cur=this;
-	bool gatherMasks = true;
-	isMask = cur->ClipDepth || cur->ismask;
-	mask = cur->mask;
-	while(cur && cur!=target)
-	{
-		totalMatrix=cur->getMatrix(includeRotation).multiplyMatrix(totalMatrix);
-		if(gatherMasks)
-		{
-			if (!cur->mask.isNull() && mask.isNull())
-				mask=cur->mask;
-			if (cur->ClipDepth || cur->ismask)
-				isMask=true;
-			if(cur->ismask)
-			{
-				//Stop gathering masks if any level of the hierarchy it's a mask
-				masks.clear();
-				masks.shrink_to_fit();
-				gatherMasks=false;
-			}
-		}
-		cur=cur->getParent();
-	}
-	if (mask.isNull() && !isMask)
-		mask = target->mask;
-}
-void DisplayObject::DrawToBitmap(BitmapData* bm,const MATRIX& initialMatrix,bool smoothing, bool forcachedbitmap, AS_BLENDMODE blendMode)
-{
-	DisplayObjectContainer* origparent=this->parent;
-	number_t origrotation = this->rotation;
-	number_t origsx = this->sx;
-	number_t origsy = this->sy;
-	number_t origtx = this->tx;
-	number_t origty = this->ty;
-	// temporarily reset all position settings to avoid matrix manipulation from this DisplayObject
-	this->parent = nullptr;
-	this->rotation=0;
-	this->sx=1;
-	this->sy=1;
-	this->tx=0;
-	this->ty=0;
-	bm->drawDisplayObject(this, initialMatrix,smoothing,forcachedbitmap,blendMode);
-	// reset position to original settings
-	this->parent=origparent;
-	this->rotation=origrotation;
-	this->sx=origsx;
-	this->sy=origsy;
-	this->tx=origtx;
-	this->ty=origty;
-}
 string DisplayObject::toDebugString() const
 {
 	std::string res = EventDispatcher::toDebugString();
 	res += "tag=";
 	char buf[100];
-	sprintf(buf,"%u",getTagID());
+	sprintf(buf,"%u pa=%p",getTagID(),getParent());
 	res += buf;
 	return res;
 }
-IDrawable* DisplayObject::getCachedBitmapDrawable(DisplayObject* target,const MATRIX& initialMatrix,_NR<DisplayObject>* pcachedBitmap)
+IDrawable* DisplayObject::getFilterDrawable(bool smoothing)
 {
-	if (!computeCacheAsBitmap())
+	if (!hasFilters())
 		return nullptr;
-	number_t xmin,xmax,ymin,ymax;
-	MATRIX m=getMatrix();
-	number_t scalex = abs(initialMatrix.getScaleX());
-	number_t scaley = abs(initialMatrix.getScaleY());
-	if (!getBounds(xmin,xmax,ymin,ymax,m))
-		return nullptr;
-	uint32_t maxfilterborder=0;
-	if (filters)
+	number_t x,y;
+	number_t width,height;
+	number_t bxmin,bxmax,bymin,bymax;
+	if(!boundsRect(bxmin,bxmax,bymin,bymax,false))
 	{
-		// get maximum border in pixels around cached bitmap needed to properly apply filters
-		for (uint32_t i = 0; i < filters->size(); i++)
-		{
-			asAtom f = asAtomHandler::invalidAtom;
-			filters->at_nocheck(f,i);
-			if (asAtomHandler::is<BitmapFilter>(f))
-				maxfilterborder = max(maxfilterborder,asAtomHandler::as<BitmapFilter>(f)->getMaxFilterBorder());
-		}
+		//No contents, nothing to do
+		return nullptr;
 	}
-	uint32_t w=(ceil(xmax-xmin)+maxfilterborder*2) * scalex;
-	uint32_t h=(ceil(ymax-ymin)+maxfilterborder*2) * scaley;
-	if (w >= 8192 || h >= 8192 || (w * h) >= 16777216)
-		return nullptr;
-	bool sizeOk = cachedBitmap && cachedBitmap->getBitmapSize().width == w && cachedBitmap->getBitmapSize().height == h;
-	if (needsTextureRecalculation || !sizeOk)
-	{
-		if (!sizeOk)
-		{
-			_R<BitmapData> data(Class<BitmapData>::getInstanceS(getInstanceWorker(),w,h));
-			cachedBitmap=_MR(Class<Bitmap>::getInstanceS(getInstanceWorker(),data,false,this));
-		}
-		MATRIX m0=m;
-		m0.translate(-(xmin-maxfilterborder) ,-(ymin-maxfilterborder));
-		m0.scale(scalex, scaley);
-		DrawToBitmap(cachedBitmap->bitmapData.getPtr(),m0,true,true,this->blendMode);
-		applyFilters(cachedBitmap->bitmapData->getBitmapContainer().getPtr(),nullptr,RECT(0,w,0,h),0,0, scalex, scaley);
-		// apply colortransform for cached bitmap after the filters are applied
-		ColorTransform* ct = colorTransform.getPtr();
-		if (ct)
-		{
-			ct->applyTransformation(cachedBitmap->bitmapData->getBitmapContainer()->getData()
-									,cachedBitmap->bitmapData->getBitmapContainer()->getWidth()*cachedBitmap->bitmapData->getBitmapContainer()->getHeight()*4);
-		}
+	MATRIX matrix = getMatrix();
+	
+	bool isMask=false;
+	MATRIX m;
+	m.scale(matrix.getScaleX(),matrix.getScaleY());
+	computeBoundsForTransformedRect(bxmin,bxmax,bymin,bymax,x,y,width,height,m);
 
-		cachedBitmap->setMask(this->mask);
-		cachedBitmap->resetNeedsTextureRecalculation();
-		cachedBitmap->hasChanged=true;
-		if (!this->cachedAsBitmapOf)
-		{
-			// force texture upload
-			cachedBitmap->bitmapData->addUser(cachedBitmap.getPtr());
-		}
+	if (isnan(width) || isnan(height))
+	{
+		// on stage with invalid concatenatedMatrix. Create a trash initial texture
+		width = 1;
+		height = 1;
 	}
-	if (pcachedBitmap)
-		*pcachedBitmap = cachedBitmap;
+	if (width >= 8192 || height >= 8192 || (width * height) >= 16777216)
+		return nullptr;
+
+	if(width==0 || height==0)
+		return nullptr;
+	ColorTransformBase ct;
+	if (this->colorTransform)
+		ct = *this->colorTransform.getPtr();
 	this->resetNeedsTextureRecalculation();
-	this->hasChanged=false;
-	MATRIX m1(1,1,0,0,(xmin-maxfilterborder)*scalex,(ymin-maxfilterborder)*scaley);
-	m1.scale(1.0 / scalex, 1.0 / scaley);
-	return cachedBitmap->invalidateFromSource(target, initialMatrix,true,this->getParent(),m1,this);
+	return new RefreshableDrawable(x, y, ceil(width), ceil(height)
+				, matrix.getScaleX(), matrix.getScaleY()
+				, isMask, cacheAsBitmap
+				, this->getScaleFactor(), getConcatenatedAlpha()
+				, ct, smoothing ? SMOOTH_MODE::SMOOTH_ANTIALIAS:SMOOTH_MODE::SMOOTH_NONE,this->getBlendMode(),matrix);
 }
 
 bool DisplayObject::findParent(DisplayObject *d) const
@@ -1971,12 +2233,60 @@ bool DisplayObject::findParent(DisplayObject *d) const
 	return parent->findParent(d);
 }
 
+int DisplayObject::getParentDepth() const
+{
+	int i;
+	DisplayObjectContainer* p;
+	for (i = 0, p = parent; p != nullptr; p = p->parent, ++i);
+	return i;
+}
+
+int DisplayObject::findParentDepth(DisplayObject* d) const
+{
+	if (this != d)
+	{
+		int i;
+		DisplayObjectContainer* p;
+		for (i = 0, p = parent; p != nullptr && p != d; p = p->parent, ++i);
+		return i;
+	}
+	return -1;
+}
+
+DisplayObjectContainer* DisplayObject::getAncestor(int depth) const
+{
+	if (depth < 0)
+		return (DisplayObjectContainer*)this;
+	if (!depth)
+		return parent;
+	if (parent == nullptr)
+		return nullptr;
+	return parent->getAncestor(--depth);
+}
+
+DisplayObjectContainer* DisplayObject::findCommonAncestor(DisplayObject* d, int& depth, bool init) const
+{
+	const DisplayObject* a = this;
+	const DisplayObject* b = d;
+	if (init)
+	{
+		depth = 0;
+		if ((a->getParentDepth() - b->getParentDepth()) < 0)
+			std::swap(a, b);
+	}
+	if (a->parent == nullptr || b == nullptr)
+		return a->parent == nullptr ? (DisplayObjectContainer*)a : nullptr;
+	if (b->findParent(a->parent))
+		return a->parent;
+	return a->parent->findCommonAncestor((DisplayObject*)b, ++depth, false);
+}
+
 // Compute the minimal, axis aligned bounding box in global
 // coordinates
 bool DisplayObject::boundsRectGlobal(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax)
 {
 	number_t x1, x2, y1, y2;
-	if (!boundsRect(x1, x2, y1, y2))
+	if (!boundsRect(x1, x2, y1, y2,false))
 		return false;
 
 	localToGlobal(x1, y1, x1, y1);
@@ -2070,7 +2380,7 @@ ASFUNCTIONBODY_ATOM(DisplayObject,hitTestPoint)
 
 		// Hmm, hitTest will also check the mask, is this the
 		// right thing to do?
-		_NR<DisplayObject> hit = th->hitTest(localX, localY,
+		_NR<DisplayObject> hit = th->hitTest(Vector2f(x, y), Vector2f(localX, localY),
 						     HIT_TYPE::GENERIC_HIT_INVISIBLE,false);
 
 		asAtomHandler::setBool(ret,!hit.isNull());
@@ -2427,7 +2737,7 @@ ASFUNCTIONBODY_ATOM(DisplayObject,AVM1_setQuality)
 ASFUNCTIONBODY_ATOM(DisplayObject,AVM1_getAlpha)
 {
 	DisplayObject* th=asAtomHandler::as<DisplayObject>(obj);
-	asAtomHandler::setNumber(ret,wrk,th->alpha*100.0);
+	asAtomHandler::setNumber(ret,wrk,!th->colorTransform.isNull() ? th->colorTransform->alphaMultiplier*100.0 : 100.0);
 }
 ASFUNCTIONBODY_ATOM(DisplayObject,AVM1_setAlpha)
 {
@@ -2435,12 +2745,18 @@ ASFUNCTIONBODY_ATOM(DisplayObject,AVM1_setAlpha)
 	number_t val;
 	ARG_CHECK(ARG_UNPACK (val));
 	val /= 100.0;
-	if(th->alpha != val)
+
+	if (th->colorTransform.isNull())
+		th->colorTransform = _NR<ColorTransform>(Class<ColorTransform>::getInstanceS(th->getInstanceWorker()));
+
+	if(th->colorTransform->alphaMultiplier != val)
 	{
-		th->alpha=val;
+		th->colorTransform->alphaMultiplier = val;
 		th->hasChanged=true;
 		if(th->onStage)
 			th->requestInvalidation(wrk->getSystemState());
+		else
+			th->requestInvalidationFilterParent();
 	}
 }
 ASFUNCTIONBODY_ATOM(DisplayObject,AVM1_getBounds)
@@ -2529,47 +2845,97 @@ ASFUNCTIONBODY_ATOM(DisplayObject,AVM1_getDepth)
 	ret = asAtomHandler::fromInt(r);
 }
 
+ASFUNCTIONBODY_ATOM(DisplayObject,AVM1_toString)
+{
+	DisplayObject* th=asAtomHandler::as<DisplayObject>(obj);
+	tiny_string s = th->AVM1GetPath();
+	if (s.empty())
+		DisplayObject::_toString(ret,wrk,obj,args,argslen);
+	else
+		ret = asAtomHandler::fromString(wrk->getSystemState(),s);
+}
+
 void DisplayObject::AVM1SetupMethods(Class_base* c)
 {
 	// setup all methods and properties available for MovieClips in AVM1
 	
 	c->destroyContents();
 	c->borrowedVariables.destroyContents();
-	c->setDeclaredMethodByQName("_x","",Class<IFunction>::getFunction(c->getSystemState(),_getX),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_x","",Class<IFunction>::getFunction(c->getSystemState(),_setX),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_y","",Class<IFunction>::getFunction(c->getSystemState(),_getY),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_y","",Class<IFunction>::getFunction(c->getSystemState(),_setY),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_visible","",Class<IFunction>::getFunction(c->getSystemState(),_getVisible),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_visible","",Class<IFunction>::getFunction(c->getSystemState(),_setVisible),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_xscale","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_getScaleX),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_xscale","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_setScaleX),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_yscale","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_getScaleY),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_yscale","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_setScaleY),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_width","",Class<IFunction>::getFunction(c->getSystemState(),_getWidth),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_width","",Class<IFunction>::getFunction(c->getSystemState(),_setWidth),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_height","",Class<IFunction>::getFunction(c->getSystemState(),_getHeight),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_height","",Class<IFunction>::getFunction(c->getSystemState(),_setHeight),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_parent","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_getParent),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_root","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_getRoot),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_url","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_getURL),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("hitTest","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_hitTest),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("localToGlobal","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_localToGlobal),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("globalToLocal","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_globalToLocal),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("getBytesLoaded","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_getBytesLoaded),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("getBytesTotal","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_getBytesTotal),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("_xmouse","",Class<IFunction>::getFunction(c->getSystemState(),_getMouseX),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_ymouse","",Class<IFunction>::getFunction(c->getSystemState(),_getMouseY),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_quality","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_getQuality),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_quality","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_setQuality),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_alpha","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_getAlpha),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_alpha","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_setAlpha),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("getBounds","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_getBounds),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("swapDepths","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_swapDepths),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("getDepth","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_getDepth),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setMask","",Class<IFunction>::getFunction(c->getSystemState(),_setMask),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("transform","",Class<IFunction>::getFunction(c->getSystemState(),_getTransform),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_rotation","",Class<IFunction>::getFunction(c->getSystemState(),_getRotation),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("_rotation","",Class<IFunction>::getFunction(c->getSystemState(),_setRotation),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_x","",c->getSystemState()->getBuiltinFunction(_getX),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_x","",c->getSystemState()->getBuiltinFunction(_setX),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_y","",c->getSystemState()->getBuiltinFunction(_getY),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_y","",c->getSystemState()->getBuiltinFunction(_setY),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_visible","",c->getSystemState()->getBuiltinFunction(_getVisible),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_visible","",c->getSystemState()->getBuiltinFunction(_setVisible),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_xscale","",c->getSystemState()->getBuiltinFunction(AVM1_getScaleX),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_xscale","",c->getSystemState()->getBuiltinFunction(AVM1_setScaleX),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_yscale","",c->getSystemState()->getBuiltinFunction(AVM1_getScaleY),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_yscale","",c->getSystemState()->getBuiltinFunction(AVM1_setScaleY),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_width","",c->getSystemState()->getBuiltinFunction(_getWidth),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_width","",c->getSystemState()->getBuiltinFunction(_setWidth),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_height","",c->getSystemState()->getBuiltinFunction(_getHeight),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_height","",c->getSystemState()->getBuiltinFunction(_setHeight),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_parent","",c->getSystemState()->getBuiltinFunction(AVM1_getParent),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_root","",c->getSystemState()->getBuiltinFunction(AVM1_getRoot),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_url","",c->getSystemState()->getBuiltinFunction(AVM1_getURL),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("hitTest","",c->getSystemState()->getBuiltinFunction(AVM1_hitTest),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("localToGlobal","",c->getSystemState()->getBuiltinFunction(AVM1_localToGlobal),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("globalToLocal","",c->getSystemState()->getBuiltinFunction(AVM1_globalToLocal),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getBytesLoaded","",c->getSystemState()->getBuiltinFunction(AVM1_getBytesLoaded),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getBytesTotal","",c->getSystemState()->getBuiltinFunction(AVM1_getBytesTotal),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("_xmouse","",c->getSystemState()->getBuiltinFunction(_getMouseX),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_ymouse","",c->getSystemState()->getBuiltinFunction(_getMouseY),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_quality","",c->getSystemState()->getBuiltinFunction(AVM1_getQuality),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_quality","",c->getSystemState()->getBuiltinFunction(AVM1_setQuality),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_alpha","",c->getSystemState()->getBuiltinFunction(AVM1_getAlpha),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_alpha","",c->getSystemState()->getBuiltinFunction(AVM1_setAlpha),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("getBounds","",c->getSystemState()->getBuiltinFunction(AVM1_getBounds),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("swapDepths","",c->getSystemState()->getBuiltinFunction(AVM1_swapDepths),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getDepth","",c->getSystemState()->getBuiltinFunction(AVM1_getDepth),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setMask","",c->getSystemState()->getBuiltinFunction(_setMask),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("transform","",c->getSystemState()->getBuiltinFunction(_getTransform),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("transform","",c->getSystemState()->getBuiltinFunction(_setTransform),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_rotation","",c->getSystemState()->getBuiltinFunction(_getRotation),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("_rotation","",c->getSystemState()->getBuiltinFunction(_setRotation),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("toString","",c->getSystemState()->getBuiltinFunction(AVM1_toString,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c,scrollRect,Rectangle);
+	c->prototype->setDeclaredMethodByQName("_x","",c->getSystemState()->getBuiltinFunction(_getX),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_x","",c->getSystemState()->getBuiltinFunction(_setX),SETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_y","",c->getSystemState()->getBuiltinFunction(_getY),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_y","",c->getSystemState()->getBuiltinFunction(_setY),SETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_visible","",c->getSystemState()->getBuiltinFunction(_getVisible),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_visible","",c->getSystemState()->getBuiltinFunction(_setVisible),SETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_xscale","",c->getSystemState()->getBuiltinFunction(AVM1_getScaleX),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_xscale","",c->getSystemState()->getBuiltinFunction(AVM1_setScaleX),SETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_yscale","",c->getSystemState()->getBuiltinFunction(AVM1_getScaleY),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_yscale","",c->getSystemState()->getBuiltinFunction(AVM1_setScaleY),SETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_width","",c->getSystemState()->getBuiltinFunction(_getWidth),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_width","",c->getSystemState()->getBuiltinFunction(_setWidth),SETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_height","",c->getSystemState()->getBuiltinFunction(_getHeight),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_height","",c->getSystemState()->getBuiltinFunction(_setHeight),SETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_parent","",c->getSystemState()->getBuiltinFunction(AVM1_getParent),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_root","",c->getSystemState()->getBuiltinFunction(AVM1_getRoot),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_url","",c->getSystemState()->getBuiltinFunction(AVM1_getURL),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("hitTest","",c->getSystemState()->getBuiltinFunction(AVM1_hitTest),NORMAL_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("localToGlobal","",c->getSystemState()->getBuiltinFunction(AVM1_localToGlobal),NORMAL_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("globalToLocal","",c->getSystemState()->getBuiltinFunction(AVM1_globalToLocal),NORMAL_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("getBytesLoaded","",c->getSystemState()->getBuiltinFunction(AVM1_getBytesLoaded),NORMAL_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("getBytesTotal","",c->getSystemState()->getBuiltinFunction(AVM1_getBytesTotal),NORMAL_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_xmouse","",c->getSystemState()->getBuiltinFunction(_getMouseX),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_ymouse","",c->getSystemState()->getBuiltinFunction(_getMouseY),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_quality","",c->getSystemState()->getBuiltinFunction(AVM1_getQuality),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_quality","",c->getSystemState()->getBuiltinFunction(AVM1_setQuality),SETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_alpha","",c->getSystemState()->getBuiltinFunction(AVM1_getAlpha),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_alpha","",c->getSystemState()->getBuiltinFunction(AVM1_setAlpha),SETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("getBounds","",c->getSystemState()->getBuiltinFunction(AVM1_getBounds),NORMAL_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("swapDepths","",c->getSystemState()->getBuiltinFunction(AVM1_swapDepths),NORMAL_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("getDepth","",c->getSystemState()->getBuiltinFunction(AVM1_getDepth),NORMAL_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("setMask","",c->getSystemState()->getBuiltinFunction(_setMask),NORMAL_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("transform","",c->getSystemState()->getBuiltinFunction(_getTransform),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("transform","",c->getSystemState()->getBuiltinFunction(_setTransform),SETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_rotation","",c->getSystemState()->getBuiltinFunction(_getRotation),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("_rotation","",c->getSystemState()->getBuiltinFunction(_setRotation),SETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("toString","",c->getSystemState()->getBuiltinFunction(AVM1_toString,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,false);
 }
 DisplayObject *DisplayObject::AVM1GetClipFromPath(tiny_string &path)
 {
@@ -2627,7 +2993,7 @@ DisplayObject *DisplayObject::AVM1GetClipFromPath(tiny_string &path)
 	objName.name_s_id=getSystemState()->getUniqueStringId(subpath);
 	objName.ns.emplace_back(getSystemState(),BUILTIN_STRINGS::EMPTY,NAMESPACE);
 	asAtom ret=asAtomHandler::invalidAtom;
-	getVariableByMultiname(ret,objName,GET_VARIABLE_OPTION::NONE,getInstanceWorker());
+	getVariableByMultiname(ret,objName,GET_VARIABLE_OPTION::NO_INCREF,getInstanceWorker());
 	if (asAtomHandler::is<DisplayObject>(ret))
 	{
 		if (pos == tiny_string::npos)
@@ -2658,16 +3024,26 @@ void DisplayObject::AVM1SetVariable(tiny_string &name, asAtom v, bool setMember)
 	uint32_t pos = name.find(":");
 	if (pos == tiny_string::npos)
 	{
+		ASATOM_INCREF(v); // ensure value is not destructed during binding
 		tiny_string localname = name.lowercase();
 		uint32_t nameIdOriginal = getSystemState()->getUniqueStringId(name);
 		uint32_t nameId = getSystemState()->getUniqueStringId(localname);
 		auto it = avm1variables.find(nameId);
 		if (it != avm1variables.end())
-			ASATOM_DECREF(it->second);
+		{
+			ASObject* o = asAtomHandler::getObject(it->second);
+			if (o)
+				o->removeStoredMember();
+		}
 		if (asAtomHandler::isUndefined(v))
 			avm1variables.erase(nameId);
 		else
+		{
+			ASObject* o = asAtomHandler::getObject(v);
+			if (o)
+				o->addStoredMember();
 			avm1variables[nameId] = v;
+		}
 		if (setMember)
 		{
 			multiname objName(nullptr);
@@ -2688,6 +3064,7 @@ void DisplayObject::AVM1SetVariable(tiny_string &name, asAtom v, bool setMember)
 				ASATOM_DECREF(v);
 		}
 		AVM1UpdateVariableBindings(nameId,v);
+		ASATOM_DECREF(v);
 	}
 	else if (pos == 0)
 	{
@@ -2695,11 +3072,20 @@ void DisplayObject::AVM1SetVariable(tiny_string &name, asAtom v, bool setMember)
 		uint32_t nameId = getSystemState()->getUniqueStringId(localname);
 		auto it = avm1variables.find(nameId);
 		if (it != avm1variables.end())
-			ASATOM_DECREF(it->second);
+		{
+			ASObject* o = asAtomHandler::getObject(it->second);
+			if (o)
+				o->removeStoredMember();
+		}
 		if (asAtomHandler::isUndefined(v))
 			avm1variables.erase(nameId);
 		else
+		{
+			ASObject* o = asAtomHandler::getObject(v);
+			if (o)
+				o->addStoredMember();
 			avm1variables[nameId] = v;
+		}
 	}
 	else
 	{
@@ -2717,13 +3103,20 @@ void DisplayObject::AVM1SetVariableDirect(uint32_t nameId, asAtom v)
 {
 	auto it = avm1variables.find(nameId);
 	if (it != avm1variables.end())
-		ASATOM_DECREF(it->second);
+	{
+		ASObject* o = asAtomHandler::getObject(it->second);
+		if (o)
+			o->removeStoredMember();
+	}
 	if (asAtomHandler::isUndefined(v))
 	{
 		avm1variables.erase(nameId);
 	}
 	else
 	{
+		ASObject* o = asAtomHandler::getObject(v);
+		if (o)
+			o->addStoredMember();
 		avm1variables[nameId] = v;
 	}
 }
@@ -2802,8 +3195,10 @@ void DisplayObject::AVM1UpdateVariableBindings(uint32_t nameID, asAtom& value)
 	auto it = variablebindings.find(nameID);
 	while (it != variablebindings.end() && it->first == nameID)
 	{
+		ASATOM_INCREF(value); // ensure value is not destructed during binding
 		(*it).second->UpdateVariableBinding(value);
 		it++;
+		ASATOM_DECREF(value);
 	}
 }
 asAtom DisplayObject::getVariableBindingValue(const tiny_string &name)
@@ -2859,12 +3254,15 @@ void DisplayObject::AVM1SetFunction(const tiny_string& name, _NR<AVM1Function> o
 	{
 		if (obj && asAtomHandler::isObject(it->second) && asAtomHandler::getObjectNoCheck(it->second) == obj.getPtr())
 			return; // function is already set
-		ASATOM_DECREF(it->second);
+		ASObject* o = asAtomHandler::getObject(it->second);
+		if (o)
+			o->removeStoredMember();
 	}
 	if (obj)
 	{
 		asAtom v = asAtomHandler::fromObjectNoPrimitive(obj.getPtr());
 		obj->incRef();
+		obj->addStoredMember();
 		avm1variables[nameIDlower] = v;
 		
 		multiname objName(nullptr);

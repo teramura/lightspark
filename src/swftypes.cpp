@@ -34,12 +34,16 @@
 #include "compat.h"
 #include "scripting/toplevel/ASString.h"
 #include "scripting/flash/display/BitmapData.h"
+#include "scripting/flash/display/RootMovieClip.h"
 #include "scripting/flash/geom/flashgeom.h"
-#include "scripting/toplevel/toplevel.h"
+#include "scripting/toplevel/Array.h"
+#include "scripting/toplevel/ASQName.h"
 #include "scripting/toplevel/Number.h"
+#include "scripting/toplevel/Null.h"
 #include "scripting/toplevel/Boolean.h"
 #include "scripting/toplevel/Integer.h"
 #include "scripting/toplevel/UInteger.h"
+#include "scripting/toplevel/Undefined.h"
 #include "parsing/tags.h"
 
 
@@ -370,6 +374,11 @@ lightspark::RECT::RECT(int a, int b, int c, int d):Xmin(a),Xmax(b),Ymin(c),Ymax(
 {
 }
 
+bool RECT::operator==(const RECT& r) const
+{
+	return Xmin==r.Xmin && Xmax==r.Xmax && Ymin==r.Ymin && Ymax==r.Ymax;
+}
+
 std::ostream& lightspark::operator<<(std::ostream& s, const RECT& r)
 {
 	s << '{' << (int)r.Xmin << ',' << r.Xmax << ',' << r.Ymin << ',' << r.Ymax << '}';
@@ -480,6 +489,11 @@ bool MATRIX::operator!=(const MATRIX& r) const
 {
 	return xx!=r.xx || yx!=r.yx || xy!=r.xy || yy!=r.yy ||
 		x0!=r.x0 || y0!=r.y0;
+}
+bool MATRIX::operator==(const MATRIX& r) const
+{
+	return xx==r.xx && yx==r.yx && xy==r.xy && yy==r.yy &&
+		x0==r.x0 && y0==r.y0;
 }
 
 std::ostream& lightspark::operator<<(std::ostream& s, const MATRIX& r)
@@ -841,8 +855,7 @@ std::istream& lightspark::operator>>(std::istream& s, FOCALGRADIENT& v)
 		v.GradientRecords.push_back(gr);
 	}
 	sort(v.GradientRecords.begin(),v.GradientRecords.end());
-	//TODO: support FocalPoint
-	s.read((char*)&v.FocalPoint,2);
+	s >> v.FocalPoint;
 	return s;
 }
 
@@ -1221,28 +1234,28 @@ std::istream& lightspark::operator>>(std::istream& stream, FILTER& v)
 	stream >> v.FilterID;
 	switch(v.FilterID)
 	{
-		case 0:
+		case FILTER::FILTER_DROPSHADOW:
 			stream >> v.DropShadowFilter;
 			break;
-		case 1:
+		case FILTER::FILTER_BLUR:
 			stream >> v.BlurFilter;
 			break;
-		case 2:
+		case FILTER::FILTER_GLOW:
 			stream >> v.GlowFilter;
 			break;
-		case 3:
+		case FILTER::FILTER_BEVEL: 
 			stream >> v.BevelFilter;
 			break;
-		case 4:
+		case FILTER::FILTER_GRADIENTGLOW:
 			stream >> v.GradientGlowFilter;
 			break;
-		case 5:
+		case FILTER::FILTER_CONVOLUTION:
 			stream >> v.ConvolutionFilter;
 			break;
-		case 6:
+		case FILTER::FILTER_COLORMATRIX:
 			stream >> v.ColorMatrixFilter;
 			break;
-		case 7:
+		case FILTER::FILTER_GRADIENTBEVEL:
 			stream >> v.GradientBevelFilter;
 			break;
 		default:
@@ -1297,8 +1310,9 @@ std::istream& lightspark::operator>>(std::istream& stream, BLURFILTER& v)
 
 std::istream& lightspark::operator>>(std::istream& stream, BEVELFILTER& v)
 {
+	// contrary to spec HighlightColor is first entry, then ShadowColor
+	stream >> v.HighlightColor; 
 	stream >> v.ShadowColor;
-	stream >> v.HighlightColor;
 	stream >> v.BlurX;
 	stream >> v.BlurY;
 	stream >> v.Angle;
@@ -1477,6 +1491,7 @@ bool CLIPEVENTFLAGS::isNull()
 
 std::istream& lightspark::operator>>(std::istream& s, CLIPACTIONRECORD& v)
 {
+	uint32_t startpos=s.tellg();
 	s >> v.EventFlags;
 	if(v.EventFlags.isNull())
 		return s;
@@ -1489,7 +1504,7 @@ std::istream& lightspark::operator>>(std::istream& s, CLIPACTIONRECORD& v)
 	}
 	if (v.datatag)
 	{
-		v.startactionpos=v.datatag->numbytes+v.dataskipbytes;
+		v.startactionpos=v.datatag->numbytes+v.dataskipbytes+(uint32_t(s.tellg())-startpos);
 		v.actions.resize(len+v.startactionpos);
 		memcpy(v.actions.data(),v.datatag->bytes,v.datatag->numbytes);
 	}
@@ -1512,8 +1527,6 @@ std::istream& lightspark::operator>>(std::istream& s, CLIPACTIONS& v)
 	while(1)
 	{
 		CLIPACTIONRECORD t(v.AllEventFlags.getSWFVersion(),v.dataskipbytes+(uint32_t(s.tellg())-startpos),v.datatag);
-		// use datatag only on first clipaction
-		v.datatag=nullptr;
 		s >> t;
 		if(t.isLast())
 			break;
@@ -1657,7 +1670,7 @@ void lightspark::stringToQName(const tiny_string& tmp, tiny_string& name, tiny_s
 	ns="";
 }
 
-RunState::RunState():last_FP(-1),FP(0),next_FP(0),stop_FP(false),explicit_FP(false),creatingframe(false),frameadvanced(false)
+RunState::RunState():last_FP(-1),FP(0),next_FP(0),stop_FP(false),explicit_FP(false),inEnterFrame(false),gotoQueued(false),creatingframe(false),frameadvanced(false)
 {
 }
 
@@ -1703,7 +1716,7 @@ FILLSTYLE::~FILLSTYLE()
 {
 }
 
-FILLSTYLE& FILLSTYLE::operator=(FILLSTYLE r)
+FILLSTYLE& FILLSTYLE::operator=(const FILLSTYLE& r)
 {
 	Matrix = r.Matrix;
 	Gradient = r.Gradient;
@@ -1714,6 +1727,27 @@ FILLSTYLE& FILLSTYLE::operator=(FILLSTYLE r)
 	FillStyleType = r.FillStyleType;
 	version = r.version;
 	return *this;
+}
+
+bool FILLSTYLE::operator==(const FILLSTYLE& r) const
+{
+	if (FillStyleType != r.FillStyleType ||
+		version != r.version ||
+		!(ShapeBounds == r.ShapeBounds))
+		return false;
+	switch (FillStyleType)
+	{
+		case SOLID_FILL:
+			return Color == r.Color;
+		case LINEAR_GRADIENT:
+		case RADIAL_GRADIENT:
+			return Matrix == r.Matrix && Gradient == r.Gradient;
+		case FOCAL_RADIAL_GRADIENT:
+			return Matrix == r.Matrix && FocalGradient == r.FocalGradient;
+		default:
+			return bitmap == r.bitmap;
+	}
+
 }
 
 LINESTYLE2::LINESTYLE2(const LINESTYLE2& r):StartCapStyle(r.StartCapStyle),JointStyle(r.JointStyle),HasFillFlag(r.HasFillFlag),
@@ -1727,7 +1761,7 @@ LINESTYLE2::~LINESTYLE2()
 {
 }
 
-LINESTYLE2& LINESTYLE2::operator=(LINESTYLE2 r)
+LINESTYLE2& LINESTYLE2::operator=(const LINESTYLE2& r)
 {
 	StartCapStyle=r.StartCapStyle;
 	JointStyle=r.JointStyle;
@@ -1743,6 +1777,22 @@ LINESTYLE2& LINESTYLE2::operator=(LINESTYLE2 r)
 	FillType=r.FillType;
 	version=r.version;
 	return *this;
+}
+bool LINESTYLE2::operator==(const LINESTYLE2& r) const
+{
+	return StartCapStyle==r.StartCapStyle
+			&& JointStyle==r.JointStyle
+			&& HasFillFlag==r.HasFillFlag
+			&& NoHScaleFlag==r.NoHScaleFlag
+			&& NoVScaleFlag==r.NoVScaleFlag
+			&& PixelHintingFlag==r.PixelHintingFlag
+			&& NoClose==r.NoClose
+			&& EndCapStyle==r.EndCapStyle
+			&& Width==r.Width
+			&& MiterLimitFactor==r.MiterLimitFactor
+			&& Color==r.Color
+			&& FillType==r.FillType
+			&& version==r.version;
 }
 
 nsNameAndKind::nsNameAndKind(SystemState* sys,const tiny_string& _name, NS_KIND _kind)

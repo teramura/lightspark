@@ -23,6 +23,7 @@
 
 #include "timer.h"
 #include "compat.h"
+#include "interfaces/timer.h"
 
 using namespace lightspark;
 using namespace std;
@@ -35,10 +36,8 @@ TimerThread::TimerThread(SystemState* s):m_sys(s),stopped(false),joined(false)
 void TimerThread::stop()
 {
 	if(!stopped)
-	{
 		stopped=true;
-		newEvent.signal();
-	}
+	newEvent.signal();
 }
 
 void TimerThread::wait()
@@ -56,7 +55,11 @@ TimerThread::~TimerThread()
 	stop();
 	list<TimingEvent*>::iterator it=pendingEvents.begin();
 	for(;it!=pendingEvents.end();++it)
+	{
+		if ((*it)->job)
+			(*it)->job->tickFence();
 		delete *it;
+	}
 }
 
 void TimerThread::insertNewEvent_nolock(TimingEvent* e)

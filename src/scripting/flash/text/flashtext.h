@@ -80,11 +80,14 @@ private:
 	class HtmlTextParser : public pugi::xml_tree_walker {
 	protected:
 		TextData *textdata;
+		std::vector<FormatText> formatStack;
+		tiny_string prevName;
+		int prevDepth;
 
 		uint32_t parseFontSize(const char *s, uint32_t currentFontSize);
 		bool for_each(pugi::xml_node& node);
 	public:
-		HtmlTextParser() : textdata(NULL) {}
+		HtmlTextParser() : textdata(NULL), formatStack(), prevDepth(-1) {}
 		//Stores the text and formating into a TextData object
 		void parseTextAndFormating(const tiny_string& html, TextData *dest);
 	};
@@ -95,10 +98,9 @@ public:
 	enum GRID_FIT_TYPE { GF_NONE, GF_PIXEL, GF_SUBPIXEL };
 	enum TEXT_INTERACTION_MODE { TI_NORMAL, TI_SELECTION };
 private:
-	_NR<DisplayObject> hitTestImpl(number_t x, number_t y, HIT_TYPE type,bool interactiveObjectsOnly) override;
-	bool renderImpl(RenderContext& ctxt) override;
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override;
-	IDrawable* invalidate(DisplayObject* target, const MATRIX& initialMatrix, bool smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap) override;
+	_NR<DisplayObject> hitTestImpl(const Vector2f& globalPoint, const Vector2f& localPoint, HIT_TYPE type,bool interactiveObjectsOnly) override;
+	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax, bool visibleOnly) override;
+	IDrawable* invalidate(bool smoothing) override;
 	void requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh=false) override;
 	void defaultEventBehavior(_R<Event> e) override;
 	void updateText(const tiny_string& new_text);
@@ -134,6 +136,8 @@ private:
 	LINESTYLE2 lineStyleBorder;
 	LINESTYLE2 lineStyleCaret;
 	Mutex* linemutex;
+	bool inAVM1syncVar;
+	bool inUpdateVarBinding;
 	void getTextBounds(const tiny_string &txt, number_t &xmin, number_t &xmax, number_t &ymin, number_t &ymax);
 protected:
 	void afterSetLegacyMatrix() override;
@@ -142,18 +146,22 @@ public:
 	~TextField();
 	void finalize() override;
 	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
 	static void sinit(Class_base* c);
 	void setHtmlText(const tiny_string& html);
 	void avm1SyncTagVar();
 	void UpdateVariableBinding(asAtom v) override;
 	void afterLegacyInsert() override;
-	void afterLegacyDelete(DisplayObjectContainer* parent, bool inskipping) override;
+	void afterLegacyDelete(bool inskipping) override;
 	void lostFocus() override;
 	void gotFocus() override;
 	void textInputChanged(const tiny_string& newtext) override;
 	void tick() override;
 	void tickFence() override;
 	uint32_t getTagID() const override;
+	float getScaleFactor() const override { return this->scaling; }
+	bool allowAsMask() const override { return false; }
+	bool isInUpdateVarBinding() const { return inUpdateVarBinding; }
 	
 	ASFUNCTION_ATOM(appendText);
 	ASFUNCTION_ATOM(_getAntiAliasType);
@@ -179,6 +187,7 @@ public:
 	ASFUNCTION_ATOM(_setTextFormat);
 	ASFUNCTION_ATOM(_getDefaultTextFormat);
 	ASFUNCTION_ATOM(_setDefaultTextFormat);
+	ASFUNCTION_ATOM(_getCharIndexAtPoint);
 	ASFUNCTION_ATOM(_getLineIndexAtPoint);
 	ASFUNCTION_ATOM(_getLineIndexOfChar);
 	ASFUNCTION_ATOM(_getLineLength);
@@ -232,6 +241,7 @@ private:
 	void onAlign(const asAtom& old);
 public:
 	TextFormat(ASWorker* wrk,Class_base* c);
+	~TextFormat();
 	void finalize() override;
 	bool destruct() override;
 	void prepareShutdown() override;
@@ -286,17 +296,18 @@ private:
 	RECT bounds;
 	uint32_t tagID;
 protected:
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override;
-	bool renderImpl(RenderContext& ctxt) override;
-	_NR<DisplayObject> hitTestImpl(number_t x, number_t y, HIT_TYPE type,bool interactiveObjectsOnly) override;
+	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax, bool visibleOnly) override;
+	_NR<DisplayObject> hitTestImpl(const Vector2f& globalPoint, const Vector2f& localPoint, HIT_TYPE type,bool interactiveObjectsOnly) override;
 public:
 	StaticText(ASWorker* wrk,Class_base* c):DisplayObject(wrk,c),TokenContainer(this),tagID(UINT32_MAX) {}
 	StaticText(ASWorker* wrk,Class_base* c, const tokensVector& tokens,const RECT& b,uint32_t _tagID):
 		DisplayObject(wrk,c),TokenContainer(this, tokens, 1.0f/1024.0f/20.0f/20.0f),bounds(b),tagID(_tagID) {}
 	static void sinit(Class_base* c);
 	void requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh=false) override { TokenContainer::requestInvalidation(q,forceTextureRefresh); }
-	IDrawable* invalidate(DisplayObject* target, const MATRIX& initialMatrix, bool smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap) override;
+	IDrawable* invalidate(bool smoothing) override;
 	uint32_t getTagID() const override { return tagID; }
+	float getScaleFactor() const override { return this->scaling; }
+	bool allowAsMask() const override { return false; }
 };
 
 class FontStyle: public ASObject

@@ -21,9 +21,10 @@
 #include "scripting/toplevel/ASString.h"
 #include "scripting/toplevel/Error.h"
 #include "scripting/toplevel/Vector.h"
-#include "scripting/flash/geom/flashgeom.h"
+#include "scripting/flash/geom/Point.h"
 #include "scripting/class.h"
 #include "scripting/argconv.h"
+#include "platforms/engineutils.h"
 #include "swf.h"
 
 using namespace std;
@@ -32,14 +33,14 @@ using namespace lightspark;
 void Mouse::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructorNotInstantiatable, CLASS_FINAL | CLASS_SEALED);
-	c->setDeclaredMethodByQName("hide","",Class<IFunction>::getFunction(c->getSystemState(),hide),NORMAL_METHOD,false);
-	c->setDeclaredMethodByQName("show","",Class<IFunction>::getFunction(c->getSystemState(),show),NORMAL_METHOD,false);
-	c->setDeclaredMethodByQName("cursor","",Class<IFunction>::getFunction(c->getSystemState(),getCursor,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("cursor","",Class<IFunction>::getFunction(c->getSystemState(),setCursor),SETTER_METHOD,false);
-	c->setDeclaredMethodByQName("supportsCursor","",Class<IFunction>::getFunction(c->getSystemState(),getSupportsCursor,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("supportsNativeCursor","",Class<IFunction>::getFunction(c->getSystemState(),getSupportsNativeCursor,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("registerCursor","",Class<IFunction>::getFunction(c->getSystemState(),registerCursor),NORMAL_METHOD,false);
-	c->setDeclaredMethodByQName("unregisterCursor","",Class<IFunction>::getFunction(c->getSystemState(),unregisterCursor),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("hide","",c->getSystemState()->getBuiltinFunction(hide),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("show","",c->getSystemState()->getBuiltinFunction(show),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("cursor","",c->getSystemState()->getBuiltinFunction(getCursor,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("cursor","",c->getSystemState()->getBuiltinFunction(setCursor),SETTER_METHOD,false);
+	c->setDeclaredMethodByQName("supportsCursor","",c->getSystemState()->getBuiltinFunction(getSupportsCursor,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("supportsNativeCursor","",c->getSystemState()->getBuiltinFunction(getSupportsNativeCursor,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("registerCursor","",c->getSystemState()->getBuiltinFunction(registerCursor),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("unregisterCursor","",c->getSystemState()->getBuiltinFunction(unregisterCursor),NORMAL_METHOD,false);
 }
 
 ASFUNCTIONBODY_ATOM(Mouse, hide)
@@ -54,15 +55,15 @@ ASFUNCTIONBODY_ATOM(Mouse, show)
 
 ASFUNCTIONBODY_ATOM(Mouse, getCursor)
 {
-	ret = asAtomHandler::fromString(wrk->getSystemState(),"auto");
+	ret = asAtomHandler::fromString(wrk->getSystemState()
+									,wrk->getSystemState()->getEngineData()->getMouseCursor(wrk->getSystemState()));
 }
 
 ASFUNCTIONBODY_ATOM(Mouse, setCursor)
 {
 	tiny_string cursorName;
 	ARG_CHECK(ARG_UNPACK(cursorName));
-	if (cursorName != "auto")
-		LOG(LOG_NOT_IMPLEMENTED,"setting mouse cursor is not implemented");
+	wrk->getSystemState()->getEngineData()->setMouseCursor(wrk->getSystemState(),cursorName);
 }
 
 ASFUNCTIONBODY_ATOM(Mouse, getSupportsCursor)

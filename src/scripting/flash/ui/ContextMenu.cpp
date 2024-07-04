@@ -18,6 +18,7 @@
 #include "ContextMenu.h"
 #include "scripting/class.h"
 #include "scripting/argconv.h"
+#include "scripting/flash/display/RootMovieClip.h"
 
 using namespace std;
 using namespace lightspark;
@@ -31,8 +32,8 @@ void ContextMenu::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, EventDispatcher, _constructor, CLASS_FINAL);
 	REGISTER_GETTER_RESULTTYPE(c,isSupported,Boolean);
-	c->setDeclaredMethodByQName("hideBuiltInItems","",Class<IFunction>::getFunction(c->getSystemState(),hideBuiltInItems),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("clone","",Class<IFunction>::getFunction(c->getSystemState(),clone),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("hideBuiltInItems","",c->getSystemState()->getBuiltinFunction(hideBuiltInItems),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("clone","",c->getSystemState()->getBuiltinFunction(clone),NORMAL_METHOD,true);
 	REGISTER_GETTER_SETTER(c,customItems);
 	REGISTER_GETTER_SETTER(c,builtInItems);
 }
@@ -72,13 +73,16 @@ void ContextMenu::getCurrentContextMenuItems(std::vector<_R<NativeMenuItem> >& i
 {
 	if (!customItems.isNull() && customItems->size())
 	{
+		bool checkReservedLabels = getSystemState()->mainClip != nullptr && getSystemState()->mainClip->needsActionScript3();
 		for (uint32_t i = 0; i < customItems->size() && i < 15; i++)
 		{
-			// TODO check for reserved labels?
 			asAtom item = asAtomHandler::invalidAtom;;
 			customItems->at_nocheck(item,i);
 			if (asAtomHandler::is<NativeMenuItem>(item))
-				asAtomHandler::as<NativeMenuItem>(item)->addToMenu(items,this);
+			{
+				if (!checkReservedLabels || !asAtomHandler::as<NativeMenuItem>(item)->isReservedLabel())
+						asAtomHandler::as<NativeMenuItem>(item)->addToMenu(items,this);
+			}
 		}
 		NativeMenuItem* n = Class<NativeMenuItem>::getInstanceSNoArgs(getInstanceWorker());
 		n->isSeparator = true;

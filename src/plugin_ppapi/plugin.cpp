@@ -31,9 +31,11 @@
 #include "backends/audio.h"
 #include "scripting/flash/utils/ByteArray.h"
 #include "scripting/flash/display/NativeMenuItem.h"
+#include "scripting/flash/display/LoaderInfo.h"
+#include "scripting/flash/display/RootMovieClip.h"
 #include <string>
 #include <algorithm>
-#include <SDL2/SDL.h>
+#include <SDL.h>
 #include "threading.h"
 #include "plugin_ppapi/plugin.h"
 #include "plugin_ppapi/ppextscriptobject.h"
@@ -2018,6 +2020,11 @@ void ppPluginEngineData::exec_glUniform4f(int location, float v0, float v1, floa
 	g_gles2_interface->Uniform4f(instance->m_graphics,location,v0,v1,v2,v3);
 }
 
+void ppPluginEngineData::exec_glUniform1fv(int location, uint32_t size, float* v)
+{
+	g_gles2_interface->Uniform1fv(instance->m_graphics,location,size,v);
+}
+
 void ppPluginEngineData::exec_glBindTexture_GL_TEXTURE_2D(uint32_t id)
 {
 	g_gles2_interface->BindTexture(instance->m_graphics,GL_TEXTURE_2D,id);
@@ -2100,32 +2107,32 @@ void ppPluginEngineData::exec_glEnable_GL_DEPTH_TEST()
 {
 	g_gles2_interface->Enable(instance->m_graphics,GL_DEPTH_TEST);
 }
-void ppPluginEngineData::exec_glDepthFunc(DEPTH_FUNCTION depthfunc)
+void ppPluginEngineData::exec_glDepthFunc(DEPTHSTENCIL_FUNCTION depthfunc)
 {
 	switch (depthfunc)
 	{
-		case ALWAYS:
+		case DEPTHSTENCIL_ALWAYS:
 			g_gles2_interface->DepthFunc(instance->m_graphics,GL_ALWAYS);
 			break;
-		case EQUAL:
+		case DEPTHSTENCIL_EQUAL:
 			g_gles2_interface->DepthFunc(instance->m_graphics,GL_EQUAL);
 			break;
-		case GREATER:
+		case DEPTHSTENCIL_GREATER:
 			g_gles2_interface->DepthFunc(instance->m_graphics,GL_GREATER);
 			break;
-		case GREATER_EQUAL:
+		case DEPTHSTENCIL_GREATER_EQUAL:
 			g_gles2_interface->DepthFunc(instance->m_graphics,GL_GEQUAL);
 			break;
-		case LESS:
+		case DEPTHSTENCIL_LESS:
 			g_gles2_interface->DepthFunc(instance->m_graphics,GL_LESS);
 			break;
-		case LESS_EQUAL:
+		case DEPTHSTENCIL_LESS_EQUAL:
 			g_gles2_interface->DepthFunc(instance->m_graphics,GL_LEQUAL);
 			break;
-		case NEVER:
+		case DEPTHSTENCIL_NEVER:
 			g_gles2_interface->DepthFunc(instance->m_graphics,GL_NEVER);
 			break;
-		case NOT_EQUAL:
+		case DEPTHSTENCIL_NOT_EQUAL:
 			g_gles2_interface->DepthFunc(instance->m_graphics,GL_NOTEQUAL);
 			break;
 	}
@@ -2150,6 +2157,10 @@ void ppPluginEngineData::exec_glDisable_GL_TEXTURE_2D()
 void ppPluginEngineData::exec_glFlush()
 {
 	g_gles2_interface->Flush(instance->m_graphics);
+}
+void ppPluginEngineData::exec_glFinish()
+{
+	g_gles2_interface->Finish(instance->m_graphics);
 }
 
 uint32_t ppPluginEngineData::exec_glCreateShader_GL_FRAGMENT_SHADER()
@@ -2300,6 +2311,16 @@ void ppPluginEngineData::exec_glDeleteTextures(int32_t n,uint32_t* textures)
 void ppPluginEngineData::exec_glDeleteBuffers(uint32_t size, uint32_t* buffers)
 {
 	g_gles2_interface->DeleteBuffers(instance->m_graphics,size, buffers);
+}
+
+void ppPluginEngineData::exec_glDeleteFramebuffers(uint32_t size,uint32_t* buffers)
+{
+	g_gles2_interface->DeleteFramebuffers(instance->m_graphics,size,buffers);
+}
+
+void ppPluginEngineData::exec_glDeleteRenderbuffers(uint32_t size,uint32_t* buffers)
+{
+	g_gles2_interface->DeleteRenderbuffers(instance->m_graphics,size,buffers);
 }
 
 void ppPluginEngineData::exec_glBlendFunc(BLEND_FACTOR src, BLEND_FACTOR dst)
@@ -2472,12 +2493,12 @@ void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_INT_8_8_8_8
 {
 	g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_RGBA, width, height, border, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_HOST, pixels);
 }
-void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_2D(int32_t level, int32_t width, int32_t height, int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat, uint32_t compressedImageSize)
+void ppPluginEngineData::glTexImage2Dintern(uint32_t type,int32_t level,int32_t width, int32_t height,int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat,uint32_t compressedImageSize)
 {
 	switch (format)
 	{
 		case TEXTUREFORMAT::BGRA:
-			g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_RGBA, width, height, border, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+			g_gles2_interface->TexImage2D(instance->m_graphics, type, level, GL_RGBA, width, height, border, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 			break;
 		case TEXTUREFORMAT::BGR:
 			for (int i = 0; i < width*height*3; i += 3) {
@@ -2485,14 +2506,14 @@ void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_2D(int32_t level, int32_t 
 				((uint8_t*)pixels)[i] = ((uint8_t*)pixels)[i+2];
 				((uint8_t*)pixels)[i+2] = t;
 			}
-			g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_RGB, width, height, border, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+			g_gles2_interface->TexImage2D(instance->m_graphics, type, level, GL_RGB, width, height, border, GL_RGB, GL_UNSIGNED_BYTE, pixels);
 			break;
 		case TEXTUREFORMAT::BGRA_PACKED:
-			g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_RGBA, width, height, border, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, pixels);
+			g_gles2_interface->TexImage2D(instance->m_graphics, type, level, GL_RGBA, width, height, border, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, pixels);
 			break;
 		case TEXTUREFORMAT::BGR_PACKED:
 			LOG(LOG_NOT_IMPLEMENTED,"textureformat BGR_PACKED for opengl es");
-			g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_RGB, width, height, border, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, pixels);
+			g_gles2_interface->TexImage2D(instance->m_graphics, type, level, GL_RGB, width, height, border, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, pixels);
 			break;
 		case TEXTUREFORMAT::COMPRESSED:
 		case TEXTUREFORMAT::COMPRESSED_ALPHA:
@@ -2500,7 +2521,10 @@ void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_2D(int32_t level, int32_t 
 			switch (compressedformat)
 			{
 				case TEXTUREFORMAT_COMPRESSED::DXT5:
-					g_gles2_interface->CompressedTexImage2D(instance->m_graphics,GL_TEXTURE_2D, level, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, width, height, border, compressedImageSize, pixels);
+					g_gles2_interface->CompressedTexImage2D(instance->m_graphics, type, level, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, width, height, border, compressedImageSize, pixels);
+					break;
+				case TEXTUREFORMAT_COMPRESSED::DXT1:
+					g_gles2_interface->CompressedTexImage2D(instance->m_graphics, type, level, GL_COMPRESSED_RGB_S3TC_DXT1_EXT, width, height, border, compressedImageSize, pixels);
 					break;
 				default:
 					LOG(LOG_NOT_IMPLEMENTED,"upload texture in compressed format "<<compressedformat);
@@ -2516,7 +2540,10 @@ void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_2D(int32_t level, int32_t 
 			break;
 	}
 }
-
+void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_2D(int32_t level, int32_t width, int32_t height, int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat, uint32_t compressedImageSize, bool isRectangleTexture)
+{
+	glTexImage2Dintern(isRectangleTexture ? GL_TEXTURE_RECTANGLE_ARB : GL_TEXTURE_2D,level, width, height, border, pixels, format, compressedformat,compressedImageSize);
+}
 void ppPluginEngineData::exec_glDrawBuffer_GL_BACK()
 {
 	// PPAPI has no DrawBuffer
@@ -2571,12 +2598,22 @@ void ppPluginEngineData::exec_glGenerateMipmap_GL_TEXTURE_2D()
 {
 	g_gles2_interface->GenerateMipmap(instance->m_graphics,GL_TEXTURE_2D);
 }
+void ppPluginEngineData::exec_glGenerateMipmap_GL_TEXTURE_CUBE_MAP()
+{
+	g_gles2_interface->GenerateMipmap(instance->m_graphics,GL_TEXTURE_CUBE_MAP);
+}
 
 void ppPluginEngineData::exec_glReadPixels(int32_t width, int32_t height, void *buf)
 {
 	g_gles2_interface->PixelStorei(instance->m_graphics,GL_PACK_ALIGNMENT, 1);
 	g_gles2_interface->ReadPixels(instance->m_graphics,0,0,width, height, GL_RGB, GL_UNSIGNED_BYTE, buf);
 }
+void ppPluginEngineData::exec_glReadPixels_GL_BGRA(int32_t width, int32_t height,void *buf)
+{
+	g_gles2_interface->PixelStorei(instance->m_graphics,GL_PACK_ALIGNMENT, 1);
+	g_gles2_interface->ReadPixels(instance->m_graphics,0,0,width, height, GL_BGRA_EXT, GL_UNSIGNED_BYTE, buf);
+}
+
 void ppPluginEngineData::exec_glBindTexture_GL_TEXTURE_CUBE_MAP(uint32_t id)
 {
 	g_gles2_interface->BindTexture(instance->m_graphics,GL_TEXTURE_CUBE_MAP, id);
@@ -2589,9 +2626,9 @@ void ppPluginEngineData::exec_glTexParameteri_GL_TEXTURE_CUBE_MAP_GL_TEXTURE_MAG
 {
 	g_gles2_interface->TexParameteri(instance->m_graphics,GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 }
-void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(uint32_t side, int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels)
+void ppPluginEngineData::exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(uint32_t side, int32_t level,int32_t width, int32_t height,int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat, uint32_t compressedImageSize)
 {
-	g_gles2_interface->TexImage2D(instance->m_graphics,GL_TEXTURE_CUBE_MAP_POSITIVE_X+side, level, GL_RGBA, width, height, border, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+	glTexImage2Dintern(GL_TEXTURE_CUBE_MAP_POSITIVE_X+side, level, width, height, border, pixels, format, compressedformat,compressedImageSize);
 }
 
 void ppPluginEngineData::exec_glScissor(int32_t x, int32_t y, int32_t width, int32_t height)
@@ -2612,6 +2649,173 @@ void ppPluginEngineData::exec_glColorMask(bool red, bool green, bool blue, bool 
 void ppPluginEngineData::exec_glStencilFunc_GL_ALWAYS()
 {
 	g_gles2_interface->StencilFunc(instance->m_graphics,GL_ALWAYS, 0, 0xff);
+}
+void ppPluginEngineData::exec_glStencilFunc_GL_NEVER()
+{
+	g_gles2_interface->StencilFunc(instance->m_graphics,GL_NEVER, 0, 0xff);
+}
+
+void ppPluginEngineData::exec_glStencilFunc_GL_EQUAL(int32_t ref, uint32_t mask)
+{
+	g_gles2_interface->StencilFunc(instance->m_graphics,GL_EQUAL, ref, mask);
+}
+
+void ppPluginEngineData::exec_glStencilOp_GL_INCR()
+{
+	g_gles2_interface->StencilOp(instance->m_graphics,GL_KEEP, GL_KEEP, GL_INCR);
+}
+
+void ppPluginEngineData::exec_glStencilOp_GL_DECR()
+{
+	g_gles2_interface->StencilOp(instance->m_graphics,GL_KEEP, GL_KEEP, GL_DECR);
+}
+
+void ppPluginEngineData::exec_glStencilOp_GL_KEEP()
+{
+	g_gles2_interface->StencilOp(instance->m_graphics,GL_KEEP, GL_KEEP, GL_KEEP);
+}
+
+void ppPluginEngineData::exec_glStencilOpSeparate(TRIANGLE_FACE face, DEPTHSTENCIL_OP sfail, DEPTHSTENCIL_OP dpfail, DEPTHSTENCIL_OP dppass)
+{
+	GLenum glface=GL_FRONT;
+	switch (face)
+	{
+		case FACE_BACK:
+			glface=GL_BACK;
+			break;
+		case FACE_FRONT:
+			glface=GL_FRONT;
+			break;
+		case FACE_FRONT_AND_BACK:
+			glface=GL_FRONT_AND_BACK;
+			break;
+		case FACE_NONE:
+			glface=GL_NONE;
+			break;
+	}
+	GLenum glsfail=GL_KEEP;
+	switch (sfail)
+	{
+		case DEPTHSTENCIL_KEEP: 
+			glsfail=GL_KEEP;
+			break;
+		case DEPTHSTENCIL_ZERO:
+			glsfail=GL_ZERO;
+			break;
+		case DEPTHSTENCIL_REPLACE:
+			glsfail=GL_REPLACE;
+			break;
+		case DEPTHSTENCIL_INCR:
+			glsfail=GL_INCR;
+			break;
+		case DEPTHSTENCIL_INCR_WRAP:
+			glsfail=GL_INCR_WRAP;
+			break;
+		case DEPTHSTENCIL_DECR:
+			glsfail=GL_DECR;
+			break;
+		case DEPTHSTENCIL_DECR_WRAP:
+			glsfail=GL_DECR_WRAP;
+			break;
+		case DEPTHSTENCIL_INVERT:
+			glsfail=GL_INVERT;
+			break;
+	}
+	GLenum gldpfail=GL_KEEP;
+	switch (dpfail)
+	{
+		case DEPTHSTENCIL_KEEP: 
+			gldpfail=GL_KEEP;
+			break;
+		case DEPTHSTENCIL_ZERO:
+			gldpfail=GL_ZERO;
+			break;
+		case DEPTHSTENCIL_REPLACE:
+			gldpfail=GL_REPLACE;
+			break;
+		case DEPTHSTENCIL_INCR:
+			gldpfail=GL_INCR;
+			break;
+		case DEPTHSTENCIL_INCR_WRAP:
+			gldpfail=GL_INCR_WRAP;
+			break;
+		case DEPTHSTENCIL_DECR:
+			gldpfail=GL_DECR;
+			break;
+		case DEPTHSTENCIL_DECR_WRAP:
+			gldpfail=GL_DECR_WRAP;
+			break;
+		case DEPTHSTENCIL_INVERT:
+			gldpfail=GL_INVERT;
+			break;
+	}
+	GLenum gldppass=GL_KEEP;
+	switch (dppass)
+	{
+		case DEPTHSTENCIL_KEEP: 
+			gldppass=GL_KEEP;
+			break;
+		case DEPTHSTENCIL_ZERO:
+			gldppass=GL_ZERO;
+			break;
+		case DEPTHSTENCIL_REPLACE:
+			gldppass=GL_REPLACE;
+			break;
+		case DEPTHSTENCIL_INCR:
+			gldppass=GL_INCR;
+			break;
+		case DEPTHSTENCIL_INCR_WRAP:
+			gldppass=GL_INCR_WRAP;
+			break;
+		case DEPTHSTENCIL_DECR:
+			gldppass=GL_DECR;
+			break;
+		case DEPTHSTENCIL_DECR_WRAP:
+			gldppass=GL_DECR_WRAP;
+			break;
+		case DEPTHSTENCIL_INVERT:
+			gldppass=GL_INVERT;
+			break;
+	}
+	g_gles2_interface->StencilOpSeparate(instance->m_graphics,glface, glsfail, gldpfail, gldppass);
+}
+
+void ppPluginEngineData::exec_glStencilMask(uint32_t mask)
+{
+	g_gles2_interface->StencilMask(instance->m_graphics,mask);
+}
+
+void ppPluginEngineData::exec_glStencilFunc(DEPTHSTENCIL_FUNCTION func, uint32_t ref, uint32_t mask)
+{
+	uint32_t f = GL_ALWAYS;
+	switch (func)
+	{
+		case DEPTHSTENCIL_ALWAYS:
+			f = GL_ALWAYS;
+			break;
+		case DEPTHSTENCIL_EQUAL:
+			f = GL_EQUAL;
+			break;
+		case DEPTHSTENCIL_GREATER:
+			f = GL_GREATER;
+			break;
+		case DEPTHSTENCIL_GREATER_EQUAL:
+			f = GL_GEQUAL;
+			break;
+		case DEPTHSTENCIL_LESS:
+			f = GL_LESS;
+			break;
+		case DEPTHSTENCIL_LESS_EQUAL:
+			f = GL_LEQUAL;
+			break;
+		case DEPTHSTENCIL_NEVER:
+			f = GL_NEVER;
+			break;
+		case DEPTHSTENCIL_NOT_EQUAL:
+			f = GL_NOTEQUAL;
+			break;
+	}
+	g_gles2_interface->StencilFunc(instance->m_graphics,f,ref,mask);
 }
 
 void audio_callback(void* sample_buffer,uint32_t buffer_size_in_bytes,PP_TimeDelta latency,void* user_data)

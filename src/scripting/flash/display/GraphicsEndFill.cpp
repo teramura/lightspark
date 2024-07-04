@@ -23,13 +23,14 @@
 using namespace lightspark;
 
 GraphicsEndFill::GraphicsEndFill(ASWorker* wrk, Class_base* c):
-	ASObject(wrk,c)
+	ASObject(wrk,c,T_OBJECT,SUBTYPE_GRAPHICSENDFILL)
 {
 }
 
 void GraphicsEndFill::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_SEALED | CLASS_FINAL);
+	c->isReusable=true;
 	c->addImplementedInterface(InterfaceClass<IGraphicsFill>::getClass(c->getSystemState()));
 	IGraphicsFill::linkTraits(c);
 	c->addImplementedInterface(InterfaceClass<IGraphicsData>::getClass(c->getSystemState()));
@@ -41,7 +42,7 @@ FILLSTYLE GraphicsEndFill::toFillStyle()
 	return FILLSTYLE(0xff);
 }
 
-void GraphicsEndFill::appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics)
+void GraphicsEndFill::appendToTokens(tokensVector& tokens,Graphics* graphics)
 {
-	tokens.emplace_back(GeomToken(CLEAR_FILL).uval);
+	tokens.filltokens.emplace_back(GeomToken(CLEAR_FILL).uval);
 }

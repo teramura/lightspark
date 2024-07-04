@@ -19,11 +19,12 @@
 
 #include <stack>
 #include "scripting/flash/display/BitmapContainer.h"
-#include "scripting/flash/display/flashdisplay.h"
 #include "scripting/flash/filters/flashfilters.h"
+#include "scripting/flash/geom/flashgeom.h"
 #include "backends/rendering.h"
 #include "backends/image.h"
 #include "backends/decoder.h"
+#include "backends/streamcache.h"
 #include "swf.h"
 
 using namespace std;
@@ -31,7 +32,8 @@ using namespace lightspark;
 
 extern void nanoVGDeleteImage(int image);
 BitmapContainer::BitmapContainer(MemoryAccount* m):stride(0),width(0),height(0),
-	data(reporter_allocator<uint8_t>(m)),nanoVGImageHandle(-1)
+	data(reporter_allocator<uint8_t>(m)),renderevent(0),
+	nanoVGImageHandle(-1),cachedCairoPattern(nullptr)
 {
 }
 
@@ -40,13 +42,67 @@ BitmapContainer::~BitmapContainer()
 	if (bitmaptexture.isValid())
 	{
 		RenderThread* rt = getSys()->getRenderThread();
-		if (rt)
+		if (rt && rt->isStarted())
 		{
 			getSys()->getRenderThread()->releaseTexture(bitmaptexture);
 		}
 	}
 	if (nanoVGImageHandle != -1)
 		nanoVGDeleteImage(nanoVGImageHandle);
+	if (cachedCairoPattern)
+		cairo_pattern_destroy(cachedCairoPattern);
+		
+}
+
+uint8_t* BitmapContainer::applyColorTransform(ColorTransform *ctransform)
+{
+	if (ctransform->isIdentity() && currentcolortransform.isIdentity())
+		return getOriginalData();
+	if (*ctransform==currentcolortransform)
+		return getDataColorTransformed();
+	currentcolortransform=*ctransform;
+	return ctransform->applyTransformation(this);
+}
+
+uint8_t* BitmapContainer::applyColorTransform(number_t redMulti, number_t greenMulti, number_t blueMulti, number_t alphaMulti, number_t redOff, number_t greenOff, number_t blueOff, number_t alphaOff)
+{
+	if (redMulti==1.0 &&
+		greenMulti==1.0 &&
+		blueMulti==1.0 &&
+		alphaMulti==1.0 &&
+		redOff==0.0 &&
+		greenOff==0.0 &&
+		blueOff==0.0 &&
+		alphaOff==0.0)
+		return getData();
+	if (redMulti==currentcolortransform.redMultiplier &&
+		greenMulti==currentcolortransform.greenMultiplier &&
+		blueMulti==currentcolortransform.blueMultiplier &&
+		alphaMulti==currentcolortransform.alphaMultiplier &&
+		redOff==currentcolortransform.redOffset &&
+		greenOff==currentcolortransform.greenOffset &&
+		blueOff==currentcolortransform.blueOffset &&
+		alphaOff==currentcolortransform.alphaOffset)
+		return getDataColorTransformed();
+	currentcolortransform.redMultiplier=redMulti;
+	currentcolortransform.greenMultiplier=greenMulti;
+	currentcolortransform.blueMultiplier=blueMulti;
+	currentcolortransform.alphaMultiplier=alphaMulti;
+	currentcolortransform.redOffset=redOff;
+	currentcolortransform.greenOffset=greenOff;
+	currentcolortransform.blueOffset=blueOff;
+	currentcolortransform.alphaOffset=alphaOff;
+	uint8_t* src = getData();
+	uint8_t* dst = getDataColorTransformed();
+	uint32_t size = getWidth()*getHeight()*4;
+	for (uint32_t i = 0; i < size; i+=4)
+	{
+		dst[i+3] = max(0,min(255,int(((number_t(src[i+3]) * currentcolortransform.alphaMultiplier) + currentcolortransform.alphaOffset))));
+		dst[i+2] = max(0,min(255,int(((number_t(src[i+2]) * currentcolortransform. blueMultiplier) + currentcolortransform. blueOffset)*(number_t(dst[i+3])/255.0))));
+		dst[i+1] = max(0,min(255,int(((number_t(src[i+1]) * currentcolortransform.greenMultiplier) + currentcolortransform.greenOffset)*(number_t(dst[i+3])/255.0))));
+		dst[i  ] = max(0,min(255,int(((number_t(src[i  ]) * currentcolortransform.  redMultiplier) + currentcolortransform.  redOffset)*(number_t(dst[i+3])/255.0))));
+	}
+	return getDataColorTransformed();
 }
 
 uint8_t* BitmapContainer::getRectangleData(const RECT& sourceRect)
@@ -197,41 +253,35 @@ void BitmapContainer::clear()
 	bitmaptexture.makeEmpty();
 }
 
-uint8_t* BitmapContainer::upload(bool refresh)
-{
-	return getData();
-}
-
-TextureChunk& BitmapContainer::getTexture()
-{
-	return bitmaptexture;
-}
-
-void BitmapContainer::uploadFence()
-{
-	ITextureUploadable::uploadFence();
-	decRef();// is increffed in checkTexture
-}
-bool BitmapContainer::checkTexture()
+// needs to be called in renderThread
+bool BitmapContainer::checkTextureForUpload(SystemState* sys)
 {
 	if (isEmpty()) {
 		return false;
 	}
 
 	if (!bitmaptexture.isValid())
-	{
-		bitmaptexture=getSys()->getRenderThread()->allocateTexture(width, height, true);
-	}
-	incRef();// is decreffed in uploadFence
+		bitmaptexture=sys->getRenderThread()->allocateTexture(width, height, true,true);
+	sys->getRenderThread()->loadChunkBGRA(bitmaptexture,width, height,currentcolortransform.isIdentity() ? getData() : getDataColorTransformed());
 	return true;
+}
+
+void BitmapContainer::clone(BitmapContainer* c)
+{
+	memcpy (c->getOriginalData(),getOriginalData(),getWidth()*getHeight()*4);
+	if (!currentcolortransform.isIdentity())
+	{
+		c->currentcolortransform = currentcolortransform;
+		memcpy (c->getDataColorTransformed(),getDataColorTransformed(),getWidth()*getHeight()*4);
+	}
 }
 
 void BitmapContainer::setAlpha(int32_t x, int32_t y, uint8_t alpha)
 {
 	if (x < 0 || x >= width || y < 0 || y >= height)
 		return;
-
-	uint32_t *p=reinterpret_cast<uint32_t *>(&data[y*stride + 4*x]);
+	uint8_t* d = getCurrentData();
+	uint32_t *p=reinterpret_cast<uint32_t *>(&d[y*stride + 4*x]);
 	*p = ((uint32_t)alpha << 24) + (*p & 0xFFFFFF);
 }
 
@@ -239,11 +289,11 @@ void BitmapContainer::setPixel(int32_t x, int32_t y, uint32_t color, bool setAlp
 {
 	if (x < 0 || x >= width || y < 0 || y >= height)
 		return;
-
-	uint32_t *p=reinterpret_cast<uint32_t *>(&data[y*stride + 4*x]);
+	uint8_t* d = getCurrentData();
+	uint32_t *p=reinterpret_cast<uint32_t *>(&d[y*stride + 4*x]);
 	if(setAlpha)
 	{
-		if (ispremultiplied || (((*p)&0xff000000) == 0xff000000))
+		if (ispremultiplied || ((color&0xff000000) == 0xff000000))
 			*p=color;
 		else
 		{
@@ -264,8 +314,9 @@ uint32_t BitmapContainer::getPixel(int32_t x, int32_t y,bool premultiplied) cons
 {
 	if (x < 0 || x >= width || y < 0 || y >= height)
 		return 0;
-
-	const uint32_t *p=reinterpret_cast<const uint32_t *>(&data[y*stride + 4*x]);
+	
+	uint8_t* d = getCurrentData();
+	const uint32_t *p=reinterpret_cast<const uint32_t *>(&d[y*stride + 4*x]);
 	if (!premultiplied)
 	{
 		uint32_t res = 0;
@@ -304,32 +355,45 @@ void BitmapContainer::copyRectangle(_R<BitmapContainer> source,
 		return;
 	int sx = clippedSourceRect.Xmin;
 	int sy = clippedSourceRect.Ymin;
+	uint8_t *p = getCurrentData();
 	if (mergeAlpha==false)
 	{
 		//Fast path using memmove
 		for (int i=0; i<copyHeight; i++)
 		{
-			memmove(&data[(clippedY+i)*stride + 4*clippedX],
+			memmove(&p[(clippedY+i)*stride + 4*clippedX],
 				&source->data[(sy+i)*source->stride + 4*sx],
 				4*copyWidth);
 		}
 	}
 	else
 	{
-		uint8_t* sourcedata = &source->data[0];
+		uint8_t* sourcedata = source->getCurrentData();
 		bool needsdeletion = false;
-		if (sourcedata == &data[0])
+		if (sourcedata == p)
 		{
-			// cairo doesn't work if source and destination buffers are the same 
+			// source and destination are the same BitmapContainer, so we operate on a copy
+			// TODO check if it is really necessary (source/destination rectangles overlap)
 			sourcedata = new uint8_t[data.size()];
-			memcpy (sourcedata,&data[0],data.size());
+			memcpy (sourcedata,p,data.size());
 			needsdeletion = true;
 		}
-		//Slow path using Cairo
-		CairoRenderContext ctxt(&data[0], width, height,false);
-		ctxt.simpleBlit(clippedX, clippedY, sourcedata,
-				source->getWidth(), source->getHeight(),
-				sx, sy, copyWidth, copyHeight);
+		// TODO check if there is a faster algorithm for this
+		for (int i=0; i<copyHeight; i++)
+		{
+			for (int j=0; j<copyWidth; j++)
+			{
+				uint32_t* pdst = reinterpret_cast<uint32_t *>(&p[(clippedY+i)*stride+4*(j+clippedX)]);
+				uint32_t* psrc = reinterpret_cast<uint32_t *>(&sourcedata[(sy+i)*source->stride+4*(j+sx)]);
+				uint32_t srcalpha = ((*psrc >> 24)&0xff);
+				uint32_t dstalpha = 0xff-srcalpha;
+				uint32_t b = ((((*psrc)     ) &0xff) * srcalpha + (((*pdst)     ) &0xff) * dstalpha) / 0xff;
+				uint32_t g = ((((*psrc) >> 8) &0xff) * srcalpha + (((*pdst) >> 8) &0xff) * dstalpha) / 0xff;
+				uint32_t r = ((((*psrc) >>16) &0xff) * srcalpha + (((*pdst) >>16) &0xff) * dstalpha) / 0xff;
+				uint32_t a = min (srcalpha + (((*pdst) >>24) &0xff) * dstalpha, 0xffU);
+				*pdst = (b & 0xff) | ((g&0xff)<<8) | ((r&0xff)<<16) | (a<<24);
+			}
+		}
 		if (needsdeletion)
 			delete[] sourcedata;
 	}
@@ -337,7 +401,7 @@ void BitmapContainer::copyRectangle(_R<BitmapContainer> source,
 
 void BitmapContainer::applyFilter(_R<BitmapContainer> source,
 				    const RECT& sourceRect,
-				    int32_t destX, int32_t destY,
+				    number_t destX, number_t destY,
 				    BitmapFilter* filter)
 {
 	RECT clippedSourceRect;
@@ -351,18 +415,22 @@ void BitmapContainer::fillRectangle(const RECT& inputRect, uint32_t color, bool 
 {
 	RECT clippedRect;
 	clipRect(inputRect, clippedRect);
-
-	for(int32_t y=clippedRect.Ymin;y<clippedRect.Ymax;y++)
+	if (clippedRect.Ymin>=clippedRect.Ymax || clippedRect.Xmin>=clippedRect.Xmax)
+		return;
+	
+	uint32_t realcolor = useAlpha ? color : (0xFF000000 | (color & 0xFFFFFF));
+	// fill first line
+	for(int32_t x=clippedRect.Xmin;x<clippedRect.Xmax;x++)
 	{
-		for(int32_t x=clippedRect.Xmin;x<clippedRect.Xmax;x++)
-		{
-			uint32_t offset=y*stride + x*4;
-			uint32_t* ptr=(uint32_t*)(getData()+offset);
-			if (useAlpha)
-				*ptr = color;
-			else
-				*ptr = 0xFF000000 | (color & 0xFFFFFF);
-		}
+		uint32_t offset=clippedRect.Ymin*stride + x*4;
+		uint32_t* ptr=(uint32_t*)(getCurrentData()+offset);
+		*ptr = realcolor;
+	}
+	// use memcpy to fill all other lines
+	for(int32_t y=clippedRect.Ymin+1;y<clippedRect.Ymax;y++)
+	{
+		uint32_t offset=y*stride + clippedRect.Xmin*4;
+		memcpy(getCurrentData()+offset,getData()+clippedRect.Ymin*stride+clippedRect.Xmin*4,(clippedRect.Xmax-clippedRect.Xmin)*4);
 	}
 }
 
@@ -401,7 +469,13 @@ bool BitmapContainer::scroll(int32_t x, int32_t y)
 
 inline uint32_t *BitmapContainer::getDataNoBoundsChecking(int32_t x, int32_t y) const
 {
-	return (uint32_t*)&data[y*stride + 4*x];
+	uint8_t* d = getCurrentData();
+	return (uint32_t*)&d[y*stride + 4*x];
+}
+
+uint8_t* BitmapContainer::getCurrentData() const
+{
+	return currentcolortransform.isIdentity() ? (uint8_t*)data.data() : (uint8_t*)data_colortransformed.data();
 }
 
 /*

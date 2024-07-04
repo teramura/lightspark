@@ -22,6 +22,8 @@
 #endif
 
 #include "compat.h"
+#include "scripting/flash/display/RootMovieClip.h"
+#include "scripting/toplevel/toplevel.h"
 #include <algorithm>
 
 #ifdef LLVM_ENABLED
@@ -78,11 +80,18 @@
 #include "scripting/abc.h"
 #include "backends/rendering.h"
 #include "parsing/tags.h"
+#include "scripting/toplevel/Array.h"
+#include "scripting/toplevel/ASQName.h"
+#include "scripting/toplevel/Global.h"
+#include "scripting/toplevel/Namespace.h"
 #include "scripting/toplevel/Number.h"
 #include "scripting/toplevel/Integer.h"
 #include "scripting/toplevel/UInteger.h"
 #include "scripting/flash/system/flashsystem.h"
 #include "scripting/flash/net/flashnet.h"
+#include "scripting/flash/net/Socket.h"
+#include "scripting/flash/display/Loader.h"
+#include "scripting/flash/display/LoaderInfo.h"
 
 using namespace std;
 using namespace lightspark;
@@ -128,6 +137,7 @@ void ABCVm::registerClasses()
 	registerClassesFlashSensors(builtin);
 	registerClassesFlashErrors(builtin);
 	registerClassesFlashPrinting(builtin);
+	registerClassesFlashProfiler(builtin);
 	registerClassesFlashGlobalization(builtin);
 	registerClassesFlashDesktop(builtin);
 	registerClassesFlashFilesystem(builtin);
@@ -588,7 +598,7 @@ ABCContext::ABCContext(RootMovieClip* r, istream& in, ABCVm* vm):scriptsdeclared
 	constantAtoms_namespaces.resize(constant_pool.namespaces.size());
 	for (uint32_t i = 0; i < constant_pool.namespaces.size(); i++)
 	{
-		Namespace* res = Class<Namespace>::getInstanceS(root->getInstanceWorker(),getString(constant_pool.namespaces[i].name),BUILTIN_STRINGS::EMPTY,(NS_KIND)(int)constant_pool.namespaces[i].kind);
+		Namespace* res = Class<Namespace>::getInstanceS(root->getInstanceWorker(),getString(constant_pool.namespaces[i].name),BUILTIN_STRINGS::EMPTY,(NS_KIND)(int)constant_pool.namespaces[i].kind,true);
 		if (constant_pool.namespaces[i].kind != 0)
 			res->nskind =(NS_KIND)(int)(constant_pool.namespaces[i].kind);
 		res->setRefConstant();
@@ -746,7 +756,7 @@ void ABCContext::dumpProfilingData(ostream& f) const
  * nextNamespaceBase is set to 2 since 0 is the empty namespace and 1 is the AS3 namespace
  */
 ABCVm::ABCVm(SystemState* s, MemoryAccount* m):m_sys(s),status(CREATED),isIdle(true),canFlushInvalidationQueue(true),shuttingdown(false),
-	events_queue(reporter_allocator<eventType>(m)),idleevents_queue(reporter_allocator<eventType>(m)),nextNamespaceBase(2),
+	events_queue(reporter_allocator<eventType>(m)),idleevents_queue(reporter_allocator<eventType>(m)),event_buffer(reporter_allocator<eventType>(m)),nextNamespaceBase(2),
 	vmDataMemory(m)
 {
 	m_sys=s;
@@ -815,6 +825,10 @@ int ABCVm::getEventQueueSize()
 
 void ABCVm::publicHandleEvent(EventDispatcher* dispatcher, _R<Event> event)
 {
+	event->getSystemState()->setInMouseEvent(event->is<MouseEvent>());
+	
+	if (event->type == "exitFrame")
+		event->getSystemState()->setFramePhase(FramePhase::EXIT_FRAME);
 	if (dispatcher && dispatcher->is<DisplayObject>() && event->type == "enterFrame" && (
 				(dispatcher->is<RootMovieClip>() && dispatcher->as<RootMovieClip>()->isWaitingForParser()) || // RootMovieClip is not yet completely parsed
 				(dispatcher->as<DisplayObject>()->legacy && !dispatcher->as<DisplayObject>()->isOnStage()))) // it seems that enterFrame event is only executed for DisplayObjects that are on stage or added from ActionScript
@@ -824,6 +838,14 @@ void ABCVm::publicHandleEvent(EventDispatcher* dispatcher, _R<Event> event)
 		event->as<ProgressEvent>()->accesmutex.lock();
 		if (dispatcher->is<LoaderInfo>()) // ensure that the LoaderInfo reports the same number as the ProgressEvent for bytesLoaded
 			dispatcher->as<LoaderInfo>()->setBytesLoadedPublic(event->as<ProgressEvent>()->bytesLoaded);
+		else if (dispatcher->is<ASSocket>())
+			dispatcher->as<ASSocket>()->setBytesAvailable(event->as<ProgressEvent>()->bytesLoaded);
+	}
+	if (event->is<MouseEvent>() && dispatcher && dispatcher->is<DisplayObject>() && !dispatcher->as<DisplayObject>()->isOnStage())
+	{
+		// ignore mouse events if the dispatcher is not on the stage any more
+		// this may happen if the dispatcher was removed from stage after the mouseEvent was added to the event queue
+		return;
 	}
 
 	std::deque<DisplayObject*> parents;
@@ -1110,6 +1132,7 @@ void ABCVm::handleEvent(std::pair<_NR<EventDispatcher>, _R<Event> > e)
 			}
 			case INIT_FRAME:
 			{
+				m_sys->setFramePhase(FramePhase::INIT_FRAME);
 				InitFrameEvent* ev=static_cast<InitFrameEvent*>(e.second.getPtr());
 				LOG(LOG_CALLS,"INIT_FRAME");
 				assert(!ev->clip.isNull());
@@ -1118,6 +1141,7 @@ void ABCVm::handleEvent(std::pair<_NR<EventDispatcher>, _R<Event> > e)
 			}
 			case EXECUTE_FRAMESCRIPT:
 			{
+				m_sys->setFramePhase(FramePhase::EXECUTE_FRAMESCRIPT);
 				ExecuteFrameScriptEvent* ev=static_cast<ExecuteFrameScriptEvent*>(e.second.getPtr());
 				LOG(LOG_CALLS,"EXECUTE_FRAMESCRIPT");
 				assert(!ev->clip.isNull());
@@ -1128,24 +1152,44 @@ void ABCVm::handleEvent(std::pair<_NR<EventDispatcher>, _R<Event> > e)
 			}
 			case ADVANCE_FRAME:
 			{
-				Locker l(m_sys->getRenderThread()->mutexRendering);
+				m_sys->setFramePhase(FramePhase::ADVANCE_FRAME);
 				AdvanceFrameEvent* ev=static_cast<AdvanceFrameEvent*>(e.second.getPtr());
+				DisplayObject* clip = !ev->clip.isNull() ? ev->clip.getPtr() : m_sys->stage;
 				LOG(LOG_CALLS,"ADVANCE_FRAME");
-				if (ev->clip)
-					ev->clip->advanceFrame(true);
+				if (clip->needsActionScript3())
+					clip->enterFrame(true);
 				else
-					m_sys->stage->advanceFrame(true);
+					clip->advanceFrame(true);
+				break;
+			}
+			case SET_LOADER_CONTENT_EVENT:
+			{
+				SetLoaderContentEvent* ev=static_cast<SetLoaderContentEvent*>(e.second.getPtr());
+				LOG(LOG_CALLS,"SetLoaderContentEvent:"<<ev->content->toDebugString()<<" "<<ev->loader->toDebugString());
+				if (ev->content->is<RootMovieClip>() && !ev->content->needsActionScript3())
+					ev->content->setIsInitialized(false);
+				ev->loader->setContent(ev->content.getPtr());
+				ev->content->skipFrame = true;
+				ev->content->placedByActionScript = true;
 				break;
 			}
 			case ROOTCONSTRUCTEDEVENT:
 			{
 				RootConstructedEvent* ev=static_cast<RootConstructedEvent*>(e.second.getPtr());
 				LOG(LOG_CALLS,"RootConstructedEvent");
-				ev->clip->constructionComplete();
+				ev->clip->constructionComplete(ev->_explicit);
+				break;
+			}
+			case LOCALCONNECTIONEVENT:
+			{
+				LocalConnectionEvent* ev=static_cast<LocalConnectionEvent*>(e.second.getPtr());
+				LOG(LOG_CALLS,"LocalConnectionEvent");
+				m_sys->handleLocalConnectionEvent(ev);
 				break;
 			}
 			case IDLE_EVENT:
 			{
+				m_sys->setFramePhase(FramePhase::IDLE);
 				m_sys->worker->processGarbageCollection(false);
 				// DisplayObjects that are removed from the display list keep their Parent set until all removedFromStage events are handled
 				// see http://www.senocular.com/flash/tutorials/orderofoperations/#ObjectDestruction
@@ -1163,6 +1207,18 @@ void ABCVm::handleEvent(std::pair<_NR<EventDispatcher>, _R<Event> > e)
 //						ASObject::dumpObjectCounters(100);
 #endif
 				}
+				break;
+			}
+			case FLUSH_EVENT_BUFFER:
+			{
+				FlushEventBufferEvent* ev=static_cast<FlushEventBufferEvent*>(e.second.getPtr());
+				Locker l(event_queue_mutex);
+				events_queue.insert(
+					ev->append ? events_queue.end() : events_queue.begin(),
+					ev->reverse ? event_buffer.rend().base() : event_buffer.begin(),
+					ev->reverse ? event_buffer.rbegin().base() : event_buffer.end()
+				);
+				event_buffer.clear();
 				break;
 			}
 			case FLUSH_INVALIDATION_QUEUE:
@@ -1313,6 +1369,34 @@ bool ABCVm::addIdleEvent(_NR<EventDispatcher> obj ,_R<Event> ev, bool removeprev
 	return true;
 }
 
+bool ABCVm::addBufferEvent(_NR<EventDispatcher> obj ,_R<Event> ev)
+{
+	Locker l(event_queue_mutex);
+	//If the system should terminate new events are not accepted
+	if(shuttingdown)
+	{
+		if (obj)
+			obj->afterHandleEvent(ev.getPtr());
+		return false;
+	}
+
+	event_buffer.push_back(pair<_NR<EventDispatcher>,_R<Event>>(obj, ev));
+	RELEASE_WRITE(ev->queued,true);
+	return true;
+}
+
+bool ABCVm::prependBufferEvent(_NR<EventDispatcher> obj ,_R<Event> ev)
+{
+	Locker l(event_queue_mutex);
+	//If the system should terminate new events are not accepted
+	if(shuttingdown)
+		return false;
+
+	event_buffer.push_front(pair<_NR<EventDispatcher>,_R<Event>>(obj, ev));
+	RELEASE_WRITE(ev->queued,true);
+	return true;
+}
+
 Class_inherit* ABCVm::findClassInherit(const string& s, RootMovieClip* root)
 {
 	LOG(LOG_CALLS,"Setting class name to " << s);
@@ -1395,6 +1479,8 @@ void ABCVm::handleFrontEvent()
 	event_queue_mutex.unlock();
 	try
 	{
+		if (e.first)
+			e.first->addStoredMember();// member will be removed after event is handled
 		//handle event without lock
 		handleEvent(e);
 		if (e.second->getEventType() == INIT_FRAME) // don't flush between initFrame and executeFrameScript
@@ -1407,7 +1493,13 @@ void ABCVm::handleFrontEvent()
 				))
 			m_sys->flushInvalidationQueue();
 		if (!e.first.isNull())
+		{
 			e.first->afterHandleEvent(e.second.getPtr());
+			// ensure that test for garbage collection is done for event dispatcher
+			ASObject* o = e.first.getPtr();
+			e.first.fakeRelease();
+			o->removeStoredMember();
+		}
 	}
 	catch(LightsparkException& e)
 	{
@@ -1418,6 +1510,13 @@ void ABCVm::handleFrontEvent()
 	}
 	catch(ASObject*& e)
 	{
+		ASWorker* wrk = e->getInstanceWorker();
+		if (!wrk->callStack.empty())
+		{
+			call_context* saved_cc = wrk->callStack.back();
+			wrk->callStack.pop_back();
+			wrk->decStack(saved_cc);
+		}
 		if(e->getClass())
 			LOG(LOG_ERROR,"Unhandled ActionScript exception in VM " << e->toString());
 		else
@@ -1498,8 +1597,8 @@ bool ABCContext::isinstance(ASObject* obj, multiname* name)
 		LOG(LOG_CALLS,"isType on non classed object " << real_ret);
 		return real_ret;
 	}
-
-	assert_and_throw(type->getObjectType()==T_CLASS);
+	if (type->getObjectType()!=T_CLASS)
+		return false;
 	real_ret=objc->isSubClass(c);
 	LOG(LOG_CALLS,"Type " << objc->class_name << " is " << ((real_ret)?"":"not ") 
 			<< "subclass of " << c->class_name);
@@ -1579,7 +1678,7 @@ void ABCContext::runScriptInit(unsigned int i, asAtom &g)
 
 	asAtom ret=asAtomHandler::invalidAtom;
 	asAtom f =asAtomHandler::fromObject(entry);
-	asAtomHandler::callFunction(f,this->root->getInstanceWorker(),ret,g,nullptr,0,false);
+	asAtomHandler::callFunction(f,this->root->getInstanceWorker(),ret,g,nullptr,0,false,false,false);
 
 	ASATOM_DECREF(ret);
 
@@ -1930,7 +2029,7 @@ void ABCContext::linkTrait(Class_base* c, const traits_info* t)
 			}
 			else
 			{
-				LOG(LOG_NOT_IMPLEMENTED,"Method not linkable" << ": " << mname);
+				LOG(LOG_NOT_IMPLEMENTED,"Method not linkable" << ": " << mname << c->toDebugString());
 			}
 
 			LOG(LOG_TRACE,"End Method trait: " << mname);
@@ -1952,7 +2051,7 @@ void ABCContext::linkTrait(Class_base* c, const traits_info* t)
 			}
 			else
 			{
-				LOG(LOG_NOT_IMPLEMENTED,"Getter not linkable" << ": " << mname);
+				LOG(LOG_NOT_IMPLEMENTED,"Getter not linkable" << ": " << mname << c->toDebugString());
 			}
 
 			LOG(LOG_TRACE,"End Getter trait: " << mname);
@@ -1974,7 +2073,7 @@ void ABCContext::linkTrait(Class_base* c, const traits_info* t)
 			}
 			else
 			{
-				LOG(LOG_NOT_IMPLEMENTED,"Setter not linkable" << ": " << mname);
+				LOG(LOG_NOT_IMPLEMENTED,"Setter not linkable" << ": " << mname << c->toDebugString());
 			}
 			
 			LOG(LOG_TRACE,"End Setter trait: " << mname);
@@ -2209,7 +2308,7 @@ void ABCContext::buildTrait(ASObject* obj,std::vector<multiname*>& additionalslo
 				if(classes[t->classi].cinit != 0)
 				{
 					method_info* m=&methods[classes[t->classi].cinit];
-					if (m->body)
+					if (m->body && m->body->code.size()>1) // most interfaces (if not all?) have a cinit method with 1 entry "returnvoid", so we ignore them
 						LOG(LOG_NOT_IMPLEMENTED,"Interface cinit (static):"<<className);
 				}
 				if(instances[t->classi].init != 0)
@@ -2269,7 +2368,7 @@ void ABCContext::buildTrait(ASObject* obj,std::vector<multiname*>& additionalslo
 			else if(kind == traits_info::Method)
 				LOG(LOG_CALLS,"Method trait: " << *mname << " #" << t->method);
 			method_info* m=&methods[t->method];
-			SyntheticFunction* f=Class<IFunction>::getSyntheticFunction(obj->getInstanceWorker(),m,m->numArgs());
+			SyntheticFunction* f=Class<IFunction>::getSyntheticFunction(obj->getInstanceWorker(),m,m->numArgs()-m->numOptions());
 
 #ifdef PROFILING_SUPPORT
 			if(!m->validProfName)

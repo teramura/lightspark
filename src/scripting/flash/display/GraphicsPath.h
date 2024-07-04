@@ -30,11 +30,12 @@ namespace lightspark
 
 class Vector;
 
+enum GRAPHICSPATH_COMMANDTYPE {NO_OP=0, MOVE_TO, LINE_TO, CURVE_TO, WIDE_MOVE_TO, WIDE_LINE_TO, CUBIC_CURVE_TO};
+
 class GraphicsPath: public ASObject, public IGraphicsPath, public IGraphicsData
 {
-private:
-	void ensureValid();
 public:
+	void ensureValid();
 	GraphicsPath(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base* c);
 	void finalize() override;
@@ -47,7 +48,7 @@ public:
 	ASFUNCTION_ATOM(moveTo);
 	ASFUNCTION_ATOM(wideLineTo);
 	ASFUNCTION_ATOM(wideMoveTo);
-	void appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics) override;
+	void appendToTokens(tokensVector& tokens, Graphics* graphics) override;
 };
 
 }

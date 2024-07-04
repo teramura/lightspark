@@ -21,11 +21,15 @@
 #include "scripting/abc.h"
 #include "scripting/argconv.h"
 #include "parsing/amf3_generator.h"
+#include "scripting/toplevel/toplevel.h"
+#include "scripting/toplevel/AVM1Function.h"
+#include "scripting/toplevel/Null.h"
 #include "scripting/toplevel/Number.h"
 #include "scripting/toplevel/Integer.h"
 #include "scripting/toplevel/UInteger.h"
 #include "scripting/toplevel/Vector.h"
 #include "scripting/toplevel/RegExp.h"
+#include "scripting/toplevel/Undefined.h"
 #include "scripting/flash/utils/flashutils.h"
 #include <algorithm>
 
@@ -83,17 +87,26 @@ void Array::prepareShutdown()
 	if (preparedforshutdown)
 		return;
 	ASObject::prepareShutdown();
-	for (auto it=data_first.begin() ; it != data_first.end(); ++it)
+	for (auto it=data_first.begin() ; it != data_first.end();it++)
 	{
 		ASObject* o = asAtomHandler::getObject(*it);
+		*it = asAtomHandler::invalidAtom;
 		if (o)
+		{
 			o->prepareShutdown();
+			o->removeStoredMember();
+		}
 	}
-	for (auto it=data_second.begin() ; it != data_second.end(); ++it)
+	data_first.clear();
+	for (auto it=data_second.begin() ; it != data_second.end();)
 	{
 		ASObject* o = asAtomHandler::getObject(it->second);
+		it = data_second.erase(it);
 		if (o)
+		{
 			o->prepareShutdown();
+			o->removeStoredMember();
+		}
 	}
 }
 
@@ -109,56 +122,56 @@ void Array::sinit(Class_base* c)
 	c->setVariableAtomByQName("UNIQUESORT",nsNameAndKind(),asAtomHandler::fromUInt(UNIQUESORT),CONSTANT_TRAIT);
 
 	// properties
-	c->setDeclaredMethodByQName("length","",Class<IFunction>::getFunction(c->getSystemState(),_getLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("length","",Class<IFunction>::getFunction(c->getSystemState(),_setLength),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("length","",c->getSystemState()->getBuiltinFunction(_getLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("length","",c->getSystemState()->getBuiltinFunction(_setLength),SETTER_METHOD,true);
 
 	// public functions
-	c->setDeclaredMethodByQName("concat",AS3,Class<IFunction>::getFunction(c->getSystemState(),_concat,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("every",AS3,Class<IFunction>::getFunction(c->getSystemState(),every,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("filter",AS3,Class<IFunction>::getFunction(c->getSystemState(),filter,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("forEach",AS3,Class<IFunction>::getFunction(c->getSystemState(),forEach,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("indexOf",AS3,Class<IFunction>::getFunction(c->getSystemState(),indexOf,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("lastIndexOf",AS3,Class<IFunction>::getFunction(c->getSystemState(),lastIndexOf,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("join",AS3,Class<IFunction>::getFunction(c->getSystemState(),join,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("map",AS3,Class<IFunction>::getFunction(c->getSystemState(),_map,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("pop",AS3,Class<IFunction>::getFunction(c->getSystemState(),_pop),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("push",AS3,Class<IFunction>::getFunction(c->getSystemState(),_push_as3,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("reverse",AS3,Class<IFunction>::getFunction(c->getSystemState(),_reverse),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("shift",AS3,Class<IFunction>::getFunction(c->getSystemState(),shift),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("slice",AS3,Class<IFunction>::getFunction(c->getSystemState(),slice,2),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("some",AS3,Class<IFunction>::getFunction(c->getSystemState(),some,1),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("sort",AS3,Class<IFunction>::getFunction(c->getSystemState(),_sort),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("sortOn",AS3,Class<IFunction>::getFunction(c->getSystemState(),sortOn),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("splice",AS3,Class<IFunction>::getFunction(c->getSystemState(),splice,2),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("toLocaleString",AS3,Class<IFunction>::getFunction(c->getSystemState(),_toLocaleString),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("unshift",AS3,Class<IFunction>::getFunction(c->getSystemState(),unshift),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("insertAt",AS3,Class<IFunction>::getFunction(c->getSystemState(),insertAt,2),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("removeAt",AS3,Class<IFunction>::getFunction(c->getSystemState(),removeAt,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("concat",AS3,c->getSystemState()->getBuiltinFunction(_concat,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("every",AS3,c->getSystemState()->getBuiltinFunction(every,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("filter",AS3,c->getSystemState()->getBuiltinFunction(filter,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("forEach",AS3,c->getSystemState()->getBuiltinFunction(forEach,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("indexOf",AS3,c->getSystemState()->getBuiltinFunction(indexOf,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("lastIndexOf",AS3,c->getSystemState()->getBuiltinFunction(lastIndexOf,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("join",AS3,c->getSystemState()->getBuiltinFunction(join,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("map",AS3,c->getSystemState()->getBuiltinFunction(_map,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("pop",AS3,c->getSystemState()->getBuiltinFunction(_pop),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("push",AS3,c->getSystemState()->getBuiltinFunction(_push_as3,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("reverse",AS3,c->getSystemState()->getBuiltinFunction(_reverse),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("shift",AS3,c->getSystemState()->getBuiltinFunction(shift),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("slice",AS3,c->getSystemState()->getBuiltinFunction(slice,2),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("some",AS3,c->getSystemState()->getBuiltinFunction(some,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("sort",AS3,c->getSystemState()->getBuiltinFunction(_sort),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("sortOn",AS3,c->getSystemState()->getBuiltinFunction(sortOn),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("splice",AS3,c->getSystemState()->getBuiltinFunction(splice,2),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("toLocaleString",AS3,c->getSystemState()->getBuiltinFunction(_toLocaleString),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("unshift",AS3,c->getSystemState()->getBuiltinFunction(unshift),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("insertAt",AS3,c->getSystemState()->getBuiltinFunction(insertAt,2),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("removeAt",AS3,c->getSystemState()->getBuiltinFunction(removeAt,1),NORMAL_METHOD,true);
 
-	c->prototype->setDeclaredMethodByQName("length","",Class<IFunction>::getFunction(c->getSystemState(),_getLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->prototype->setDeclaredMethodByQName("length","",Class<IFunction>::getFunction(c->getSystemState(),_setLength),SETTER_METHOD,false);
-	c->prototype->setVariableByQName("concat","",Class<IFunction>::getFunction(c->getSystemState(),_concat,1),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("every","",Class<IFunction>::getFunction(c->getSystemState(),every,1),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("filter","",Class<IFunction>::getFunction(c->getSystemState(),filter,1),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("forEach","",Class<IFunction>::getFunction(c->getSystemState(),forEach,1),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("indexOf","",Class<IFunction>::getFunction(c->getSystemState(),indexOf,1),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("lastIndexOf","",Class<IFunction>::getFunction(c->getSystemState(),lastIndexOf,1),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("join","",Class<IFunction>::getFunction(c->getSystemState(),join,1),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("map","",Class<IFunction>::getFunction(c->getSystemState(),_map,1),DYNAMIC_TRAIT);
+	c->prototype->setDeclaredMethodByQName("length","",c->getSystemState()->getBuiltinFunction(_getLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->prototype->setDeclaredMethodByQName("length","",c->getSystemState()->getBuiltinFunction(_setLength),SETTER_METHOD,false);
+	c->prototype->setVariableByQName("concat","",c->getSystemState()->getBuiltinFunction(_concat,1),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("every","",c->getSystemState()->getBuiltinFunction(every,1),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("filter","",c->getSystemState()->getBuiltinFunction(filter,1),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("forEach","",c->getSystemState()->getBuiltinFunction(forEach,1),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("indexOf","",c->getSystemState()->getBuiltinFunction(indexOf,1),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("lastIndexOf","",c->getSystemState()->getBuiltinFunction(lastIndexOf,1),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("join","",c->getSystemState()->getBuiltinFunction(join,1),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("map","",c->getSystemState()->getBuiltinFunction(_map,1),DYNAMIC_TRAIT);
 	// workaround, pop was encountered not in the AS3 namespace before, need to investigate it further
-	c->setDeclaredMethodByQName("pop","",Class<IFunction>::getFunction(c->getSystemState(),_pop),NORMAL_METHOD,true);
-	c->prototype->setVariableByQName("pop","",Class<IFunction>::getFunction(c->getSystemState(),_pop),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("push","",Class<IFunction>::getFunction(c->getSystemState(),_push,1),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("reverse","",Class<IFunction>::getFunction(c->getSystemState(),_reverse),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("shift","",Class<IFunction>::getFunction(c->getSystemState(),shift),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("slice","",Class<IFunction>::getFunction(c->getSystemState(),slice,2),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("some","",Class<IFunction>::getFunction(c->getSystemState(),some,1),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("sort","",Class<IFunction>::getFunction(c->getSystemState(),_sort),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("sortOn","",Class<IFunction>::getFunction(c->getSystemState(),sortOn),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("splice","",Class<IFunction>::getFunction(c->getSystemState(),splice,2),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("toLocaleString","",Class<IFunction>::getFunction(c->getSystemState(),_toLocaleString),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("toString","",Class<IFunction>::getFunction(c->getSystemState(),_toString),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("unshift","",Class<IFunction>::getFunction(c->getSystemState(),unshift),DYNAMIC_TRAIT);
+	c->setDeclaredMethodByQName("pop","",c->getSystemState()->getBuiltinFunction(_pop),NORMAL_METHOD,true);
+	c->prototype->setVariableByQName("pop","",c->getSystemState()->getBuiltinFunction(_pop),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("push","",c->getSystemState()->getBuiltinFunction(_push,1),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("reverse","",c->getSystemState()->getBuiltinFunction(_reverse),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("shift","",c->getSystemState()->getBuiltinFunction(shift),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("slice","",c->getSystemState()->getBuiltinFunction(slice,2),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("some","",c->getSystemState()->getBuiltinFunction(some,1),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("sort","",c->getSystemState()->getBuiltinFunction(_sort),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("sortOn","",c->getSystemState()->getBuiltinFunction(sortOn),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("splice","",c->getSystemState()->getBuiltinFunction(splice,2),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("toLocaleString","",c->getSystemState()->getBuiltinFunction(_toLocaleString),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("toString","",c->getSystemState()->getBuiltinFunction(_toString),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("unshift","",c->getSystemState()->getBuiltinFunction(unshift),DYNAMIC_TRAIT);
 }
 
 ASFUNCTIONBODY_ATOM(Array,_constructor)
@@ -784,7 +797,7 @@ ASFUNCTIONBODY_ATOM(Array,splice)
 		{
 			asAtom a = th->at((uint32_t)startIndex+i);
 			if (asAtomHandler::isValid(a))
-				res->set(i,a,false,true,false);
+				res->set(i,a,false,false,false);
 		}
 		// delete items from current array (no need to decref/removemember, as they are added to the result)
 		for (int i = 0; i < deleteCount; i++)
@@ -826,7 +839,7 @@ ASFUNCTIONBODY_ATOM(Array,splice)
 			}
 		}
 	}
-	th->resize(startIndex);
+	th->resize(startIndex,false);
 
 	
 	//Insert requested values starting at startIndex
@@ -840,7 +853,7 @@ ASFUNCTIONBODY_ATOM(Array,splice)
 	for(uint32_t i=0;i<totalSize- (startIndex+deleteCount);i++)
 	{
 		if (asAtomHandler::isValid(tmp[i]))
-			th->set(startIndex+i+(argslen > 2 ? argslen-2 : 0),tmp[i],false);
+			th->set(startIndex+i+(argslen > 2 ? argslen-2 : 0),tmp[i],false,false,false);
 	}
 	ret =asAtomHandler::fromObject(res);
 }
@@ -937,6 +950,7 @@ ASFUNCTIONBODY_ATOM(Array,_pop)
 		asAtom o=asAtomHandler::invalidAtom;
 		asAtomHandler::getObject(obj)->getVariableByMultiname(o,lengthName,SKIP_IMPL,wrk);
 		uint32_t res = asAtomHandler::toUInt(o);
+		ASATOM_DECREF(o);
 		asAtom v = asAtomHandler::fromUInt(res-1);
 		if (res > 0)
 			asAtomHandler::getObject(obj)->setVariableByMultiname(lengthName,v,CONST_NOT_ALLOWED,nullptr,wrk);
@@ -1010,7 +1024,7 @@ bool Array::sortComparatorDefault::operator()(const asAtom& d1, const asAtom& d2
 		if((!asAtomHandler::isNumeric(o1) && std::isnan(a)) || (!asAtomHandler::isNumeric(o2) && std::isnan(b)))
 			throw RunTimeException("Cannot sort non number with Array.NUMERIC option");
 		if(isDescending)
-			return b>a;
+			return a>b;
 		else
 			return a<b;
 	}
@@ -1311,7 +1325,7 @@ bool Array::sortOnComparator::operator()(const sorton_value& d1, const sorton_va
 			if((!asAtomHandler::isNumeric(obj1) && std::isnan(a)) || (!asAtomHandler::isNumeric(obj2) && std::isnan(b)))
 				throw RunTimeException("Cannot sort non number with Array.NUMERIC option");
 			if(it->isDescending)
-				return b>a;
+				return a>b;
 			else
 				return a<b;
 		}
@@ -1446,7 +1460,7 @@ ASFUNCTIONBODY_ATOM(Array,sortOn)
 		tmp.push_back(v);
 	}
 	
-	sort(tmp.begin(),tmp.end(),sortOnComparator(sortfields,wrk->getSystemState()));
+	sort(tmp.begin(),tmp.end(),sortOnComparator(sortfields));
 
 	th->data_first.clear();
 	th->data_second.clear();
@@ -1560,6 +1574,7 @@ ASFUNCTIONBODY_ATOM(Array,_push)
 		asAtom o=asAtomHandler::invalidAtom;
 		asAtomHandler::getObject(obj)->getVariableByMultiname(o,lengthName,SKIP_IMPL,wrk);
 		uint32_t res = asAtomHandler::toUInt(o);
+		ASATOM_DECREF(o);
 		asAtom v = asAtomHandler::fromUInt(res+argslen);
 		asAtomHandler::getObject(obj)->setVariableByMultiname(lengthName,v,CONST_NOT_ALLOWED,nullptr,wrk);
 		asAtomHandler::setUndefined(ret);
@@ -1677,7 +1692,6 @@ ASFUNCTIONBODY_ATOM(Array,_map)
 			RegExp::exec(funcRet,wrk,args[0],args,1);
 		}
 		assert_and_throw(asAtomHandler::isValid(funcRet));
-		ASATOM_INCREF(funcRet);
 		arrayRet->push(funcRet);
 	}
 
@@ -2298,20 +2312,24 @@ bool Array::countCylicMemberReferences(garbagecollectorstate& gcstate)
 	return ret;
 }
 
-void Array::resize(uint64_t n)
+void Array::resize(uint64_t n,bool removemember)
 {
 	if (n < currentsize)
 	{
 		if (n < data_first.size())
 		{
-			auto it1 = data_first.begin()+n;
-			while (it1 != data_first.end())
+			if (removemember)
 			{
-				ASObject* o = asAtomHandler::getObject(*it1);
-				it1 = data_first.erase(it1);
-				if (o)
-					o->removeStoredMember();
+				auto it1 = data_first.begin()+n;
+				while (it1 != data_first.end())
+				{
+					ASObject* o = asAtomHandler::getObject(*it1);
+					it1++;
+					if (o)
+						o->removeStoredMember();
+				}
 			}
+			data_first.resize(n);
 		}
 		auto it2=data_second.begin();
 		while (it2 != data_second.end())
@@ -2322,7 +2340,7 @@ void Array::resize(uint64_t n)
 				++it2;
 				ASObject* o = asAtomHandler::getObject(it2a->second);
 				data_second.erase(it2a);
-				if (o)
+				if (removemember && o)
 					o->removeStoredMember();
 			}
 			else

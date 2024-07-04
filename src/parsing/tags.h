@@ -27,6 +27,7 @@
 #include "backends/geometry.h"
 #include "backends/decoder.h"
 #include "scripting/flash/display/flashdisplay.h"
+#include "scripting/flash/display/MovieClip.h"
 
 namespace lightspark
 {
@@ -354,6 +355,7 @@ private:
 public:
 	RemoveObject2Tag(RECORDHEADER h, std::istream& in);
 	void execute(DisplayObjectContainer* parent,bool inskipping) override;
+	UI16_SWF getDepth() const { return Depth; }
 };
 
 class PlaceObject2Tag: public DisplayListTag

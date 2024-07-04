@@ -19,7 +19,9 @@
 
 #include "scripting/abc.h"
 #include "scripting/avm1/avm1sound.h"
+#include "scripting/toplevel/AVM1Function.h"
 #include "scripting/toplevel/Integer.h"
+#include "scripting/flash/display/RootMovieClip.h"
 #include "scripting/class.h"
 #include "scripting/argconv.h"
 #include "parsing/tags.h"
@@ -32,18 +34,18 @@ void AVM1Sound::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, EventDispatcher, avm1constructor, CLASS_SEALED);
 	c->isSealed=false;
-	c->setDeclaredMethodByQName("start","",Class<IFunction>::getFunction(c->getSystemState(),play),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("stop","",Class<IFunction>::getFunction(c->getSystemState(),stop),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("attachSound","",Class<IFunction>::getFunction(c->getSystemState(),attachSound),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("getVolume","",Class<IFunction>::getFunction(c->getSystemState(),getVolume),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setVolume","",Class<IFunction>::getFunction(c->getSystemState(),setVolume),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("getPan","",Class<IFunction>::getFunction(c->getSystemState(),getPan),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setPan","",Class<IFunction>::getFunction(c->getSystemState(),setPan),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("position","",Class<IFunction>::getFunction(c->getSystemState(),getPosition),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("position","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_IgnoreSetter),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("duration","",Class<IFunction>::getFunction(c->getSystemState(),_getter_length),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("duration","",Class<IFunction>::getFunction(c->getSystemState(),AVM1_IgnoreSetter),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("loadSound","",Class<IFunction>::getFunction(c->getSystemState(),loadSound),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("start","",c->getSystemState()->getBuiltinFunction(play),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("stop","",c->getSystemState()->getBuiltinFunction(stop),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("attachSound","",c->getSystemState()->getBuiltinFunction(attachSound),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getVolume","",c->getSystemState()->getBuiltinFunction(getVolume),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setVolume","",c->getSystemState()->getBuiltinFunction(setVolume),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getPan","",c->getSystemState()->getBuiltinFunction(getPan),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setPan","",c->getSystemState()->getBuiltinFunction(setPan),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("position","",c->getSystemState()->getBuiltinFunction(getPosition),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("position","",c->getSystemState()->getBuiltinFunction(AVM1_IgnoreSetter),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("duration","",c->getSystemState()->getBuiltinFunction(_getter_length),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("duration","",c->getSystemState()->getBuiltinFunction(AVM1_IgnoreSetter),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("loadSound","",c->getSystemState()->getBuiltinFunction(loadSound),NORMAL_METHOD,true);
 }
 ASFUNCTIONBODY_ATOM(AVM1Sound,avm1constructor)
 {
@@ -196,49 +198,43 @@ ASFUNCTIONBODY_ATOM(AVM1Sound,loadSound)
 void AVM1Sound::AVM1HandleEvent(EventDispatcher *dispatcher, Event* e)
 {
 	ASWorker* wrk = getInstanceWorker();
-	if (dispatcher == this->soundChannel)
+	if (e->type == "soundComplete")
 	{
-		if (e->type == "soundComplete")
+		asAtom func=asAtomHandler::invalidAtom;
+		multiname m(nullptr);
+		m.name_type=multiname::NAME_STRING;
+		m.isAttribute = false;
+		m.name_s_id=getSystemState()->getUniqueStringId("onSoundComplete");
+		getVariableByMultiname(func,m,GET_VARIABLE_OPTION::NONE,wrk);
+		if (asAtomHandler::is<AVM1Function>(func))
 		{
-			asAtom func=asAtomHandler::invalidAtom;
-			multiname m(nullptr);
-			m.name_type=multiname::NAME_STRING;
-			m.isAttribute = false;
-			m.name_s_id=getSystemState()->getUniqueStringId("onSoundComplete");
-			getVariableByMultiname(func,m,GET_VARIABLE_OPTION::NONE,wrk);
-			if (asAtomHandler::is<AVM1Function>(func))
-			{
-				asAtom ret=asAtomHandler::invalidAtom;
-				asAtom obj = asAtomHandler::fromObject(this);
-				asAtomHandler::as<AVM1Function>(func)->call(&ret,&obj,nullptr,0);
-				asAtomHandler::as<AVM1Function>(func)->decRef();
-			}
+			asAtom ret=asAtomHandler::invalidAtom;
+			asAtom obj = asAtomHandler::fromObject(this);
+			asAtomHandler::as<AVM1Function>(func)->call(&ret,&obj,nullptr,0);
+			asAtomHandler::as<AVM1Function>(func)->decRef();
 		}
 	}
-	if (dispatcher == this)
+	if (e->type == "progress" && !this->loading)
 	{
-		if (e->type == "progress" && !this->loading)
+		this->loading=true;
+		asAtom func=asAtomHandler::invalidAtom;
+		multiname m(nullptr);
+		m.name_type=multiname::NAME_STRING;
+		m.isAttribute = false;
+		m.name_s_id=BUILTIN_STRINGS::STRING_ONLOAD;
+		getVariableByMultiname(func,m,GET_VARIABLE_OPTION::NONE,wrk);
+		if (asAtomHandler::is<AVM1Function>(func))
 		{
-			this->loading=true;
-			asAtom func=asAtomHandler::invalidAtom;
-			multiname m(nullptr);
-			m.name_type=multiname::NAME_STRING;
-			m.isAttribute = false;
-			m.name_s_id=BUILTIN_STRINGS::STRING_ONLOAD;
-			getVariableByMultiname(func,m,GET_VARIABLE_OPTION::NONE,wrk);
-			if (asAtomHandler::is<AVM1Function>(func))
-			{
-				asAtom ret=asAtomHandler::invalidAtom;
-				asAtom obj = asAtomHandler::fromObject(this);
-				asAtomHandler::as<AVM1Function>(func)->call(&ret,&obj,nullptr,0);
-				asAtomHandler::as<AVM1Function>(func)->decRef();
-			}
-			if (isStreaming)
-			{
-				asAtom ret = asAtomHandler::invalidAtom;
-				asAtom obj = asAtomHandler::fromObject(this);
-				this->play(ret,wrk,obj,nullptr,0);
-			}
+			asAtom ret=asAtomHandler::invalidAtom;
+			asAtom obj = asAtomHandler::fromObject(this);
+			asAtomHandler::as<AVM1Function>(func)->call(&ret,&obj,nullptr,0);
+			asAtomHandler::as<AVM1Function>(func)->decRef();
+		}
+		if (isStreaming)
+		{
+			asAtom ret = asAtomHandler::invalidAtom;
+			asAtom obj = asAtomHandler::fromObject(this);
+			this->play(ret,wrk,obj,nullptr,0);
 		}
 	}
 }

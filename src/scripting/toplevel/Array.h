@@ -71,9 +71,8 @@ private:
 	{
 	private:
 		std::vector<sorton_field> fields;
-		SystemState* sys;
 	public:
-		sortOnComparator(const std::vector<sorton_field>& sf,SystemState* s):fields(sf),sys(s){}
+		sortOnComparator(const std::vector<sorton_field>& sf):fields(sf){}
 		bool operator()(const sorton_value& d1, const sorton_value& d2);
 	};
 	void constructorImpl(asAtom *args, const unsigned int argslen);
@@ -151,7 +150,7 @@ public:
 	bool set(unsigned int index, asAtom &o, bool checkbounds = true, bool addref = true, bool addmember=true);
 	uint64_t size();
 	void push(asAtom o);// push doesn't increment the refcount, so the caller has to take care of that
-	void resize(uint64_t n);
+	void resize(uint64_t n, bool removemember=true);
 	GET_VARIABLE_RESULT getVariableByMultiname(asAtom& ret, const multiname& name, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
 	GET_VARIABLE_RESULT getVariableByInteger(asAtom& ret, int index, GET_VARIABLE_OPTION opt, ASWorker* wrk) override;
 	

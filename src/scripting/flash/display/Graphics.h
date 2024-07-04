@@ -50,29 +50,35 @@ private:
 				       double c[3]);
 	int movex;
 	int movey;
-	int currentstyles;
+	int currentrenderindex;
 	bool inFilling;
 	bool hasChanged;
 	bool needsRefresh;
-	bool wascleared;
-	tokensVector tokens;
+	bool tokensHaveChanged; // indicates if the current list of tokens contains the same tokens as the last rendered list (up to the size of the current list)
+	// we use two tokensVector items to avoid redrawing if nothing has changed since last draw
+	tokensVector tokens[2];
 	void dorender(bool closepath);
-	void updateTokenBounds(int x, int y);
+	void AddFillToken(const GeomToken& token);
+	void AddFillStyleToken(const GeomToken& token);
+	void AddStrokeToken(const GeomToken& token);
+	void AddLineStyleToken(const GeomToken& token);
 public:
-	Graphics(ASWorker* wrk, Class_base* c):ASObject(wrk,c),owner(nullptr),movex(0),movey(0),currentstyles(0),inFilling(false),hasChanged(false),needsRefresh(true),wascleared(false)
+	Graphics(ASWorker* wrk, Class_base* c):ASObject(wrk,c),owner(nullptr),movex(0),movey(0),currentrenderindex(0),inFilling(false),hasChanged(false),needsRefresh(true),tokensHaveChanged(false)
 	{
 //		throw RunTimeException("Cannot instantiate a Graphics object");
 	}
 	Graphics(ASWorker* wrk, Class_base* c, TokenContainer* _o)
-		: ASObject(wrk,c),owner(_o),movex(0),movey(0),currentstyles(0),inFilling(false),hasChanged(false),needsRefresh(true),wascleared(false) {}
+		: ASObject(wrk,c),owner(_o),movex(0),movey(0),currentrenderindex(0),inFilling(false),hasChanged(false),needsRefresh(true),tokensHaveChanged(false) {}
 	void startDrawJob();
 	void endDrawJob();
+	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax);
+	bool hitTest(const Vector2f& point);
 	bool destruct() override;
 	void refreshTokens();
-	bool shouldRenderToGL();
+	bool hasTokens() const;
 	static void sinit(Class_base* c);
-	FILLSTYLE& addFillStyle(FILLSTYLE& fs) { fillStyles[currentstyles].push_back(fs); return fillStyles[currentstyles].back();}
-	LINESTYLE2& addLineStyle(LINESTYLE2& ls) { lineStyles[currentstyles].push_back(ls); return lineStyles[currentstyles].back();}
+	FILLSTYLE& addFillStyle(FILLSTYLE& fs) { fillStyles[currentrenderindex].push_back(fs); return fillStyles[currentrenderindex].back();}
+	LINESTYLE2& addLineStyle(LINESTYLE2& ls) { lineStyles[currentrenderindex].push_back(ls); return lineStyles[currentrenderindex].back();}
 	static FILLSTYLE createGradientFill(const tiny_string& type,
 					    _NR<Array> colors,
 					    _NR<Array> alphas,
@@ -86,15 +92,15 @@ public:
 					  bool repeat,
 					  bool smooth);
 	static FILLSTYLE createSolidFill(uint32_t color, uint8_t alpha);
-	static void pathToTokens(_NR<Vector> commands,
-				 _NR<Vector> data,
-				 tiny_string windings,
-				 std::vector<uint64_t> &tokens);
+	void pathToTokens(_NR<Vector> commands,
+					  _NR<Vector> data,
+					  tiny_string windings,
+					  tokensVector& tokensvector);
 	static void drawTrianglesToTokens(_NR<Vector> vertices,
-					  _NR<Vector> indices,
-					  _NR<Vector> uvtData,
-					  tiny_string culling,
-					  std::vector<uint64_t> &tokens);
+									  _NR<Vector> indices,
+									  _NR<Vector> uvtData,
+									  tiny_string culling,
+									  tokensVector& tokens);
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(lineBitmapStyle);
 	ASFUNCTION_ATOM(lineGradientStyle);
@@ -117,6 +123,7 @@ public:
 	ASFUNCTION_ATOM(cubicCurveTo);
 	ASFUNCTION_ATOM(clear);
 	ASFUNCTION_ATOM(copyFrom);
+	ASFUNCTION_ATOM(readGraphicsData);
 };
 
 }

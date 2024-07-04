@@ -19,7 +19,6 @@
 
 #include "tiny_string.h"
 #include "exceptions.h"
-#include "swf.h"
 
 using namespace lightspark;
 
@@ -303,6 +302,81 @@ uint32_t tiny_string::find(const tiny_string& needle, uint32_t start) const
 	else
 		return start + g_utf8_pointer_to_offset(gp,found);
 }
+bool tiny_string::getLine(uint32_t& byteindex, tiny_string& line)
+{
+	bool res = false;
+	unsigned char utfpos=0;
+	uint32_t startindex = byteindex;
+	uint32_t endindex = stringSize-byteindex-1;
+	if (endindex < startindex)
+		endindex = stringSize-endindex;
+	line.isASCII = true;
+	while (!res && byteindex < stringSize-1)
+	{
+		switch((uint8_t)buf[byteindex])
+		{
+			case 0x00:
+				line.hasNull=true;
+				break;
+			case '\n':
+			case '\r':
+				res=true;
+				endindex=byteindex;
+				break;
+			case 0xe2:
+				// utf-8 line separators:
+				// e2 80 a8 (unicode 0x2028)
+				// e2 80 a9 (unicode 0x2029)
+				if (byteindex < stringSize-3)
+				{
+					if ((uint8_t)buf[byteindex+1] == 0x80 && ((uint8_t)buf[byteindex+2] == 0xa8 || (uint8_t)buf[byteindex+2] == 0xa9))
+					{
+						endindex=byteindex;
+						byteindex+=2;
+						res=true;
+						break;
+					}
+				}
+				break;
+		}
+		if (!res)
+		{
+			if (buf[byteindex] & 0x80)
+			{
+				if (utfpos == 0)
+				{
+					utfpos = buf[byteindex];
+				}
+				utfpos = utfpos << 1;
+				if (!(utfpos & 0x80))
+				{
+					line.numchars++;
+					utfpos = 0;
+				}
+				line.isASCII = false;
+			}
+			else
+				line.numchars++;
+		}
+		byteindex++;
+	}
+	//prepare line for new size
+	uint32_t newStringSize=endindex-startindex+1;
+	if(line.type==READONLY)
+		line.resetToStatic();
+	if(line.type==STATIC && newStringSize > STATIC_SIZE)
+		line.createBuffer(newStringSize);
+	else if(line.type==DYNAMIC && newStringSize > line.stringSize)
+		line.resizeBuffer(newStringSize);
+
+	// copy part from startindex to byteindex into line
+	memcpy(line.buf,buf+startindex,newStringSize-1);
+	line.buf[newStringSize-1]=0x00;
+	line.stringSize=newStringSize;
+	if (byteindex>=stringSize-1)
+		byteindex = tiny_string::npos;
+	return res;
+}
 
 uint32_t tiny_string::rfind(const tiny_string& needle, uint32_t start) const
 {
@@ -477,7 +551,7 @@ tiny_string tiny_string::substr_bytes(uint32_t start, uint32_t len, bool resulti
 tiny_string tiny_string::substr(uint32_t start, uint32_t len) const
 {
 	assert_and_throw(start <= numChars());
-	if(start+len > numChars())
+	if(len > numChars()-start)
 		len = numChars()-start;
 	if (isASCII)
 		return substr_bytes(start, len);
@@ -1250,6 +1324,85 @@ tiny_string tiny_string::toQuotedString() const
 		}
 	}
 	res += "\"";
+	return res;
+}
+
+void tiny_string::getTrimPositions(uint32_t& start, uint32_t& end) const
+{
+	start = 0;
+	end = stringSize-1;
+	if (empty())
+		return;
+	while (start < stringSize)
+	{
+		uint8_t c = buf[start];
+		if (c&0x80) //check for unicode whitspace character
+		{
+			if (!g_unichar_isspace(g_utf8_get_char(buf+start)))
+				break;
+			while (c&0x80) // skip utf8 bytes
+			{
+				c=c<<1;
+				start++;
+			}
+		}
+		else if (!isspace(c))
+			break;
+		else
+			start++;
+	}
+	while (end > start)
+	{
+		uint8_t c = buf[end-1];
+		if (c&0x80) //check for unicode whitspace character
+		{
+			do
+			{
+				end--;
+			}
+			while (((buf[end])&0xc0) == 0x80); // skip utf8 bytes
+			if (!g_unichar_isspace(g_utf8_get_char(buf+end+1)))
+				break;
+		}
+		else if (!isspace(c))
+			break;
+		else
+			end--;
+	}
+}
+
+tiny_string tiny_string::removeWhitespace() const
+{
+	uint32_t start,end;
+	getTrimPositions(start,end);
+	return substr_bytes(start,end-start);
+}
+bool tiny_string::isWhiteSpaceOnly() const
+{
+	uint32_t start,end;
+	getTrimPositions(start,end);
+	return start == end;
+}
+
+tiny_string tiny_string::encodeNull() const
+{
+	if (!this->hasNull)
+		return *this;
+	tiny_string res;
+	auto it = this->begin();
+	while (it != this->end())
+	{
+		switch (*it)
+		{
+			case '\0':
+				res += "&#x0;";
+				break;
+			default:
+				res += *it;
+				break;
+		}
+		it++;
+	}
 	return res;
 }
 

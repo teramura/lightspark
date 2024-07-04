@@ -28,12 +28,16 @@
 #include <list>
 #include <cairo.h>
 
+#include "forwards/swftypes.h"
+#include "forwards/scripting/flash/display/DisplayObject.h"
+#include "forwards/scripting/flash/display/flashdisplay.h"
+#include "forwards/scripting/flash/system/flashsystem.h"
+#include "forwards/tiny_string.h"
 #include "logger.h"
 #include <cstdlib>
 #include <cassert>
 #include "exceptions.h"
 #include "smartrefs.h"
-#include "tiny_string.h"
 #include "memory_support.h"
 
 #ifdef BIG_ENDIAN
@@ -48,6 +52,8 @@ enum BUILTIN_STRINGS { EMPTY=0, STRING_WILDCARD='*', ANY=BUILTIN_STRINGS_CHAR_MA
 					   ,STRING_OBJECT,STRING_UNDEFINED,STRING_BOOLEAN,STRING_NUMBER,STRING_STRING,STRING_FUNCTION_LOWERCASE,STRING_ONROLLOVER,STRING_ONROLLOUT
 					   ,STRING_PROTO,STRING_TARGET,STRING_FLASH_EVENTS_IEVENTDISPATCHER,STRING_ADDEVENTLISTENER,STRING_REMOVEEVENTLISTENER,STRING_DISPATCHEVENT,STRING_HASEVENTLISTENER
 					   ,STRING_ONCONNECT,STRING_ONDATA,STRING_ONCLOSE,STRING_ONSELECT
+					   ,STRING_ADD,STRING_ALPHA,STRING_DARKEN,STRING_DIFFERENCE,STRING_ERASE,STRING_HARDLIGHT,STRING_INVERT,STRING_LAYER,STRING_LIGHTEN,STRING_MULTIPLY,STRING_OVERLAY,STRING_SCREEN,STRING_SUBTRACT
+					   ,STRING_TEXT
 					   ,LAST_BUILTIN_STRING };
 enum BUILTIN_NAMESPACES { EMPTY_NS=0, AS3_NS };
 
@@ -67,7 +73,11 @@ enum CLASS_SUBTYPE { SUBTYPE_NOT_SET, SUBTYPE_PROXY, SUBTYPE_REGEXP, SUBTYPE_XML
 					 ,SUBTYPE_BITMAPFILTER,SUBTYPE_GLOWFILTER,SUBTYPE_DROPSHADOWFILTER,SUBTYPE_GRADIENTGLOWFILTER,SUBTYPE_BEVELFILTER,SUBTYPE_COLORMATRIXFILTER,SUBTYPE_BLURFILTER,SUBTYPE_CONVOLUTIONFILTER,SUBTYPE_DISPLACEMENTFILTER,SUBTYPE_GRADIENTBEVELFILTER,SUBTYPE_SHADERFILTER
 					 ,SUBTYPE_THROTTLE_EVENT,SUBTYPE_CONTEXTMENUEVENT,SUBTYPE_GAMEINPUTEVENT, SUBTYPE_GAMEINPUTDEVICE, SUBTYPE_VIDEO, SUBTYPE_MESSAGECHANNEL, SUBTYPE_CONDITION
 					 ,SUBTYPE_FILE, SUBTYPE_FILEMODE, SUBTYPE_FILESTREAM, SUBTYPE_FILEREFERENCE, SUBTYPE_DATAGRAMSOCKET, SUBTYPE_NATIVEWINDOW,SUBTYPE_EXTENSIONCONTEXT,SUBTYPE_SIMPLEBUTTON,SUBTYPE_SHAPE,SUBTYPE_MORPHSHAPE
-					 ,SUBTYPE_URLLOADER,SUBTYPE_URLREQUEST,SUBTYPE_DICTIONARY,SUBTYPE_TEXTLINEMETRICS,SUBTYPE_XMLNODE,SUBTYPE_XMLDOCUMENT
+					 ,SUBTYPE_URLLOADER,SUBTYPE_URLREQUEST,SUBTYPE_DICTIONARY,SUBTYPE_TEXTLINEMETRICS,SUBTYPE_XMLNODE,SUBTYPE_XMLDOCUMENT,SUBTYPE_LOADER
+					 ,SUBTYPE_TEXTJUSTIFIER,SUBTYPE_SPACEJUSTIFIER,SUBTYPE_EASTASIANJUSTIFIER
+					 ,SUBTYPE_ERROR,SUBTYPE_SECURITYERROR,SUBTYPE_ARGUMENTERROR,SUBTYPE_DEFINITIONERROR,SUBTYPE_EVALERROR,SUBTYPE_RANGEERROR,SUBTYPE_REFERENCEERROR,SUBTYPE_SYNTAXERROR,SUBTYPE_TYPEERROR,SUBTYPE_URIERROR,SUBTYPE_VERIFYERROR,SUBTYPE_UNINITIALIZEDERROR
+					 ,SUBTYPE_AVM1SOUND,SUBTYPE_LOCALCONNECTION,SUBTYPE_NATIVEWINDOWBOUNDSEVENT,SUBTYPE_AVM1MOVIECLIP,SUBTYPE_AVM1MOVIECLIPLOADER
+					 ,SUBTYPE_GRAPHICSENDFILL,SUBTYPE_GRAPHICSSOLIDFILL,SUBTYPE_GRAPHICSPATH,SUBTYPE_AVM1MOVIE
 				   };
  
 enum STACK_TYPE{STACK_NONE=0,STACK_OBJECT,STACK_INT,STACK_UINT,STACK_NUMBER,STACK_BOOLEAN};
@@ -81,6 +91,16 @@ enum LS_VIDEO_CODEC { H264=0, H263, VP6, VP6A, GIF };
 enum LS_AUDIO_CODEC { CODEC_NONE=-1, LINEAR_PCM_PLATFORM_ENDIAN=0, ADPCM=1, MP3=2, LINEAR_PCM_LE=3, AAC=10, LINEAR_PCM_FLOAT_PLATFORM_ENDIAN = 100 };
 
 enum OBJECT_ENCODING { AMF0=0, AMF3=3, DEFAULT=3 };
+
+enum DEPTHSTENCIL_FUNCTION { DEPTHSTENCIL_ALWAYS, DEPTHSTENCIL_EQUAL, DEPTHSTENCIL_GREATER, DEPTHSTENCIL_GREATER_EQUAL, DEPTHSTENCIL_LESS, DEPTHSTENCIL_LESS_EQUAL, DEPTHSTENCIL_NEVER, DEPTHSTENCIL_NOT_EQUAL };
+enum DEPTHSTENCIL_OP { DEPTHSTENCIL_KEEP, DEPTHSTENCIL_ZERO, DEPTHSTENCIL_REPLACE, DEPTHSTENCIL_INCR, DEPTHSTENCIL_INCR_WRAP, DEPTHSTENCIL_DECR, DEPTHSTENCIL_DECR_WRAP, DEPTHSTENCIL_INVERT };
+enum TRIANGLE_FACE { FACE_BACK, FACE_FRONT, FACE_FRONT_AND_BACK, FACE_NONE };
+enum BLEND_FACTOR { BLEND_ONE,BLEND_ZERO,BLEND_SRC_ALPHA,BLEND_SRC_COLOR,BLEND_DST_ALPHA,BLEND_DST_COLOR,BLEND_ONE_MINUS_SRC_ALPHA,BLEND_ONE_MINUS_SRC_COLOR,BLEND_ONE_MINUS_DST_ALPHA,BLEND_ONE_MINUS_DST_COLOR };
+enum VERTEXBUFFER_FORMAT { BYTES_4=0, FLOAT_1, FLOAT_2, FLOAT_3, FLOAT_4 };
+enum CLEARMASK { COLOR = 0x1, DEPTH = 0x2, STENCIL = 0x4 };
+enum TEXTUREFORMAT { BGRA, BGRA_PACKED, BGR_PACKED, COMPRESSED, COMPRESSED_ALPHA, RGBA_HALF_FLOAT,BGR };
+enum TEXTUREFORMAT_COMPRESSED { UNCOMPRESSED, DXT5, DXT1 };
+enum SAMPLEPOSITION { SAMPLEPOS_STANDARD=0,SAMPLEPOS_BLEND=1,SAMPLEPOS_FILTER=2,SAMPLEPOS_FILTER_DST=3 };
 
 // Enum used during early binding in abc_optimizer.cpp
 enum EARLY_BIND_STATUS { NOT_BINDED=0, CANNOT_BIND=1, BINDED };
@@ -125,12 +145,8 @@ class ASObject;
 class ASString;
 class ABCContext;
 class URLInfo;
-class DisplayObject;
-class MovieClip;
-class Frame;
 class AVM1Function;
 class AVM1context;
-class ASWorker;
 struct namespace_info;
 
 struct multiname;
@@ -296,7 +312,7 @@ public:
 	STRING(const char* s, int len):String(s,len)
 	{
 	}
-	bool operator==(const STRING& s)
+	bool operator==(const STRING& s) const
 	{
 		if(String.size()!=s.String.size())
 			return false;
@@ -425,7 +441,7 @@ struct multiname: public memory_reporter
 		ASObject* name_o;
 	};
 	std::vector<nsNameAndKind, reporter_allocator<nsNameAndKind>> ns;
-	const Type* cachedType;
+	Type* cachedType;
 	std::vector<multiname*> templateinstancenames;
 	enum NAME_TYPE {NAME_STRING,NAME_INT,NAME_UINT,NAME_NUMBER,NAME_OBJECT};
 	NAME_TYPE name_type:3;
@@ -600,6 +616,10 @@ public:
 		Blue=r.Blue;
 		Alpha=255;
 		return *this;
+	}
+	bool operator==(const RGBA& r) const
+	{
+		return Red==r.Red && Green==r.Green && Blue==r.Blue && Alpha==r.Alpha;
 	}
 	float rf() const
 	{
@@ -844,12 +864,12 @@ public:
 		if(buf>=0)
 		{
 			int32_t b=buf;
-			return b/65536.0f;
+			return float(b)/65536.0f;
 		}
 		else
 		{
 			int32_t b=-buf;
-			return -(b/65536.0f);
+			return -(float(b)/65536.0f);
 		}
 		//return (buf>>16)+(buf&0xffff)/65536.0f;
 	}
@@ -917,6 +937,16 @@ public:
 public:
 	RECT();
 	RECT(int xmin, int xmax, int ymin, int ymax);
+	RECT(const RECT& r):Xmin(r.Xmin),Xmax(r.Xmax),Ymin(r.Ymin),Ymax(r.Ymax) {}
+	RECT& operator=(const RECT& r)
+	{
+		Xmin=r.Xmin;
+		Xmax=r.Xmax;
+		Ymin=r.Ymin;
+		Ymax=r.Ymax;
+		return *this;
+	}
+	bool operator==(const RECT& r) const;
 };
 
 template<class T> class Vector2Tmpl;
@@ -935,6 +965,7 @@ public:
 	Vector2 multiply2D(const Vector2& in) const;
 	MATRIX multiplyMatrix(const MATRIX& r) const;
 	bool operator!=(const MATRIX& r) const;
+	bool operator==(const MATRIX& r) const;
 	MATRIX getInverted() const;
 	bool isInvertible() const;
 	number_t getTranslateX() const
@@ -1000,6 +1031,10 @@ public:
 	{
 		return Ratio<g.Ratio;
 	}
+	bool operator==(const GRADRECORD& g) const
+	{
+		return Color == g.Color && version == g.version && Ratio == g.Ratio;
+	}
 };
 
 class GRADIENT
@@ -1011,6 +1046,13 @@ public:
 	int InterpolationMode;
 	std::vector<GRADRECORD> GradientRecords;
 	uint8_t version;
+	bool operator==(const GRADIENT& g) const
+	{
+		return version == g.version 
+				&& SpreadMode == g.SpreadMode
+				&& InterpolationMode == g.InterpolationMode
+				&& GradientRecords == g.GradientRecords;
+	}
 };
 
 class FOCALGRADIENT
@@ -1022,7 +1064,16 @@ public:
 	int InterpolationMode;
 	int NumGradient;
 	std::vector<GRADRECORD> GradientRecords;
-	float FocalPoint;
+	FIXED8 FocalPoint;
+	bool operator==(const FOCALGRADIENT& g) const
+	{
+		return version == g.version 
+				&& SpreadMode == g.SpreadMode
+				&& InterpolationMode == g.InterpolationMode
+				&& NumGradient == g.NumGradient
+				&& FocalPoint == g.FocalPoint
+				&& GradientRecords == g.GradientRecords;
+	}
 };
 
 class FILLSTYLEARRAY;
@@ -1038,7 +1089,8 @@ class FILLSTYLE
 public:
 	FILLSTYLE(uint8_t v);
 	FILLSTYLE(const FILLSTYLE& r);
-	FILLSTYLE& operator=(FILLSTYLE r);
+	FILLSTYLE& operator=(const FILLSTYLE& r);
+	bool operator==(const FILLSTYLE& r) const;
 	virtual ~FILLSTYLE();
 	MATRIX Matrix;
 	GRADIENT Gradient;
@@ -1089,7 +1141,8 @@ class LINESTYLE2
 public:
 	LINESTYLE2(uint8_t v):StartCapStyle(0),JointStyle(0),HasFillFlag(false),NoHScaleFlag(false),NoVScaleFlag(false),PixelHintingFlag(0),FillType(v),version(v){}
 	LINESTYLE2(const LINESTYLE2& r);
-	LINESTYLE2& operator=(LINESTYLE2 r);
+	LINESTYLE2& operator=(const LINESTYLE2& r);
+	bool operator==(const LINESTYLE2& r) const;
 	virtual ~LINESTYLE2();
 	int StartCapStyle;
 	int JointStyle;
@@ -1404,6 +1457,7 @@ public:
 class FILTER
 {
 public:
+	enum FILTER_ID { FILTER_DROPSHADOW = 0, FILTER_BLUR = 1, FILTER_GLOW = 2, FILTER_BEVEL = 3, FILTER_GRADIENTGLOW = 4, FILTER_CONVOLUTION = 5, FILTER_COLORMATRIX = 6, FILTER_GRADIENTBEVEL = 7 };
 	UI8 FilterID;
 	DROPSHADOWFILTER DropShadowFilter;
 	BLURFILTER BlurFilter;
@@ -1532,6 +1586,8 @@ public:
 	unsigned int next_FP;
 	bool stop_FP;
 	bool explicit_FP;
+	bool inEnterFrame;
+	bool gotoQueued;
 	bool creatingframe;
 	bool frameadvanced;
 	RunState();
@@ -1542,6 +1598,8 @@ public:
 		next_FP = 0;
 		stop_FP = false;
 		explicit_FP = false;
+		inEnterFrame = false;
+		gotoQueued = false;
 		creatingframe = false;
 		frameadvanced = false;
 	}

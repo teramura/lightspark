@@ -20,10 +20,12 @@
 #ifndef BACKENDS_RENDERING_H
 #define BACKENDS_RENDERING_H 1
 
+#include "interfaces/timer.h"
 #include "backends/rendering_context.h"
 #include "timer.h"
-#include <SDL2/SDL.h>
+#include <SDL.h>
 #include <sys/time.h>
+#include <unordered_map>
 #ifdef _WIN32
 #	include <windef.h>
 #endif
@@ -44,12 +46,12 @@ private:
 
 	static int worker(void* d);
 
-	void commonGLInit(int width, int height);
+	void commonGLInit();
 	void commonGLResize();
 	void commonGLDeinit();
 	ITextureUploadable* prevUploadJob;
 	uint32_t allocateNewGLTexture() const;
-	LargeTexture& allocateNewTexture();
+	LargeTexture& allocateNewTexture(bool direct);
 	bool allocateChunkOnTextureCompact(LargeTexture& tex, TextureChunk& ret, uint32_t blocksW, uint32_t blocksH);
 	bool allocateChunkOnTextureSparse(LargeTexture& tex, TextureChunk& ret, uint32_t blocksW, uint32_t blocksH);
 	//Possible events to be handled
@@ -88,17 +90,28 @@ private:
 		Common code to handle the core of the rendering
 		returns true if at least one of the displayobjects on the stage couldn't be rendered becaus of an AsyncDrawJob not done yet
 	*/
-	bool coreRendering();
+	void coreRendering();
 	void plotProfilingData();
 	Semaphore initialized;
 	volatile bool refreshNeeded;
 	Mutex mutexRefreshSurfaces;
-	struct refreshableSurface
+	std::list<RefreshableSurface> surfacesToRefresh;
+
+	volatile bool renderToBitmapContainerNeeded;
+	Mutex mutexRenderToBitmapContainer;
+	std::list<RenderDisplayObjectToBitmapContainer> displayobjectsToRender;
+
+	std::list<uint32_t> texturesToDelete;
+
+	struct DebugRect
 	{
-		IDrawable* drawable;
-		_NR<DisplayObject> displayobject;
+		DisplayObject* obj;
+		MATRIX matrix;
+		Vector2f pos;
+		Vector2f size;
+		bool onlyTranslate;
 	};
-	std::list<refreshableSurface> surfacesToRefresh;
+	std::list<DebugRect> debugRects;
 public:
 	Mutex mutexRendering;
 	volatile bool screenshotneeded;
@@ -128,27 +141,15 @@ public:
 	 * this will be deleted in this method
 	 * @param o target containing the cachedSurface to be updated
 	 */
-	void addRefreshableSurface(IDrawable* d,_NR<DisplayObject> o)
-	{
-		Locker l(mutexRefreshSurfaces);
-		refreshableSurface s;
-		s.displayobject = o;
-		s.drawable = d;
-		surfacesToRefresh.push_back(s);
-	}
-	void signalSurfaceRefresh()
-	{
-		Locker l(mutexRefreshSurfaces);
-		if (!surfacesToRefresh.empty())
-		{
-			refreshNeeded=true;
-			event.signal();
-		}
-	}
+	void addRefreshableSurface(IDrawable* d,_NR<DisplayObject> o);
+	void signalSurfaceRefresh();
+
+	void renderDisplayObjectToBimapContainer(_NR<DisplayObject> o, const MATRIX& initialMatrix,bool smoothing, AS_BLENDMODE blendMode, ColorTransformBase* ct,_NR<BitmapContainer> bm);
 	/**
 		Allocates a chunk from the shared texture
+		if direct is true, the openGL texture is generated directly. this can only be used inside the render thread
 	*/
-	TextureChunk allocateTexture(uint32_t w, uint32_t h, bool compact);
+	TextureChunk allocateTexture(uint32_t w, uint32_t h, bool compact, bool direct=false);
 	/**
 		Release texture
 	*/
@@ -176,9 +177,23 @@ public:
 	int gpu_program;
 	volatile uint32_t windowWidth;
 	volatile uint32_t windowHeight;
+	uint32_t currentframebufferWidth;
+	uint32_t currentframebufferHeight;
 
+	Vector2 getOffset() const { return Vector2(offsetX, offsetY); }
+	Vector2f getScale() const { return Vector2f(scaleX, scaleY); }
 	void renderErrorPage(RenderThread *rt, bool standalone);
 	void renderSettingsPage();
+	void drawDebugPoint(const Vector2f& pos);
+	void drawDebugLine(const Vector2f &a, const Vector2f &b);
+	void drawDebugRect(float x, float y, float width, float height, const MATRIX &matrix, bool onlyTranslate = false);
+	void drawDebugText(const tiny_string& str, const Vector2f& pos);
+	void addDebugRect(DisplayObject* obj, const MATRIX& matrix, bool scaleDown = false, const Vector2f& pos = Vector2f(), const Vector2f& size = Vector2f(), bool onlyTranslate = false);
+	void removeDebugRect();
+	void setViewPort(uint32_t w, uint32_t h, bool flip);
+	void resetViewPort();
+	void setModelView(const MATRIX& matrix);
+	void renderTextureToFrameBuffer(uint32_t filterTextureID, uint32_t w, uint32_t h, float* filterdata, float* gradientcolors, bool isFirstFilter, bool flippedvertical, bool clearstate=true, bool renderstage3d=false);
 	cairo_t *cairoTextureContextSettings;
 	cairo_surface_t *cairoTextureSurfaceSettings;
 	uint8_t *cairoTextureDataSettings;
@@ -193,6 +208,11 @@ public:
 	void mapCairoTexture(int w, int h, bool forsettings=false);
 	void renderText(cairo_t *cr, const char *text, int x, int y);
 	void waitRendering();
+	void addDeletedTexture(uint32_t textureID)
+	{
+		Locker l(mutexRendering);
+		texturesToDelete.push_back(textureID);
+	}
 };
 
 RenderThread* getRenderThread();

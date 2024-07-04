@@ -41,6 +41,7 @@ private:
 	bool appendSingleNode(asAtom x);
 	void replace(unsigned int i, asAtom x, const XML::XMLVector& retnodes, CONST_ALLOWED_FLAG allowConst, bool replacetext, bool* alreadyset, ASWorker* wrk);
 	void getTargetVariables(const multiname& name, XML::XMLVector& retnodes);
+	void copy(XMLList* res, XML* parent=nullptr);
 public:
 	XMLList(ASWorker* wrk,Class_base* c);
 	/*
@@ -53,6 +54,7 @@ public:
 	void finalize() override;
 	bool destruct() override;
 	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
 	
 	static void sinit(Class_base* c);
 	static XMLList* create(ASWorker* wrk, const XML::XMLVector& r, XMLList *targetobject, const multiname &targetproperty);
@@ -128,6 +130,7 @@ public:
 	void clear();
 	void removeNode(XML* node);
 	XMLList* getTargetObject() { return targetobject; }
+	string toDebugString() const override;
 };
 }
 #endif /* SCRIPTING_TOPLEVEL_XMLLIST_H */

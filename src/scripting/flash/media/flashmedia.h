@@ -20,12 +20,15 @@
 #ifndef SCRIPTING_FLASH_MEDIA_FLASHMEDIA_H
 #define SCRIPTING_FLASH_MEDIA_FLASHMEDIA_H 1
 
+#include "forwards/backends/netutils.h"
+#include "interfaces/backends/netutils.h"
 #include "compat.h"
 #include "asobject.h"
 #include "timer.h"
 #include "backends/graphics.h"
 #include "backends/decoder.h"
-#include "backends/netutils.h"
+#include "backends/urlutils.h"
+#include "threading.h"
 #include "scripting/flash/display/DisplayObject.h"
 
 namespace lightspark
@@ -140,6 +143,7 @@ public:
 	void play(number_t starttime=0);
 	void resume();
 	void markFinished(); // indicates that all sound data is available
+	void setSampleProducer(Sound* _sampleproducer) { sampleproducer = _sampleproducer; }
 	void setStartTime(number_t starttime) { startTime = starttime; }
 	void setLoops(int32_t loops) {loopstogo=loops;}
 	static void sinit(Class_base* c);
@@ -173,13 +177,19 @@ private:
 	DefineVideoStreamTag* videotag;
 	VideoDecoder* embeddedVideoDecoder;
 	uint32_t lastuploadedframe;
+	bool isRendering;
 	void resetDecoder();
 public:
 	Video(ASWorker* wk,Class_base* c, uint32_t w=320, uint32_t h=240, DefineVideoStreamTag* v=nullptr);
 	bool destruct() override;
 	void finalize() override;
+	void advanceFrame(bool implicit) override;
+	void refreshSurfaceState() override;
+	void requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh=false) override;
+	IDrawable* invalidate(bool smoothing) override;
 	void checkRatio(uint32_t ratio, bool inskipping) override;
-	void afterLegacyDelete(DisplayObjectContainer* parent, bool inskipping) override;
+	void afterLegacyInsert() override;
+	void afterLegacyDelete(bool inskipping) override;
 	void setOnStage(bool staged, bool force, bool inskipping=false) override;
 	uint32_t getTagID() const override;
 	~Video();
@@ -195,9 +205,8 @@ public:
 	ASFUNCTION_ATOM(_setHeight);
 	ASFUNCTION_ATOM(attachNetStream);
 	ASFUNCTION_ATOM(clear);
-	bool renderImpl(RenderContext& ctxt) override;
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override;
-	_NR<DisplayObject> hitTestImpl(number_t x, number_t y, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
+	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax, bool visibleOnly) override;
+	_NR<DisplayObject> hitTestImpl(const Vector2f& globalPoint, const Vector2f& localPoint, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
 };
 
 class SoundMixer : public ASObject

@@ -2,12 +2,32 @@ lightspark: An open source flash player implementation
 
 Version NEXT:
 
+	* implement command line argument to spoof the OS lightspark is reporting to the swf
+	* add simple launch dialog that is displayed on startup if no swf file is specified
+	* add stub for flash.profiler.showRedrawRegions
+	* improved support for AIR native extensions
+	  lightspark automatically loads available native extensions if the --air option is set,
+	* improved support of system mouse cursors
+	* improved support for GraphicsPath
+	* big rework of the rendering engine for better handling of masks and filters
+	* improved Stage3D support
+	* partially implement flash.net.LocalConnection
+	* implement filters as glsl shaders
+	* implement rendering with extended Blendmodes OVERLAY and HARDLIGHT
+	* improved support for flash.text.textengine package
+
+Version 0.8.7:
+
 	* implement DefineScalingGrid tag
 	* switch to 32bit float audio sampling for standalone player and remove SDL2_mixer dependency
 	* improved support for AVM1 swf files
 	* implement "erase" blendmode
 	* use nanoVG for bitmaps in fillstyles
 	* improved support for morphshapes
+	* improved support for adpcm encoded sounds
+	* add garbage collection mechanism for less memory usage
+	* better overall compatibility for many swf files
+	* several performance improvements
 
 Version 0.8.6.1:
 

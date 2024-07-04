@@ -21,30 +21,22 @@
 #ifndef BACKENDS_NETUTILS_H
 #define BACKENDS_NETUTILS_H 1
 
+#include "forwards/threading.h"
+#include "forwards/thread_pool.h"
+#include "forwards/backends/netutils.h"
+#include "interfaces/threading.h"
 #include "compat.h"
 #include <streambuf>
 #include <fstream>
 #include <list>
 #include <map>
 #include "swftypes.h"
-#include "thread_pool.h"
 #include "backends/urlutils.h"
 #include "backends/streamcache.h"
 #include "smartrefs.h"
 
 namespace lightspark
 {
-
-class Downloader;
-
-class ILoadable
-{
-protected:
-	~ILoadable(){}
-public:
-	virtual void setBytesTotal(uint32_t b) = 0;
-	virtual void setBytesLoaded(uint32_t b) = 0;
-};
 
 class DLL_PUBLIC DownloadManager
 {
@@ -218,14 +210,6 @@ private:
 	static const size_t bufSize = 8192;
 public:
 	LocalDownloader(const tiny_string& _url, _R<StreamCache> _cache, ILoadable* o, bool dataGeneration = false);
-};
-
-class IDownloaderThreadListener
-{
-protected:
-	virtual ~IDownloaderThreadListener() {}
-public:
-	virtual void threadFinished(IThreadJob*)=0;
 };
 
 class URLRequest;

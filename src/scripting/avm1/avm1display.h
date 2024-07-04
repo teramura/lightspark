@@ -22,11 +22,14 @@
 
 
 #include "asobject.h"
-#include "scripting/flash/display/flashdisplay.h"
+#include "scripting/flash/display/Shape.h"
+#include "scripting/flash/display/MovieClip.h"
 #include "scripting/flash/media/flashmedia.h"
-#include "scripting/flash/geom/flashgeom.h"
 #include "scripting/toplevel/Vector.h"
+#include "scripting/flash/display/Bitmap.h"
 #include "scripting/flash/display/BitmapData.h"
+#include "scripting/flash/display/SimpleButton.h"
+#include "scripting/flash/display/LoaderInfo.h"
 
 namespace lightspark
 {
@@ -38,12 +41,16 @@ private:
 	// this is only needed to make this movieclip the owner of the color (avoids circular references if color is also set as variable)
 	_NR<AVM1Color> color;
 public:
-	AVM1MovieClip(ASWorker* wrk,Class_base* c):MovieClip(wrk,c){}
+	AVM1MovieClip(ASWorker* wrk,Class_base* c):MovieClip(wrk,c)
+	{
+		subtype = SUBTYPE_AVM1MOVIECLIP;
+	}
 	AVM1MovieClip(ASWorker* wrk,Class_base* c, const FrameContainer& f, uint32_t defineSpriteTagID,uint32_t nameID=BUILTIN_STRINGS::EMPTY):MovieClip(wrk,c,f,defineSpriteTagID) 
 	{
+		subtype = SUBTYPE_AVM1MOVIECLIP;
 		name=nameID;
 	}
-	void afterConstruction() override;
+	void afterConstruction(bool _explicit = false) override;
 	bool destruct() override;
 	void prepareShutdown() override;
 	static void sinit(Class_base* c);
@@ -84,14 +91,15 @@ public:
 	ASFUNCTION_ATOM(removeResizeListener);
 };
 
-class AVM1MovieClipLoader: public Loader
+class AVM1MovieClipLoader: public ASObject
 {
 private:
-	mutable Mutex spinlock;
-	std::list<IThreadJob *> jobs;
-	std::set<_R<ASObject> > listeners;
+	Mutex loadermutex;
+	std::set<Loader*> loaderlist;
+	std::set<ASObject*> listeners;
+	void addLoader(URLRequest* r, DisplayObject* target);
 public:
-	AVM1MovieClipLoader(ASWorker* wrk,Class_base* c):Loader(wrk,c){}
+	AVM1MovieClipLoader(ASWorker* wrk,Class_base* c):ASObject(wrk,c,SWFOBJECT_TYPE::T_OBJECT,CLASS_SUBTYPE::SUBTYPE_AVM1MOVIECLIPLOADER){}
 	static void sinit(Class_base* c);
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(loadClip);
@@ -99,6 +107,8 @@ public:
 	ASFUNCTION_ATOM(removeListener);
 	void AVM1HandleEvent(EventDispatcher* dispatcher, Event* e) override;
 	bool destruct() override;
+	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
 	void load(const tiny_string& url, const tiny_string& method, AVM1MovieClip* target);
 };
 
@@ -141,7 +151,7 @@ public:
 class AVM1Bitmap: public Bitmap
 {
 public:
-	AVM1Bitmap(ASWorker* wrk,Class_base* c, _NR<LoaderInfo> li=NullRef, std::istream *s = nullptr, FILE_TYPE type=FT_UNKNOWN):Bitmap(wrk,c,li,s,type) {}
+	AVM1Bitmap(ASWorker* wrk,Class_base* c, _NR<LoaderInfo> li=NullRef, std::istream *s = nullptr, FILE_TYPE type=FT_UNKNOWN);
 	AVM1Bitmap(ASWorker* wrk,Class_base* c, _R<AVM1BitmapData> data):Bitmap(wrk,c,_R<BitmapData>(data)) {}
 	static void sinit(Class_base* c);
 };

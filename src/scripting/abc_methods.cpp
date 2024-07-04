@@ -21,10 +21,13 @@
 #include "compat.h"
 #include "exceptions.h"
 #include "scripting/abcutils.h"
-#include "scripting/class.h"
 #include "scripting/toplevel/ASString.h"
+#include "scripting/toplevel/Global.h"
+#include "scripting/toplevel/IFunction.h"
+#include "scripting/toplevel/Namespace.h"
 #include "scripting/toplevel/RegExp.h"
 #include "scripting/flash/system/flashsystem.h"
+#include "scripting/flash/display/RootMovieClip.h"
 #include "parsing/streams.h"
 #include <string>
 #include <sstream>
@@ -560,9 +563,11 @@ void ABCVm::abc_call(call_context* context)
 }
 void ABCVm::abc_construct(call_context* context)
 {
+	context->explicitConstruction = true;
 	uint32_t t = context->exec_pos->arg3_uint;
 	construct(context,t);
 	++(context->exec_pos);
+	context->explicitConstruction = false;
 }
 void ABCVm::abc_callMethod(call_context* context)
 {
@@ -794,7 +799,7 @@ void ABCVm::abc_setproperty(call_context* context)
 	ASObject* o = asAtomHandler::toObject(*obj,context->worker);
 	bool alreadyset=false;
 	o->setVariableByMultiname(*name,*value,ASObject::CONST_NOT_ALLOWED,&alreadyset,context->worker);
-	if (alreadyset)
+	if (alreadyset || context->exceptionthrown)
 		ASATOM_DECREF_POINTER(value);
 	o->decRef();
 	name->resetNameIfObject();
@@ -1084,7 +1089,7 @@ void ABCVm::abc_coerce(call_context* context)
 	multiname* mn = context->exec_pos->cachedmultiname2;
 	LOG_CALL("coerce " << *mn);
 	RUNTIME_STACK_POINTER_CREATE(context,o);
-	const Type* type = mn->cachedType != nullptr ? mn->cachedType : Type::getTypeFromMultiname(mn, context->mi->context);
+	Type* type = mn->cachedType != nullptr ? mn->cachedType : Type::getTypeFromMultiname(mn, context->mi->context);
 	if (type == nullptr)
 	{
 		LOG(LOG_ERROR,"coerce: type not found:"<< *mn);
@@ -1154,9 +1159,7 @@ void ABCVm::abc_increment(call_context* context)
 {
 	RUNTIME_STACK_POINTER_CREATE(context,pval);
 	LOG_CALL("increment "<<asAtomHandler::toDebugString(*pval));
-	asAtom oldval = *pval;
-	asAtomHandler::increment(*pval,context->worker);
-	ASATOM_DECREF(oldval);
+	asAtomHandler::increment(*pval,context->worker,true);
 	++(context->exec_pos);
 }
 void ABCVm::abc_inclocal(call_context* context)
@@ -1168,9 +1171,8 @@ void ABCVm::abc_inclocal(call_context* context)
 void ABCVm::abc_decrement(call_context* context)
 {
 	RUNTIME_STACK_POINTER_CREATE(context,pval);
-	asAtom oldval = *pval;
-	asAtomHandler::decrement(*pval,context->worker);
-	ASATOM_DECREF(oldval);
+	LOG_CALL("decrement "<<asAtomHandler::toDebugString(*pval));
+	asAtomHandler::decrement(*pval,context->worker,true);
 	++(context->exec_pos);
 }
 void ABCVm::abc_declocal(call_context* context)
@@ -1419,6 +1421,7 @@ void ABCVm::abc_instanceof(call_context* context)
 	RUNTIME_STACK_POINTER_CREATE(context,pval);
 	bool ret = instanceOf(asAtomHandler::toObject(*pval,context->worker),type);
 	ASATOM_DECREF_POINTER(pval);
+	type->decRef();
 	asAtomHandler::setBool(*pval,ret);
 	++(context->exec_pos);
 }

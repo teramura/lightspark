@@ -18,10 +18,12 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 **************************************************************************/
 
+#include "version.h"
 #include "backends/security.h"
 #include "scripting/abc.h"
 #include "scripting/class.h"
 #include "scripting/flash/net/flashnet.h"
+#include "scripting/flash/display/RootMovieClip.h"
 #include "swf.h"
 #include "backends/config.h"
 #include "backends/netutils.h"
@@ -386,9 +388,9 @@ void Downloader::parseHeaders(const char* _headers, bool _setLength)
  */
 void Downloader::parseHeader(std::string header, bool _setLength)
 {
-	if(header.substr(0, 9) == "HTTP/1.1 " || header.substr(0, 9) == "HTTP/1.0 ") 
+	if(header.substr(0, 9) == "HTTP/1.1 " || header.substr(0, 9) == "HTTP/1.0 " || header.substr(0, 7) == "HTTP/2 ") 
 	{
-		std::string status = header.substr(9, 3);
+		std::string status = header.substr(0, 7) == "HTTP/2 " ? header.substr(7, 3) : header.substr(9, 3);
 		requestStatus = atoi(status.c_str());
 		//HTTP error or server error or proxy error, let's fail
 		//TODO: shouldn't we fetch the data anyway
@@ -608,7 +610,7 @@ void CurlDownloader::execute()
 		//Its probably a good idea to limit redirections, 100 should be more than enough
 		curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 100);
 		// TODO use same useragent as adobe
-		//curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
+		curl_easy_setopt(curl, CURLOPT_USERAGENT, "Lightspark " VERSION);
 		// Empty string means that CURL will decompress if the
 		// server send a compressed file. (This has been
 		// renamed to CURLOPT_ACCEPT_ENCODING in newer CURL,
@@ -636,9 +638,6 @@ void CurlDownloader::execute()
 			//data is const, it would not be invalidated
 			curl_easy_setopt(curl, CURLOPT_POSTFIELDS, &data.front());
 			curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, data.size());
-
-			//For POST it's mandatory to set the Content-Type
-			assert(hasContentType);
 		}
 
 		if(headerList)
@@ -760,17 +759,30 @@ void LocalDownloader::execute()
 		FileStreamCache *fileCache = dynamic_cast<FileStreamCache *>(cache.getPtr());
 		if (fileCache)
 		{
-			fileCache->useExistingFile(url);
+			try
+			{
+				fileCache->useExistingFile(url);
+				//Report that we've downloaded everything already
+				length = fileCache->getReceivedLength();
+				notifyOwnerAboutBytesLoaded();
+				notifyOwnerAboutBytesTotal();
+			}
+			catch(exception& e)
+			{
+				LOG(LOG_ERROR, "Exception when using existing file: "<<url<<" "<<e.what());
+				setFailed();
+				return;
+			}
 
-			//Report that we've downloaded everything already
-			length = fileCache->getReceivedLength();
-			notifyOwnerAboutBytesLoaded();
-			notifyOwnerAboutBytesTotal();
 		}
 		//Otherwise we follow the normal procedure
 		else {
+			tiny_string s("file://");
+			s += URLInfo::decode(url, URLInfo::ENCODE_ESCAPE);
+			char* filepath =g_filename_from_uri(s.raw_buf(),nullptr,nullptr);
 			std::ifstream file;
-			file.open(url.raw_buf(), std::ios::in|std::ios::binary);
+			file.open(filepath, std::ios::in|std::ios::binary);
+			free(filepath);
 
 			if(file.is_open())
 			{
@@ -838,7 +850,6 @@ bool DownloaderThreadBase::createDownloader(_R<StreamCache> cache,
 			return false;
 		if(evaluationResult == SecurityManager::NA_CROSSDOMAIN_POLICY)
 		{
-			dispatcher->incRef();
 			getVm(dispatcher->getSystemState())->addEvent(dispatcher,_MR(Class<SecurityErrorEvent>::getInstanceS(dispatcher->getInstanceWorker(),"SecurityError: "
 												 "connection to domain not allowed by securityManager")));
 			return false;
@@ -848,7 +859,6 @@ bool DownloaderThreadBase::createDownloader(_R<StreamCache> cache,
 	{
 		// url points to an adobe signed library which we cannot handle, so we abort here
 		LOG(LOG_NOT_IMPLEMENTED,"we don't handle adobe signed libraries");
-		dispatcher->incRef();
 		getVm(dispatcher->getSystemState())->addEvent(dispatcher,_MR(Class<IOErrorEvent>::getInstanceS(dispatcher->getInstanceWorker())));
 		return false;
 	}

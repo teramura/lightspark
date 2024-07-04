@@ -26,7 +26,7 @@
 #include "logger.h"
 #include "netutils.h"
 #include "swf.h"
-#include <SDL2/SDL.h>
+#include <SDL.h>
 
 using namespace std;
 using namespace lightspark;
@@ -527,7 +527,13 @@ streamsize FileStreamCache::Reader::xsgetn(char* s, streamsize n)
 
 streamsize lsfilereader::xsgetn(char *s, streamsize n)
 {
-	return SDL_RWread(filehandler,s,1,n);
+	if (filehandler)
+		return SDL_RWread(filehandler,s,1,n);
+	else
+	{
+		LOG(LOG_ERROR,"reading from lsfilereader without file");
+		return 0;
+	}
 }
 
 streampos lsfilereader::seekoff(streamoff off, ios_base::seekdir way, ios_base::openmode which)

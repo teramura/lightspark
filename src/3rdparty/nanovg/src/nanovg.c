@@ -58,6 +58,8 @@ enum NVGcommands {
 	NVG_BEZIERTO = 2,
 	NVG_CLOSE = 3,
 	NVG_WINDING = 4,
+	NVG_BEGINCLIP = 5,
+	NVG_ENDCLIP = 6,
 };
 
 enum NVGpointFlags
@@ -121,6 +123,8 @@ struct NVGcontext {
 	NVGstate states[NVG_MAX_STATES];
 	int nstates;
 	NVGpathCache* cache;
+	NVGclipPath* clipPaths;
+	NVGclipPath* lastClip;
 	float tessTol;
 	float distTol;
 	float fringeWidth;
@@ -163,6 +167,16 @@ static float nvg__normalize(float *x, float* y)
 	return d;
 }
 
+static void nvg__deleteClipPaths(NVGclipPath* c)
+{
+	while (c != NULL) {
+		NVGclipPath* clip = c;
+		c = c->next;
+		if (clip->verts != NULL) free(clip->verts);
+		if (clip->paths != NULL) free(clip->paths);
+		free(clip);
+	}
+}
 
 static void nvg__deletePathCache(NVGpathCache* c)
 {
@@ -349,6 +363,7 @@ void nvgDeleteInternal(NVGcontext* ctx)
 	if (ctx == NULL) return;
 	if (ctx->commands != NULL) free(ctx->commands);
 	if (ctx->cache != NULL) nvg__deletePathCache(ctx->cache);
+	if (ctx->clipPaths != NULL) nvg__deleteClipPaths(ctx->clipPaths);
 
 	if (ctx->fs)
 		fonsDeleteInternal(ctx->fs);
@@ -378,6 +393,7 @@ void nvgBeginFrame(NVGcontext* ctx, float windowWidth, float windowHeight, float
 
 	nvg__setDevicePixelRatio(ctx, devicePixelRatio);
 
+	ctx->params.setClipActive(ctx->params.userPtr,1);
 	ctx->params.renderViewport(ctx->params.userPtr, windowWidth, windowHeight, devicePixelRatio);
 
 	ctx->drawCallCount = 0;
@@ -844,9 +860,96 @@ void nvgDeleteImage(NVGcontext* ctx, int image)
 	ctx->params.renderDeleteTexture(ctx->params.userPtr, image);
 }
 
+static NVGcolor nvg__premulColor(NVGcolor c)
+{
+	c.r *= c.a;
+	c.g *= c.a;
+	c.b *= c.a;
+	return c;
+}
+
+// Based on https://github.com/femtovg/femtovg/blob/4e40a61f824a8ea1bd361b4d227a2187e912124a/src/gradient_store.rs#L71
+static void nvg__gradientSpan(unsigned char* image,
+					   NVGcolor startColor, NVGcolor endColor,
+					   float startStop, float endStop)
+
+{
+	startStop = nvg__clampf(startStop, 0.0f, 1.0f);
+	endStop = nvg__clampf(endStop, 0.0f, 1.0f);
+
+	if (endStop < startStop)
+		return;
+
+	int i;
+	int start = startStop * 256.0f;
+	int end = endStop * 256.0f;
+
+	float steps = end - start;
+
+	float u = 0;
+	const float du = 1.0f / steps;
+	for (i = start; i < end; i++) {
+		NVGcolor lerpColor = nvg__premulColor(nvgLerpRGBA(startColor, endColor, u));
+
+		image[(i*4)+0] = lerpColor.b * 255.0f;
+		image[(i*4)+1] = lerpColor.g * 255.0f;
+		image[(i*4)+2] = lerpColor.r * 255.0f;
+		image[(i*4)+3] = lerpColor.a * 255.0f;
+
+		u += du;
+	}
+}
+
+static void nvg__gradientSpanStop(unsigned char* image,
+					   NVGgradientStop start, NVGgradientStop end)
+{
+	nvg__gradientSpan(image, start.color, end.color, start.stop, end.stop);
+}
+
+// Based on https://github.com/femtovg/femtovg/blob/4e40a61f824a8ea1bd361b4d227a2187e912124a/src/gradient_store.rs#L114
+static int nvg__linearGradientStops(NVGcontext* ctx,
+							 NVGgradientStop* stops, int count,
+							 int spreadMode)
+{
+	if (stops == NULL || count <= 0)
+		return 0;
+
+	int i;
+	unsigned char image[4*256];
+	memset(image, 0, sizeof(image));
+
+	// Fill upto the first stop.
+	if (stops[0].stop > 0.0f) {
+		nvg__gradientSpan(image, stops[0].color, stops[0].color, 0.0f, stops[0].stop);
+	}
+
+	// Iterate over each stop in overlapping pairs, filling the entire
+	// gradient. If our stop position is > 1.0f, we've gone through all
+	// stops, and are done. as a special case, if the last stop position
+	// is > 1.0f, we pad the rest of the gradient with the current color.
+	for (i = 0; i < count-1 && stops[i].stop <= 1.0f; i++) {
+		NVGgradientStop* s0 = &stops[i];
+		NVGgradientStop* s1 = &stops[i+1];
+		// Pad the rest of the gradient, if last stop is < 1.0f.
+		if (s0->stop < 1.0f && s1->stop > 1.0f)
+			nvg__gradientSpan(image, s0->color, s0->color, s0->stop, 1.0f);
+		else
+			nvg__gradientSpanStop(image, *s0, *s1);
+	}
+
+	int imageFlags = 0;
+	switch (spreadMode) {
+	case NVG_SPREAD_PAD		: imageFlags |= 0; break;
+	case NVG_SPREAD_REPEAT	: imageFlags |= NVG_IMAGE_REPEATX; break;
+	case NVG_SPREAD_REFLECT	: imageFlags |= NVG_IMAGE_MIRRORX; break;
+	}
+	return nvgCreateImageRGBA(ctx, 256, 1, imageFlags, image);
+}
+
 NVGpaint nvgLinearGradient(NVGcontext* ctx,
 								  float sx, float sy, float ex, float ey,
-								  NVGcolor icol, NVGcolor ocol)
+								  NVGcolor icol, NVGcolor ocol,
+								  int spreadMode)
 {
 	NVGpaint p;
 	float dx, dy, d;
@@ -880,12 +983,69 @@ NVGpaint nvgLinearGradient(NVGcontext* ctx,
 	p.innerColor = icol;
 	p.outerColor = ocol;
 
+	p.spreadMode = spreadMode;
+
+	p.isGradient = 1;
+	return p;
+}
+
+// Based on code from femtovg. https://github.com/femtovg/femtovg
+NVGpaint nvgLinearGradientStops(NVGcontext* ctx,
+									 float sx, float sy, float ex, float ey,
+									 NVGgradientStop* stops, int count,
+									 int spreadMode)
+{
+	NVGpaint p;
+
+	if (stops == NULL || count <= 1) {
+		// Return a solid color (one stop), or black (no stops).
+		nvg__setPaintColor(&p, (stops == NULL || count <= 0) ? nvgRGB(0, 0, 0) : stops[0].color);
+		return p;
+	} else if (count == 2 && stops[0].stop <= 0.0f && stops[1].stop >= 1.0f) {
+		// Two stop gradients take the normal path, if both stops are at
+		// the extents. Treat it as a multi-stop gradient otherwise.
+		return nvgLinearGradient(ctx, sx, sy, ex, ey, stops[0].color, stops[1].color, spreadMode);
+	}
+
+	float dx, dy, d;
+	const float large = 1e5;
+	memset(&p, 0, sizeof(p));
+
+	// Calculate transform aligned to the line
+	dx = ex - sx;
+	dy = ey - sy;
+	d = sqrtf(dx*dx + dy*dy);
+	if (d > 0.0001f) {
+		dx /= d;
+		dy /= d;
+	} else {
+		dx = 0;
+		dy = 1;
+	}
+
+	p.xform[0] = dy; p.xform[1] = -dx;
+	p.xform[2] = dx; p.xform[3] = dy;
+	p.xform[4] = sx - dx*large; p.xform[5] = sy - dy*large;
+
+	p.extent[0] = large;
+	p.extent[1] = large + d*0.5f;
+
+	p.radius = 0.0f;
+
+	p.feather = nvg__maxf(1.0f, d);
+
+	p.image = nvg__linearGradientStops(ctx, stops, count, spreadMode);
+
+	p.spreadMode = spreadMode;
+
+	p.isGradient = 1;
 	return p;
 }
 
 NVGpaint nvgRadialGradient(NVGcontext* ctx,
 								  float cx, float cy, float inr, float outr,
-								  NVGcolor icol, NVGcolor ocol)
+								  NVGcolor icol, NVGcolor ocol,
+								  int spreadMode)
 {
 	NVGpaint p;
 	float r = (inr+outr)*0.5f;
@@ -907,12 +1067,57 @@ NVGpaint nvgRadialGradient(NVGcontext* ctx,
 	p.innerColor = icol;
 	p.outerColor = ocol;
 
+	p.spreadMode = spreadMode;
+
+	p.isGradient = 1;
+	return p;
+}
+
+// Based on code from femtovg. https://github.com/femtovg/femtovg
+NVGpaint nvgRadialGradientStops(NVGcontext* ctx,
+									 float cx, float cy, float inr, float outr,
+									 NVGgradientStop* stops, int count,
+									 int spreadMode)
+{
+	NVGpaint p;
+
+	if (stops == NULL || count <= 1) {
+		// Return a solid color (one stop), or black (no stops).
+		nvg__setPaintColor(&p, (stops == NULL || count <= 0) ? nvgRGB(0, 0, 0) : stops[0].color);
+		return p;
+	} else if (count == 2 && stops[0].stop <= 0.0 && stops[1].stop >= 1.0) {
+		// Two stop gradients take the normal path, if both stops are at
+		// the extents. Treat it as a multi-stop gradient otherwise.
+		return nvgRadialGradient(ctx, cx, cy, inr, outr, stops[0].color, stops[1].color, spreadMode);
+	}
+
+	float r = (inr+outr)*0.5f;
+	float f = (outr-inr);
+	memset(&p, 0, sizeof(p));
+
+	nvgTransformIdentity(p.xform);
+	p.xform[4] = cx;
+	p.xform[5] = cy;
+
+	p.extent[0] = r;
+	p.extent[1] = r;
+
+	p.radius = r;
+
+	p.feather = nvg__maxf(1.0f, f);
+
+	p.image = nvg__linearGradientStops(ctx, stops, count, spreadMode);
+
+	p.spreadMode = spreadMode;
+
+	p.isGradient = 1;
 	return p;
 }
 
 NVGpaint nvgBoxGradient(NVGcontext* ctx,
 							   float x, float y, float w, float h, float r, float f,
-							   NVGcolor icol, NVGcolor ocol)
+							   NVGcolor icol, NVGcolor ocol,
+							   int spreadMode)
 {
 	NVGpaint p;
 	NVG_NOTUSED(ctx);
@@ -932,6 +1137,9 @@ NVGpaint nvgBoxGradient(NVGcontext* ctx,
 	p.innerColor = icol;
 	p.outerColor = ocol;
 
+	p.spreadMode = spreadMode;
+
+	p.isGradient = 1;
 	return p;
 }
 
@@ -956,6 +1164,106 @@ NVGpaint nvgImagePattern(NVGcontext* ctx,
 	p.innerColor = p.outerColor = nvgRGBAf(1,1,1,alpha);
 
 	return p;
+}
+
+static NVGclipPath* nvg__findLastClip(NVGclipPath* clips)
+{
+	NVGclipPath* last;
+	for (last = clips; last != NULL && last->next != NULL; last = last->next);
+	return last;
+}
+
+static int nvg__pushClip(NVGclipPath** clips, NVGclipPath** last)
+{
+	NVGclipPath* dummy = NULL;
+	NVGclipPath* dummy2 = NULL;
+	clips = (clips == NULL) ? &dummy : clips;
+	last = (last == NULL) ? &dummy2 : last;
+	if (*clips == NULL) {
+		*clips = (NVGclipPath*)malloc(sizeof(NVGclipPath));
+		memset(*clips, 0, sizeof(NVGclipPath));
+		*last = *clips;
+		return 0;
+	}
+
+	*last = (*last == NULL) ? nvg__findLastClip(*clips) : *last;
+	if (*last == NULL) return -1;
+
+	(*last)->next = (NVGclipPath*)malloc(sizeof(NVGclipPath));
+	memset((*last)->next, 0, sizeof(NVGclipPath));
+	(*last)->next->prev = *last;
+
+	*last = (*last)->next;
+	return 1;
+}
+
+static int nvg__popClip(NVGclipPath** clips, NVGclipPath** last)
+{
+	NVGclipPath* dummy = NULL;
+	NVGclipPath* dummy2 = NULL;
+	clips = (clips == NULL) ? &dummy : clips;
+	last = (last == NULL) ? &dummy2 : last;
+	if (*clips == NULL) {
+		*last = NULL;
+		return 0;
+	}
+
+	*last = (*last == NULL) ? nvg__findLastClip(*clips) : *last;
+	if (*last == NULL) return -1;
+
+	if ((*last)->verts != NULL) free((*last)->verts);
+	if ((*last)->paths != NULL) free((*last)->paths);
+	if ((*last)->prev == NULL) {
+		*clips = (*last == *clips) ? NULL : *clips;
+		free(*last);
+		*last = NULL;
+		return (*clips != NULL);
+	}
+	*last = (*last)->prev;
+
+	free((*last)->next);
+	(*last)->next = NULL;
+	return 1;
+}
+
+static void nvg__appendCommands(NVGcontext* ctx, float* vals, int nvals);
+
+// Clipping
+void nvgPushClip(NVGcontext* ctx)
+{
+	int hasClips = nvg__pushClip(&ctx->clipPaths, &ctx->lastClip);
+
+	if (hasClips == 0)
+		ctx->params.setClip(ctx->params.userPtr, ctx->clipPaths);
+	if (hasClips >= 0)
+		ctx->params.setLastClip(ctx->params.userPtr, ctx->lastClip);
+	ctx->params.setClipActive(ctx->params.userPtr,1);
+}
+
+void nvgPopClip(NVGcontext* ctx)
+{
+	int hasClips = nvg__popClip(&ctx->clipPaths, &ctx->lastClip);
+
+	if (hasClips == 0)
+		ctx->params.setClip(ctx->params.userPtr, ctx->clipPaths);
+	if (hasClips >= 0)
+		ctx->params.setLastClip(ctx->params.userPtr, ctx->lastClip);
+}
+
+void nvgBeginClip(NVGcontext* ctx)
+{
+	float vals[] = { NVG_BEGINCLIP };
+	nvg__appendCommands(ctx, vals, NVG_COUNTOF(vals));
+}
+
+void nvgEndClip(NVGcontext* ctx)
+{
+	float vals[] = { NVG_ENDCLIP };
+	nvg__appendCommands(ctx, vals, NVG_COUNTOF(vals));
+}
+void nvgDeactivateClipping(NVGcontext* ctx)
+{
+	ctx->params.setClipActive(ctx->params.userPtr,0);
 }
 
 // Scissoring
@@ -1088,7 +1396,7 @@ static void nvg__appendCommands(NVGcontext* ctx, float* vals, int nvals)
 		ctx->ccommands = ccommands;
 	}
 
-	if ((int)vals[0] != NVG_CLOSE && (int)vals[0] != NVG_WINDING) {
+	if ((int)vals[0] != NVG_CLOSE && (int)vals[0] != NVG_WINDING && (int)vals[0] != NVG_BEGINCLIP && (int)vals[0] != NVG_ENDCLIP) {
 		ctx->commandx = vals[nvals-2];
 		ctx->commandy = vals[nvals-1];
 	}
@@ -1112,6 +1420,8 @@ static void nvg__appendCommands(NVGcontext* ctx, float* vals, int nvals)
 			nvgTransformPoint(&vals[i+5],&vals[i+6], state->xform, vals[i+5],vals[i+6]);
 			i += 7;
 			break;
+		case NVG_BEGINCLIP:
+		case NVG_ENDCLIP:
 		case NVG_CLOSE:
 			i++;
 			break;
@@ -1332,6 +1642,8 @@ static void nvg__flattenPaths(NVGcontext* ctx)
 	NVGpoint* p1;
 	NVGpoint* pts;
 	NVGpath* path;
+	NVGpath* clipPath;
+	int inClipPath;
 	int i, j;
 	float* cp1;
 	float* cp2;
@@ -1343,11 +1655,15 @@ static void nvg__flattenPaths(NVGcontext* ctx)
 
 	// Flatten
 	i = 0;
+	inClipPath = 0;
+	clipPath = NULL;
 	while (i < ctx->ncommands) {
 		int cmd = (int)ctx->commands[i];
 		switch (cmd) {
 		case NVG_MOVETO:
 			nvg__addPath(ctx);
+			if (inClipPath != 0)
+				nvg__lastPath(ctx)->clip = 1;
 			p = &ctx->commands[i+1];
 			nvg__addPoint(ctx, p[0], p[1], NVG_PT_CORNER);
 			i += 3;
@@ -1374,6 +1690,18 @@ static void nvg__flattenPaths(NVGcontext* ctx)
 		case NVG_WINDING:
 			nvg__pathWinding(ctx, (int)ctx->commands[i+1]);
 			i += 2;
+			break;
+		case NVG_BEGINCLIP:
+			inClipPath = 1;
+			clipPath = nvg__lastPath(ctx);
+			if (clipPath != NULL)
+				clipPath->clip = 1;
+			i++;
+			break;
+		case NVG_ENDCLIP:
+			inClipPath = 0;
+			clipPath = NULL;
+			i++;
 			break;
 		default:
 			i++;
@@ -2222,6 +2550,16 @@ void nvgDebugDumpPathCache(NVGcontext* ctx)
 	}
 }
 
+static const NVGpath* nvg__findClipPath(const NVGpath* paths, int npaths)
+{
+	const NVGpath* clipPath;
+	int i;
+	if (paths == NULL)
+		return NULL;
+	for (i = 0, clipPath = paths; i < npaths && clipPath->clip == 0; i++, clipPath++);
+	return (i < npaths) ? clipPath : NULL;
+}
+
 void nvgFill(NVGcontext* ctx)
 {
 	NVGstate* state = nvg__getState(ctx);
@@ -2239,8 +2577,16 @@ void nvgFill(NVGcontext* ctx)
 	fillPaint.innerColor.a *= state->alpha;
 	fillPaint.outerColor.a *= state->alpha;
 
+	const NVGpath* clipPath = nvg__findClipPath(ctx->cache->paths, ctx->cache->npaths);
+	if (clipPath != NULL) {
+		const NVGpath* clip;
+		NVGpath* lastPath = nvg__lastPath(ctx);
+		for (clip = clipPath, i = 1; clip != lastPath && clip->clip != 0; clip++, i++);
+	} else {
+		i = 0;
+	}
 	ctx->params.renderFill(ctx->params.userPtr, &fillPaint, state->compositeOperation, &state->scissor, ctx->fringeWidth,
-						   ctx->cache->bounds, ctx->cache->paths, ctx->cache->npaths);
+						   ctx->cache->bounds, clipPath, i, ctx->cache->paths, ctx->cache->npaths);
 
 	// Count triangles
 	for (i = 0; i < ctx->cache->npaths; i++) {
@@ -2281,8 +2627,26 @@ void nvgStroke(NVGcontext* ctx)
 	else
 		nvg__expandStroke(ctx, strokeWidth*0.5f, 0.0f, state->lineCap, state->lineJoin, state->miterLimit);
 
+	const NVGpath* clipPath = nvg__findClipPath(ctx->cache->paths, ctx->cache->npaths);
+	if (clipPath != NULL) {
+		const NVGpath* clip;
+		NVGpath* lastPath = nvg__lastPath(ctx);
+		for (clip = clipPath, i = 1; clip != lastPath && clip->clip != 0; clip++, i++);
+	} else {
+		i = 0;
+	}
+	// ensure we render anything if stroke is only a singular horizontal or vertical line
+	if (ctx->cache->bounds[0] == ctx->cache->bounds[2] ||
+		ctx->cache->bounds[1] == ctx->cache->bounds[3])
+	{
+		ctx->cache->bounds[0]-=strokeWidth/2.0;
+		ctx->cache->bounds[1]-=strokeWidth/2.0;
+		ctx->cache->bounds[2]+=strokeWidth/2.0;
+		ctx->cache->bounds[3]+=strokeWidth/2.0;
+	}
+
 	ctx->params.renderStroke(ctx->params.userPtr, &strokePaint, state->compositeOperation, &state->scissor, ctx->fringeWidth,
-							 strokeWidth, ctx->cache->paths, ctx->cache->npaths);
+							 strokeWidth, ctx->cache->bounds, clipPath, i, ctx->cache->paths, ctx->cache->npaths);
 
 	// Count triangles
 	for (i = 0; i < ctx->cache->npaths; i++) {

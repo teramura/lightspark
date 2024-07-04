@@ -25,7 +25,6 @@
 #include "scripting/flash/events/flashevents.h"
 #include "scripting/flash/display3d/flashdisplay3dtextures.h"
 #include <map>
-#include "platforms/engineutils.h"
 
 enum RegisterType {
 	ATTRIBUTE = 0,
@@ -100,6 +99,8 @@ namespace lightspark
 class RenderContext;
 class VertexBuffer3D;
 class Program3D;
+class Stage3D;
+class EngineData;
 
 enum RENDER_ACTION { RENDER_CLEAR,RENDER_CONFIGUREBACKBUFFER,RENDER_RENDERTOBACKBUFFER,RENDER_TOTEXTURE,
 					 RENDER_SETPROGRAM,RENDER_UPLOADPROGRAM,RENDER_DELETEPROGRAM,
@@ -108,7 +109,8 @@ enum RENDER_ACTION { RENDER_CLEAR,RENDER_CONFIGUREBACKBUFFER,RENDER_RENDERTOBACK
 					 RENDER_SETBLENDFACTORS,RENDER_SETDEPTHTEST,RENDER_SETCULLING,RENDER_GENERATETEXTURE,RENDER_LOADTEXTURE,RENDER_LOADCUBETEXTURE,
 					 RENDER_SETSCISSORRECTANGLE, RENDER_SETCOLORMASK, RENDER_SETSAMPLERSTATE, RENDER_DELETETEXTURE,
 					 RENDER_CREATEINDEXBUFFER,RENDER_UPLOADINDEXBUFFER,RENDER_DELETEINDEXBUFFER,
-					 RENDER_CREATEVERTEXBUFFER,RENDER_UPLOADVERTEXBUFFER,RENDER_DELETEVERTEXBUFFER };
+					 RENDER_CREATEVERTEXBUFFER,RENDER_UPLOADVERTEXBUFFER,RENDER_DELETEVERTEXBUFFER,
+				     RENDER_SETSTENCILREFERENCEVALUE,RENDER_SETSTENCILACTIONS};
 struct renderaction
 {
 	RENDER_ACTION action;
@@ -137,22 +139,35 @@ class Context3D: public EventDispatcher
 friend class Stage3D;
 private:
 	std::vector<renderaction> actions[2];
+	std::vector<_NR<TextureBase>> texturestoupload;
 	constantregister vertexConstants[CONTEXT3D_PROGRAM_REGISTERS];
 	constantregister fragmentConstants[CONTEXT3D_PROGRAM_REGISTERS];
 	attribregister attribs[CONTEXT3D_ATTRIBUTE_COUNT];
 	uint32_t samplers[CONTEXT3D_SAMPLER_COUNT];
 	float vcposdata[4] = { 1.0,1.0,1.0,1.0 };
 	int currentactionvector;
+
+	uint32_t backframebufferIDcurrent;
+	uint32_t backframebuffer[2];
+	uint32_t backframebufferID[2];
+	uint32_t backDepthRenderBuffer[2];
+	uint32_t backStencilRenderBuffer[2];
+
 	uint32_t textureframebuffer;
-	uint32_t textureframebufferID;
 	uint32_t depthRenderBuffer;
 	uint32_t stencilRenderBuffer;
+
 	Program3D* currentprogram;
 	uint32_t currenttextureid;
 	bool renderingToTexture;
 	bool enableDepthAndStencilBackbuffer;
 	bool enableDepthAndStencilTextureBuffer;
 	bool swapbuffers;
+	TRIANGLE_FACE currentcullface;
+	DEPTHSTENCIL_FUNCTION currentdepthfunction;
+	DEPTHSTENCIL_FUNCTION currentstencilfunction;
+	uint32_t currentstencilref;
+	uint32_t currentstencilmask;
 	void handleRenderAction(EngineData *engineData, renderaction &action);
 	void setRegisters(EngineData *engineData, std::vector<RegisterMapEntry> &registermap, constantregister *constants, bool isVertex);
 	void setAttribs(EngineData* engineData, std::vector<RegisterMapEntry> &attributes);
@@ -163,12 +178,15 @@ private:
 	unordered_set<TextureBase*> texturelist;
 	unordered_set<IndexBuffer3D*> indexbufferlist;
 	unordered_set<VertexBuffer3D*> vectorbufferlist;
+	Stage3D* stage3D;
 	void disposeintern();
+	void configureBackBufferIntern(bool enableDepthAndStencil, uint32_t width, uint32_t height, int index);
 protected:
 	bool renderImpl(RenderContext &ctxt);
 	void loadTexture(TextureBase* tex, uint32_t level);
-	void loadCubeTexture(CubeTexture* tex);
-public:
+	void loadCubeTexture(CubeTexture* tex, uint32_t miplevel, uint32_t side);
+	void init(Stage3D* s);
+	public:
 	Mutex rendermutex;
 	Context3D(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base* c);
@@ -179,13 +197,18 @@ public:
 
 	void addAction(RENDER_ACTION type, ASObject* dataobject);
 	void addAction(renderaction action);
+	void addTextureToUpload(TextureBase* tex)
+	{
+		tex->incRef();
+		texturestoupload.push_back(_MR(tex));
+	}
 	ASPROPERTY_GETTER(int,backBufferHeight);
 	ASPROPERTY_GETTER(int,backBufferWidth);
 	ASPROPERTY_GETTER(tiny_string,driverInfo);
 	ASPROPERTY_GETTER_SETTER(bool,enableErrorChecking);
 	ASPROPERTY_GETTER_SETTER(int,maxBackBufferHeight);
 	ASPROPERTY_GETTER_SETTER(int,maxBackBufferWidth);
-	ASPROPERTY_GETTER(tiny_string,profile);
+	ASFUNCTION_ATOM(getProfile);
 	ASFUNCTION_ATOM(supportsVideoTexture);
 	ASFUNCTION_ATOM(dispose);
 	ASFUNCTION_ATOM(configureBackBuffer);

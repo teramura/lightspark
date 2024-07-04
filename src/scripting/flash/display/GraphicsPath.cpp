@@ -29,21 +29,21 @@
 using namespace lightspark;
 
 GraphicsPath::GraphicsPath(ASWorker* wrk, Class_base* c):
-	ASObject(wrk,c), winding("evenOdd")
+	ASObject(wrk,c,T_OBJECT,SUBTYPE_GRAPHICSPATH), winding("evenOdd")
 {
 }
 
 void GraphicsPath::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_SEALED | CLASS_FINAL);
-	REGISTER_GETTER_SETTER(c, commands);
-	REGISTER_GETTER_SETTER(c, data);
-	REGISTER_GETTER_SETTER(c, winding);
-	c->setDeclaredMethodByQName("curveTo","",Class<IFunction>::getFunction(c->getSystemState(),curveTo),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("lineTo","",Class<IFunction>::getFunction(c->getSystemState(),lineTo),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("moveTo","",Class<IFunction>::getFunction(c->getSystemState(),moveTo),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("wideLineTo","",Class<IFunction>::getFunction(c->getSystemState(),wideLineTo),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("wideMoveTo","",Class<IFunction>::getFunction(c->getSystemState(),wideMoveTo),NORMAL_METHOD,true);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, commands, Vector);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, data, Vector);
+	REGISTER_GETTER_SETTER_RESULTTYPE(c, winding, ASString);
+	c->setDeclaredMethodByQName("curveTo","",c->getSystemState()->getBuiltinFunction(curveTo),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("lineTo","",c->getSystemState()->getBuiltinFunction(lineTo),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("moveTo","",c->getSystemState()->getBuiltinFunction(moveTo),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("wideLineTo","",c->getSystemState()->getBuiltinFunction(wideLineTo),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("wideMoveTo","",c->getSystemState()->getBuiltinFunction(wideMoveTo),NORMAL_METHOD,true);
 
 	c->addImplementedInterface(InterfaceClass<IGraphicsPath>::getClass(c->getSystemState()));
 	IGraphicsPath::linkTraits(c);
@@ -102,7 +102,7 @@ ASFUNCTIONBODY_ATOM(GraphicsPath, curveTo)
 	ARG_CHECK(ARG_UNPACK (cx) (cy) (ax) (ay));
 
 	th->ensureValid();
-	asAtom v = asAtomHandler::fromInt((int32_t)GraphicsPathCommand::CURVE_TO);
+	asAtom v = asAtomHandler::fromInt((int32_t)GRAPHICSPATH_COMMANDTYPE::CURVE_TO);
 	th->commands->append(v);
 	ASATOM_INCREF(ax);
 	th->data->append(ax);
@@ -122,7 +122,7 @@ ASFUNCTIONBODY_ATOM(GraphicsPath, lineTo)
 	ARG_CHECK(ARG_UNPACK (x) (y));
 
 	th->ensureValid();
-	asAtom v = asAtomHandler::fromInt((int32_t)(GraphicsPathCommand::LINE_TO));
+	asAtom v = asAtomHandler::fromInt((int32_t)(GRAPHICSPATH_COMMANDTYPE::LINE_TO));
 	th->commands->append(v);
 	ASATOM_INCREF(x);
 	th->data->append(x);
@@ -138,7 +138,7 @@ ASFUNCTIONBODY_ATOM(GraphicsPath, moveTo)
 	ARG_CHECK(ARG_UNPACK (x) (y));
 
 	th->ensureValid();
-	asAtom v = asAtomHandler::fromInt((int32_t)(GraphicsPathCommand::MOVE_TO));
+	asAtom v = asAtomHandler::fromInt((int32_t)(GRAPHICSPATH_COMMANDTYPE::MOVE_TO));
 	th->commands->append(v);
 	ASATOM_INCREF(x);
 	th->data->append(x);
@@ -154,7 +154,7 @@ ASFUNCTIONBODY_ATOM(GraphicsPath, wideLineTo)
 	ARG_CHECK(ARG_UNPACK (x) (y));
 
 	th->ensureValid();
-	asAtom v = asAtomHandler::fromInt((int32_t)(GraphicsPathCommand::LINE_TO));
+	asAtom v = asAtomHandler::fromInt((int32_t)(GRAPHICSPATH_COMMANDTYPE::LINE_TO));
 	th->commands->append(v);
 	asAtom n = asAtomHandler::fromNumber(wrk,0.0,false);
 	ASATOM_INCREF(n);
@@ -175,7 +175,7 @@ ASFUNCTIONBODY_ATOM(GraphicsPath, wideMoveTo)
 	ARG_CHECK(ARG_UNPACK (x) (y));
 
 	th->ensureValid();
-	asAtom v = asAtomHandler::fromInt((int32_t)(GraphicsPathCommand::MOVE_TO));
+	asAtom v = asAtomHandler::fromInt((int32_t)(GRAPHICSPATH_COMMANDTYPE::MOVE_TO));
 	th->commands->append(v);
 	asAtom n = asAtomHandler::fromNumber(wrk,0.0,false);
 	ASATOM_INCREF(n);
@@ -188,7 +188,7 @@ ASFUNCTIONBODY_ATOM(GraphicsPath, wideMoveTo)
 	th->data->append(y);
 }
 
-void GraphicsPath::appendToTokens(std::vector<uint64_t>& tokens,Graphics* graphics)
+void GraphicsPath::appendToTokens(tokensVector& tokens,Graphics* graphics)
 {
-	Graphics::pathToTokens(commands, data, winding, tokens);
+	graphics->pathToTokens(commands, data, winding, tokens);
 }

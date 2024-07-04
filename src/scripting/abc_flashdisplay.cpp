@@ -18,6 +18,7 @@
 **************************************************************************/
 
 #include "scripting/flash/display/flashdisplay.h"
+#include "scripting/flash/display/Bitmap.h"
 #include "scripting/flash/display/BitmapData.h"
 #include "scripting/flash/display/bitmapencodingcolorspace.h"
 #include "scripting/flash/display/colorcorrection.h"
@@ -42,8 +43,16 @@
 #include "scripting/flash/display/shaderprecision.h"
 #include "scripting/flash/display/swfversion.h"
 #include "scripting/flash/display/triangleculling.h"
+#include "scripting/flash/display/Loader.h"
+#include "scripting/flash/display/LoaderInfo.h"
+#include "scripting/flash/display/MorphShape.h"
+#include "scripting/flash/display/MovieClip.h"
 #include "scripting/flash/display/NativeWindow.h"
+#include "scripting/flash/display/Shape.h"
+#include "scripting/flash/display/SimpleButton.h"
+#include "scripting/flash/display/Stage3D.h"
 
+#include "scripting/toplevel/Global.h"
 #include "scripting/class.h"
 #include "scripting/abc.h"
 

@@ -27,13 +27,16 @@
 #include "swftypes.h"
 #include "smartrefs.h"
 #include "scripting/flash/ui/keycodes.h"
+#include "scripting/flash/display/DisplayObject.h"
 #include <vector>
+#include <deque>
+
+#include <SDL2/SDL_keyboard.h>
 
 namespace lightspark
 {
 
 class SystemState;
-class DisplayObject;
 class InteractiveObject;
 class Sprite;
 class MouseEvent;
@@ -44,13 +47,20 @@ friend class Stage;
 private:
 	SystemState* m_sys;
 	EngineData* engineData;
+	SDL_Thread* t;
+	enum STATUS { CREATED=0, STARTED, TERMINATED };
+	volatile STATUS status;
 	bool terminated;
 	// this is called from mainloopthread
-	bool worker(SDL_Event *event);
+	//bool worker(SDL_Event *event);
+	static int worker(void* d);
 
+	std::deque<SDL_Event> inputEventQueue;
 	std::vector<InteractiveObject* > listeners;
 	Mutex mutexListeners;
 	Mutex mutexDragged;
+	Mutex mutexQueue;
+	Cond eventCond;
 
 	_NR<Sprite> curDragged;
 	_NR<InteractiveObject> currentMouseOver;
@@ -81,9 +91,11 @@ private:
 	bool handleKeyboardShortcuts(const SDL_KeyboardEvent *keyevent);
 	void sendKeyEvent(const SDL_KeyboardEvent *keyevent);
 
+	int handleEvent(SDL_Event* event);
 	bool handleContextMenuEvent(SDL_Event* event);
 	Mutex inputDataSpinlock;
 	Vector2 mousePos;
+	Vector2 mousePosStart;
 	bool button1pressed;
 public:
 	InputThread(SystemState* s);
@@ -108,10 +120,12 @@ public:
 		}
 		return false;
 	}
-	bool handleEvent(SDL_Event *event)
-	{
-		return worker(event);
-	}
+	
+	bool isCreated() const { return status == CREATED; }
+	bool isStarted() const { return status == STARTED; }
+	bool isTerminated() const { return status == TERMINATED; }
+	bool queueEvent(SDL_Event& event);
+
 	AS3KeyCode getLastKeyDown();
 	AS3KeyCode getLastKeyUp();
 	SDL_Keycode getLastKeyCode();
@@ -120,6 +134,8 @@ public:
 	void setLastKeyDown(KeyboardEvent* e);
 	void setLastKeyUp(KeyboardEvent* e);
 };
+
+InputThread* getInputThread();
 
 }
 #endif /* BACKENDS_INPUT_H */

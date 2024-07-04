@@ -18,15 +18,19 @@
 **************************************************************************/
 
 #include "scripting/flash/display3d/flashdisplay3d.h"
+#include "scripting/flash/display/Stage3D.h"
 #include "scripting/toplevel/Vector.h"
 #include "scripting/toplevel/Integer.h"
-#include "scripting/flash/geom/flashgeom.h"
+#include "scripting/flash/geom/Rectangle.h"
+#include "scripting/flash/geom/Matrix3D.h"
 #include "scripting/flash/display/BitmapData.h"
 #include "scripting/class.h"
 #include "scripting/argconv.h"
 #include "backends/rendering.h"
 #include "backends/rendering_context.h"
+#include "platforms/engineutils.h"
 #include "scripting/flash/display3d/agalconverter.h"
+#include "scripting/abc.h"
 
 SamplerRegister SamplerRegister::parse (uint64_t v, bool isVertexProgram)
 {
@@ -52,8 +56,6 @@ lightspark::tiny_string SamplerRegister::toGLSL ()
 	return str;
 }
 
-namespace lightspark
-{
 void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 {
 	switch (action.action)
@@ -69,8 +71,7 @@ void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 			
 			if ((action.udata2 & CLEARMASK::COLOR) != 0)
 				engineData->exec_glClearColor(action.fdata[0],action.fdata[1],action.fdata[2],action.fdata[3]);
-			if ((renderingToTexture && enableDepthAndStencilTextureBuffer)
-					|| (!renderingToTexture && enableDepthAndStencilBackbuffer))
+			if (enableDepthAndStencilTextureBuffer)
 			{
 				if ((action.udata2 & CLEARMASK::DEPTH) != 0)
 					engineData->exec_glClearDepthf(action.fdata[4]);
@@ -85,23 +86,8 @@ void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 			//action.udata1 = enableDepthAndStencil
 			//action.udata2 = backBufferWidth
 			//action.udata3 = backBufferHeight
-			enableDepthAndStencilBackbuffer = action.udata1;
-			backBufferWidth= action.udata2;
-			backBufferHeight=action.udata3;
-			if (!renderingToTexture)
-			{
-				engineData->exec_glViewport(0,0,action.udata2,action.udata3);
-				if (action.udata1)
-				{
-					engineData->exec_glEnable_GL_STENCIL_TEST();
-					engineData->exec_glEnable_GL_DEPTH_TEST();
-				}
-				else
-				{
-					engineData->exec_glDisable_GL_STENCIL_TEST();
-					engineData->exec_glDisable_GL_DEPTH_TEST();
-				}
-			}
+			configureBackBufferIntern(action.udata1,action.udata2,action.udata3,0);
+			configureBackBufferIntern(action.udata1,action.udata2,action.udata3,1);
 			break;
 		case RENDER_SETPROGRAM:
 		{
@@ -176,6 +162,8 @@ void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 				engineData->exec_glGetProgramiv_GL_LINK_STATUS(p->gpu_program,&stat);
 				if(!stat)
 				{
+					LOG(LOG_ERROR,"Vertex shader:\n" << p->vertexprogram);
+					LOG(LOG_ERROR,"Fragment shader:\n" << p->fragmentprogram);
 					LOG(LOG_INFO,"program link " << str);
 					throw RunTimeException("Could not link program");
 				}
@@ -198,10 +186,19 @@ void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 		case RENDER_RENDERTOBACKBUFFER:
 			if (renderingToTexture)
 			{
-				engineData->exec_glBindTexture_GL_TEXTURE_2D(0);
-				engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(0);
-				engineData->exec_glFrontFace(false);
-				engineData->exec_glDrawBuffer_GL_BACK();
+				if (textureframebuffer != UINT32_MAX)
+				{
+					engineData->exec_glDeleteFramebuffers(1,&textureframebuffer);
+					if (depthRenderBuffer != UINT32_MAX)
+						engineData->exec_glDeleteRenderbuffers(1,&depthRenderBuffer);
+					if (stencilRenderBuffer != UINT32_MAX)
+						engineData->exec_glDeleteRenderbuffers(1,&stencilRenderBuffer);
+					depthRenderBuffer = UINT32_MAX;
+					textureframebuffer = UINT32_MAX;
+					stencilRenderBuffer = UINT32_MAX;
+				}
+				engineData->exec_glBindTexture_GL_TEXTURE_2D(backframebufferIDcurrent);
+				engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(backframebuffer[currentactionvector]);
 				engineData->exec_glViewport(0,0,this->backBufferWidth,this->backBufferHeight);
 				if (enableDepthAndStencilBackbuffer)
 				{
@@ -213,13 +210,6 @@ void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 					engineData->exec_glDisable_GL_DEPTH_TEST();
 					engineData->exec_glDisable_GL_STENCIL_TEST();
 				}
-				if (textureframebufferID != UINT32_MAX)
-				{
-					engineData->exec_glBindTexture_GL_TEXTURE_2D(textureframebufferID);
-					engineData->exec_glGenerateMipmap_GL_TEXTURE_2D();
-					engineData->exec_glBindTexture_GL_TEXTURE_2D(0);
-					textureframebufferID = UINT32_MAX;
-				}
 			}
 			vcposdata[1] = 1.0;
 			setPositionScale(engineData);
@@ -227,26 +217,43 @@ void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 			break;
 		case RENDER_TOTEXTURE:
 		{
-			//action.udata1 = textureID
+			//action.dataobject = Texture
+			//action.udata1 = enableDepthAndStencil
 			//action.udata2 = width
 			//action.udata3 = height
-			//action.fdata[0] = enableDepthAndStencil
-			if (action.udata1 == UINT32_MAX)
-				action.udata1 = currenttextureid;
-			if (textureframebuffer == UINT32_MAX)
+			TextureBase* tex = action.dataobject->as<TextureBase>();
+			if (tex->textureID == UINT32_MAX)
+			{
+				if (tex->is<CubeTexture>())
+					loadCubeTexture(tex->as<CubeTexture>(),UINT32_MAX,UINT32_MAX);
+				else
+					loadTexture(tex,UINT32_MAX);
+			}
+			if (textureframebuffer != UINT32_MAX)
+			{
+				engineData->exec_glDeleteFramebuffers(1,&textureframebuffer);
+				if (depthRenderBuffer != UINT32_MAX)
+					engineData->exec_glDeleteRenderbuffers(1,&depthRenderBuffer);
+				if (stencilRenderBuffer != UINT32_MAX)
+					engineData->exec_glDeleteRenderbuffers(1,&stencilRenderBuffer);
+				depthRenderBuffer = UINT32_MAX;
+				textureframebuffer = UINT32_MAX;
+				stencilRenderBuffer = UINT32_MAX;
+			}
+			else
 				textureframebuffer = engineData->exec_glGenFramebuffer();
 			engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(textureframebuffer);
-			textureframebufferID = action.udata1;
+			uint32_t textureframebufferID = tex->textureID;
 			engineData->exec_glBindTexture_GL_TEXTURE_2D(textureframebufferID);
 			engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MIN_FILTER_GL_NEAREST();
 			engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MAG_FILTER_GL_NEAREST();
 			engineData->exec_glFramebufferTexture2D_GL_FRAMEBUFFER(textureframebufferID);
+			engineData->exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_BYTE(0, action.udata2, action.udata3, 0, nullptr,true);
 			engineData->exec_glBindTexture_GL_TEXTURE_2D(0);
-			enableDepthAndStencilTextureBuffer = action.fdata[0];
+			enableDepthAndStencilTextureBuffer = action.udata1;
 			if (enableDepthAndStencilTextureBuffer)
 			{
-				if (depthRenderBuffer == UINT32_MAX)
-					depthRenderBuffer = engineData->exec_glGenRenderbuffer();
+				depthRenderBuffer = engineData->exec_glGenRenderbuffer();
 				
 				if (engineData->supportPackedDepthStencil)
 				{
@@ -256,8 +263,7 @@ void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 				}
 				else
 				{
-					if (stencilRenderBuffer == UINT32_MAX)
-						stencilRenderBuffer = engineData->exec_glGenRenderbuffer();
+					stencilRenderBuffer = engineData->exec_glGenRenderbuffer();
 					engineData->exec_glBindRenderbuffer(depthRenderBuffer);
 					engineData->exec_glRenderbufferStorage_GL_RENDERBUFFER_GL_DEPTH_COMPONENT16(action.udata2,action.udata3);
 					engineData->exec_glBindRenderbuffer(stencilRenderBuffer);
@@ -316,6 +322,7 @@ void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 		}
 		case RENDER_DRAWTRIANGLES:
 		{
+			//action.dataobject = IndexBuffer3D
 			//action.udata1 = firstIndex
 			//action.udata2 = numTriangles
 			//action.udata3 = bufferID
@@ -435,7 +442,6 @@ void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 		}
 		case RENDER_SETTEXTUREAT:
 		{
-			//action.dataobject = TextureBase
 			//action.udata1 = sampler
 			//action.udata2 = textureID
 			//action.udata3 = removetexture
@@ -466,24 +472,27 @@ void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 			//action.udata1 = depthMask ? 1:0
 			//action.udata2 = passCompareMode
 			engineData->exec_glDepthMask(action.udata1);
-			engineData->exec_glDepthFunc((DEPTH_FUNCTION)action.udata2);
+			engineData->exec_glDepthFunc((DEPTHSTENCIL_FUNCTION)action.udata2);
+			currentdepthfunction = (DEPTHSTENCIL_FUNCTION)action.udata2;
 			break;
 		}
 		case RENDER_SETCULLING:
 		{
 			//action.udata1 = mode
 			engineData->exec_glCullFace((TRIANGLE_FACE)action.udata1);
+			currentcullface=(TRIANGLE_FACE)action.udata1;
 			break;
 		}
 		case RENDER_GENERATETEXTURE:
 			//action.dataobject = TextureBase
+			//action.udata1 = set as current texture for rendering
 			if (!action.dataobject.isNull())
 			{
 				TextureBase* tex = action.dataobject->as<TextureBase>();
 				if (tex->textureID == UINT32_MAX)
 				{
 					if (tex->is<CubeTexture>())
-						loadCubeTexture(tex->as<CubeTexture>());
+						loadCubeTexture(tex->as<CubeTexture>(),UINT32_MAX,UINT32_MAX);
 					else
 						loadTexture(tex,UINT32_MAX);
 				}
@@ -496,7 +505,10 @@ void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 			loadTexture(action.dataobject->as<TextureBase>(),action.udata1);
 			break;
 		case RENDER_LOADCUBETEXTURE:
-			loadCubeTexture(action.dataobject->as<CubeTexture>());
+			//action.dataobject = CubeTexture
+			//action.udata1 = miplevel
+			//action.udata2 = side
+			loadCubeTexture(action.dataobject->as<CubeTexture>(),action.udata1,action.udata2);
 			break;
 		case RENDER_SETSCISSORRECTANGLE:
 			// action.udata1 = 0 => scissoring is disabled
@@ -549,10 +561,24 @@ void Context3D::handleRenderAction(EngineData* engineData, renderaction& action)
 			break;
 		}
 		case RENDER_DELETEVERTEXBUFFER:
+		{
 			//action.dataobject = VertexBuffer3D
 			VertexBuffer3D* buffer = action.dataobject->as<VertexBuffer3D>();
 			if (buffer && buffer->bufferID != UINT32_MAX)
 				engineData->exec_glDeleteBuffers(1,&buffer->bufferID);
+			break;
+		}
+		case RENDER_SETSTENCILREFERENCEVALUE:
+			//action.udata1 = referenceValue | readMask | writeMask;
+			//action.udata2 = currentstencilfunction;
+			engineData->exec_glStencilMask(action.udata1&0xff);
+			engineData->exec_glStencilFunc(DEPTHSTENCIL_FUNCTION(action.udata2),(action.udata1>>16)&0xff,(action.udata1>>8)&0xff);
+			break;
+		case RENDER_SETSTENCILACTIONS:
+			//action.udata1 = face;
+			//action.udata2 = func;
+			//action.udata3 = (pass<<16)|(depthfail<<8)|depthpassstencilfail;
+			engineData->exec_glStencilOpSeparate(TRIANGLE_FACE(action.udata1), DEPTHSTENCIL_OP(action.udata3&0xff), DEPTHSTENCIL_OP((action.udata3>>8)&0xff), DEPTHSTENCIL_OP((action.udata3>>16)&0xff));
 			break;
 	}
 }
@@ -666,9 +692,10 @@ void Context3D::setSamplers(EngineData *engineData)
 		{
 			currentprogram->samplerState[i].program_sampler_id = sampid;
 			engineData->exec_glActiveTexture_GL_TEXTURE0(currentprogram->samplerState[i].n);
-			engineData->exec_glBindTexture_GL_TEXTURE_2D(samplers[currentprogram->samplerState[i].n]);
-			if (currentprogram->samplerState[i].m) // mipmaps
-				engineData->exec_glGenerateMipmap_GL_TEXTURE_2D();
+			if (currentprogram->samplerState[i].d)
+				engineData->exec_glBindTexture_GL_TEXTURE_CUBE_MAP(samplers[currentprogram->samplerState[i].n]);
+			else
+				engineData->exec_glBindTexture_GL_TEXTURE_2D(samplers[currentprogram->samplerState[i].n]);
 			engineData->exec_glSetTexParameters(currentprogram->samplerState[i].b,currentprogram->samplerState[i].d,currentprogram->samplerState[i].f,currentprogram->samplerState[i].m,currentprogram->samplerState[i].w);
 			engineData->exec_glUniform1i(sampid, currentprogram->samplerState[i].n);
 		}
@@ -689,6 +716,18 @@ void Context3D::setPositionScale(EngineData *engineData)
 
 void Context3D::disposeintern()
 {
+	Locker l(rendermutex);
+	RenderThread* r = getSystemState()->getRenderThread();
+	if (r)
+	{
+		if (this->backframebufferID[0] != UINT32_MAX)
+			r->addDeletedTexture(this->backframebufferID[0]);
+		if (this->backframebufferID[1] != UINT32_MAX)
+			r->addDeletedTexture(this->backframebufferID[1]);
+	}
+	this->backframebufferID[0] = UINT32_MAX;
+	this->backframebufferID[1] = UINT32_MAX;
+	
 	while (!programlist.empty())
 	{
 		auto it = programlist.begin();
@@ -718,6 +757,18 @@ void Context3D::disposeintern()
 bool Context3D::renderImpl(RenderContext &ctxt)
 {
 	Locker l(rendermutex);
+	auto it = texturestoupload.begin();
+	while (it != texturestoupload.end())
+	{
+		TextureBase* tex = (*it++).getPtr();
+		if (tex->is<CubeTexture>())
+			loadCubeTexture(tex->as<CubeTexture>(),UINT32_MAX,UINT32_MAX);
+		else
+			loadTexture(tex,UINT32_MAX);
+		tex->incRef();
+		getVm(tex->getSystemState())->addEvent(_MR(tex), _MR(Class<Event>::getInstanceS(tex->getInstanceWorker(),"textureReady")));
+	}
+	texturestoupload.clear();
 	if (!swapbuffers || actions[1-currentactionvector].size() == 0)
 	{
 		swapbuffers = false;
@@ -726,6 +777,12 @@ bool Context3D::renderImpl(RenderContext &ctxt)
 	EngineData* engineData = getSystemState()->getEngineData();
 
 	// set state to default values
+	if (this->backBufferWidth && this->backBufferHeight)
+	{
+		engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(backframebuffer[currentactionvector]);
+		engineData->exec_glFramebufferTexture2D_GL_FRAMEBUFFER(backframebufferID[currentactionvector]);
+	 	engineData->exec_glViewport(0,0,this->backBufferWidth,this->backBufferHeight);
+	}
 	if (currentprogram)
 		engineData->exec_glUseProgram(currentprogram->gpu_program);
 	if (enableDepthAndStencilBackbuffer)
@@ -739,8 +796,9 @@ bool Context3D::renderImpl(RenderContext &ctxt)
 		engineData->exec_glDisable_GL_STENCIL_TEST();
 	}
 	engineData->exec_glDepthMask(true);
-	engineData->exec_glDepthFunc(LESS);
-	engineData->exec_glCullFace(FACE_NONE);
+	engineData->exec_glDepthFunc(currentdepthfunction);
+	engineData->exec_glStencilFunc(currentstencilfunction, currentstencilref, currentstencilmask);
+	engineData->exec_glCullFace(currentcullface);
 	engineData->exec_glBlendFunc(BLEND_ONE,BLEND_ZERO);
 	engineData->exec_glColorMask(true,true,true,true);
 
@@ -752,6 +810,10 @@ bool Context3D::renderImpl(RenderContext &ctxt)
 	}
 
 	// cleanup for stage rendering
+	engineData->exec_glClearDepthf(1.0);
+	engineData->exec_glClearStencil(0);
+	engineData->exec_glStencilMask(0xff);
+	engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(0);
 	engineData->exec_glDisable_GL_DEPTH_TEST();
 	engineData->exec_glCullFace(FACE_NONE);
 	engineData->exec_glBindBuffer_GL_ELEMENT_ARRAY_BUFFER(0);
@@ -759,28 +821,26 @@ bool Context3D::renderImpl(RenderContext &ctxt)
 	engineData->exec_glUseProgram(0);
 	if (renderingToTexture)
 	{
-		engineData->exec_glBindTexture_GL_TEXTURE_2D(textureframebufferID);
-		engineData->exec_glGenerateMipmap_GL_TEXTURE_2D();
-		engineData->exec_glBindTexture_GL_TEXTURE_2D(0);
-		textureframebufferID = UINT32_MAX;
+		if (textureframebuffer != UINT32_MAX)
+		{
+			engineData->exec_glDeleteFramebuffers(1,&textureframebuffer);
+			if (depthRenderBuffer != UINT32_MAX)
+				engineData->exec_glDeleteRenderbuffers(1,&depthRenderBuffer);
+			if (stencilRenderBuffer != UINT32_MAX)
+				engineData->exec_glDeleteRenderbuffers(1,&stencilRenderBuffer);
+			depthRenderBuffer = UINT32_MAX;
+			textureframebuffer = UINT32_MAX;
+			stencilRenderBuffer = UINT32_MAX;
+		}
 		engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(0);
 		engineData->exec_glFrontFace(false);
 		engineData->exec_glDrawBuffer_GL_BACK();
-		engineData->exec_glViewport(0,0,this->backBufferWidth,this->backBufferHeight);
-		if (enableDepthAndStencilBackbuffer)
-		{
-			engineData->exec_glEnable_GL_DEPTH_TEST();
-			engineData->exec_glEnable_GL_STENCIL_TEST();
-		}
-		else
-		{
-			engineData->exec_glDisable_GL_DEPTH_TEST();
-			engineData->exec_glDisable_GL_STENCIL_TEST();
-		}
+		engineData->exec_glDisable_GL_DEPTH_TEST();
+		engineData->exec_glDisable_GL_STENCIL_TEST();
 		renderingToTexture = false;
 	}
-	((GLRenderContext&)ctxt).handleGLErrors();
 	actions[1-currentactionvector].clear();
+	backframebufferIDcurrent=backframebufferID[currentactionvector];
 	swapbuffers = false;
 	return true;
 }
@@ -795,29 +855,27 @@ void Context3D::loadTexture(TextureBase *tex, uint32_t level)
 	engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MIN_FILTER_GL_LINEAR();
 	engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MAG_FILTER_GL_LINEAR();
 	if (newtex && tex->bitmaparray.size() == 0)
-		engineData->exec_glTexImage2D_GL_TEXTURE_2D(0, tex->width, tex->height, 0, nullptr,TEXTUREFORMAT::BGRA,TEXTUREFORMAT_COMPRESSED::UNCOMPRESSED,0);
+		engineData->exec_glTexImage2D_GL_TEXTURE_2D(0, tex->width, tex->height, 0, nullptr,tex->format,tex->compressedformat,0,false);
 	else if (level == UINT32_MAX)
 	{
-		for (uint32_t i = 0; i < tex->bitmaparray.size(); i++)
+		for (uint32_t i = 0; i <= tex->maxmiplevel && i < tex->bitmaparray.size(); i++)
 		{
 			if (tex->bitmaparray[i].size() > 0)
-			{
-				engineData->exec_glTexImage2D_GL_TEXTURE_2D(i, tex->width>>i, tex->height>>i, 0, tex->bitmaparray[i].data(),tex->format,tex->compressedformat,tex->bitmaparray[i].size());
-				tex->bitmaparray[i].clear();
-			}
+				engineData->exec_glTexImage2D_GL_TEXTURE_2D(i, max(tex->width>>i,1U), max(tex->height>>i,1U), 0, tex->bitmaparray[i].data(),tex->format,tex->compressedformat,tex->bitmaparray[i].size(),false);
 		}
+		for (uint32_t i = 0; i < tex->bitmaparray.size(); i++)
+			tex->bitmaparray[i].clear();
 	}
 	else 
 	{
-		if (tex->bitmaparray.size() > level && tex->bitmaparray[level].size() > 0)
+		if (tex->maxmiplevel >= level && tex->bitmaparray.size() > level && tex->bitmaparray[level].size() > 0)
 		{
-			engineData->exec_glTexImage2D_GL_TEXTURE_2D(level, tex->width>>level, tex->height>>level, 0, tex->bitmaparray[level].data(),tex->format,tex->compressedformat,tex->bitmaparray[level].size());
+			engineData->exec_glTexImage2D_GL_TEXTURE_2D(level, tex->width>>level, tex->height>>level, 0, tex->bitmaparray[level].data(),tex->format,tex->compressedformat,tex->bitmaparray[level].size(),false);
 			tex->bitmaparray[level].clear();
 		}
 	}
-	engineData->exec_glBindTexture_GL_TEXTURE_2D(0);
 }
-void Context3D::loadCubeTexture(CubeTexture *tex)
+void Context3D::loadCubeTexture(CubeTexture *tex, uint32_t miplevel, uint32_t side)
 {
 	EngineData* engineData = getSystemState()->getEngineData();
 	if (tex->textureID == UINT32_MAX)
@@ -827,38 +885,125 @@ void Context3D::loadCubeTexture(CubeTexture *tex)
 	engineData->exec_glTexParameteri_GL_TEXTURE_CUBE_MAP_GL_TEXTURE_MAG_FILTER_GL_LINEAR();
 	if (tex->bitmaparray.size() == 0)
 	{
-		engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(0,0, tex->width, tex->height, 0, nullptr);
-		engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(1,0, tex->width, tex->height, 0, nullptr);
-		engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(2,0, tex->width, tex->height, 0, nullptr);
-		engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(3,0, tex->width, tex->height, 0, nullptr);
-		engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(4,0, tex->width, tex->height, 0, nullptr);
-		engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(5,0, tex->width, tex->height, 0, nullptr);
+		engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(0,0, tex->width, tex->height, 0, nullptr,tex->format,tex->compressedformat,0);
+		engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(1,0, tex->width, tex->height, 0, nullptr,tex->format,tex->compressedformat,0);
+		engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(2,0, tex->width, tex->height, 0, nullptr,tex->format,tex->compressedformat,0);
+		engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(3,0, tex->width, tex->height, 0, nullptr,tex->format,tex->compressedformat,0);
+		engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(4,0, tex->width, tex->height, 0, nullptr,tex->format,tex->compressedformat,0);
+		engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(5,0, tex->width, tex->height, 0, nullptr,tex->format,tex->compressedformat,0);
 	}
 	else
 	{
-		uint32_t side = 0;
-		for (uint32_t i = 0; i < tex->bitmaparray.size(); i++)
+		if (side == UINT32_MAX)
 		{
-			if (i % tex->max_miplevel == 1) // next side
-				side++;
+			assert(miplevel==UINT32_MAX);
+			// fill all sides and miplevels
+			uint32_t side = 0;
+			for (uint32_t i = 0; i < tex->bitmaparray.size(); i++)
+			{
+				side=(i/tex->max_miplevel)%6;
+				uint32_t level = i%tex->max_miplevel;
+				if (tex->bitmaparray[i].size() > 0)
+					engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(side,level, tex->width>>level, tex->height>>level, 0, tex->bitmaparray[i].data(),tex->format,tex->compressedformat,tex->bitmaparray[i].size());
+				else
+					engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(side,level, tex->width>>level, tex->height>>level, 0, nullptr,tex->format,tex->compressedformat,0);
+			}
+		}
+		else
+		{
+			uint32_t level = miplevel;
+			uint32_t i = tex->max_miplevel*side+miplevel;
 			if (tex->bitmaparray[i].size() > 0)
-				engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(side,i, tex->width>>i, tex->height>>i, 0, tex->bitmaparray[i].data());
+				engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(side,level, tex->width>>level, tex->height>>level, 0, tex->bitmaparray[i].data(),tex->format,tex->compressedformat,tex->bitmaparray[i].size());
 			else
-				engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(side,i, tex->width>>i, tex->height>>i, 0, nullptr);
+				engineData->exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(side,level, tex->width>>level, tex->height>>level, 0, nullptr,tex->format,tex->compressedformat,0);
 		}
 	}
 	engineData->exec_glBindTexture_GL_TEXTURE_2D(0);
 }
 
+void Context3D::init(Stage3D* s)
+{
+	stage3D = s;
+	EngineData* engineData = getSystemState()->getEngineData();
+	driverInfo = engineData->driverInfoString;
+	maxBackBufferWidth = engineData->maxTextureSize;;
+	maxBackBufferHeight = engineData->maxTextureSize;;
+	
+	stage3D->incRef();
+	getVm(getSystemState())->addEvent(_MR(stage3D),_MR(Class<Event>::getInstanceS(getInstanceWorker(),"context3DCreate")));
+}
+
+void Context3D::configureBackBufferIntern(bool enableDepthAndStencil, uint32_t width, uint32_t height, int index)
+{
+	backBufferWidth=width;
+	backBufferHeight=height;
+	EngineData* engineData = getSystemState()->getEngineData();
+	if (backframebuffer[index] == UINT32_MAX)
+		backframebuffer[index] = engineData->exec_glGenFramebuffer();
+	engineData->exec_glBindFramebuffer_GL_FRAMEBUFFER(backframebuffer[index]);
+	if (backframebufferID[index] == UINT32_MAX)
+		engineData->exec_glGenTextures(1,&backframebufferID[index]);
+
+	engineData->exec_glBindTexture_GL_TEXTURE_2D(backframebufferID[index]);
+	engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MIN_FILTER_GL_NEAREST();
+	engineData->exec_glTexParameteri_GL_TEXTURE_2D_GL_TEXTURE_MAG_FILTER_GL_NEAREST();
+	engineData->exec_glFramebufferTexture2D_GL_FRAMEBUFFER(backframebufferID[index]);
+	engineData->exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_BYTE(0, width, height, 0, nullptr,true);
+	engineData->exec_glBindTexture_GL_TEXTURE_2D(0);
+	if (enableDepthAndStencil)
+	{
+		if (backDepthRenderBuffer[index] == UINT32_MAX)
+			backDepthRenderBuffer[index] = engineData->exec_glGenRenderbuffer();
+		
+		if (engineData->supportPackedDepthStencil)
+		{
+			engineData->exec_glBindRenderbuffer(backDepthRenderBuffer[index]);
+			engineData->exec_glRenderbufferStorage_GL_RENDERBUFFER_GL_DEPTH_STENCIL(width,height);
+			engineData->exec_glFramebufferRenderbuffer_GL_FRAMEBUFFER_GL_DEPTH_STENCIL_ATTACHMENT(backDepthRenderBuffer[index]);
+			engineData->exec_glBindRenderbuffer(0);
+		}
+		else
+		{
+			engineData->exec_glBindRenderbuffer(backDepthRenderBuffer[index]);
+			engineData->exec_glRenderbufferStorage_GL_RENDERBUFFER_GL_DEPTH_COMPONENT16(width,height);
+			engineData->exec_glFramebufferRenderbuffer_GL_FRAMEBUFFER_GL_DEPTH_ATTACHMENT(backDepthRenderBuffer[index]);
+			engineData->exec_glRenderbufferStorage_GL_RENDERBUFFER_GL_STENCIL_INDEX8(width,height);
+			engineData->exec_glBindRenderbuffer(0);
+			engineData->exec_glFramebufferRenderbuffer_GL_FRAMEBUFFER_GL_STENCIL_ATTACHMENT(backStencilRenderBuffer[index]);
+		}
+		engineData->exec_glEnable_GL_DEPTH_TEST();
+		engineData->exec_glEnable_GL_STENCIL_TEST();
+	}
+	else
+	{
+		engineData->exec_glDisable_GL_DEPTH_TEST();
+		engineData->exec_glDisable_GL_STENCIL_TEST();
+	}
+	engineData->exec_glViewport(0,0,width,height);
+	engineData->exec_glBindTexture_GL_TEXTURE_2D(0);
+}
+
 Context3D::Context3D(ASWorker* wrk, Class_base *c):EventDispatcher(wrk,c),samplers{UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX},currentactionvector(0)
-  ,textureframebuffer(UINT32_MAX),textureframebufferID(UINT32_MAX),depthRenderBuffer(UINT32_MAX),stencilRenderBuffer(UINT32_MAX),currentprogram(nullptr),currenttextureid(UINT32_MAX)
-  ,renderingToTexture(false),enableDepthAndStencilBackbuffer(true),enableDepthAndStencilTextureBuffer(true),swapbuffers(false),backBufferHeight(0),backBufferWidth(0),enableErrorChecking(false)
+  ,textureframebuffer(UINT32_MAX),depthRenderBuffer(UINT32_MAX),stencilRenderBuffer(UINT32_MAX),currentprogram(nullptr),currenttextureid(UINT32_MAX)
+  ,renderingToTexture(false),enableDepthAndStencilBackbuffer(true),enableDepthAndStencilTextureBuffer(true),swapbuffers(false)
+  ,currentcullface(TRIANGLE_FACE::FACE_NONE),currentdepthfunction(DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_LESS)
+  ,currentstencilfunction(DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_ALWAYS), currentstencilref(0xff), currentstencilmask(0xff)
+  ,stage3D(nullptr),backBufferHeight(0),backBufferWidth(0),enableErrorChecking(false)
   ,maxBackBufferHeight(16384),maxBackBufferWidth(16384)
 {
 	subtype = SUBTYPE_CONTEXT3D;
 	memset(vertexConstants,0,4 * CONTEXT3D_PROGRAM_REGISTERS * sizeof(float));
 	memset(fragmentConstants,0,4 * CONTEXT3D_PROGRAM_REGISTERS * sizeof(float));
 	driverInfo = "Disposed";
+	backframebufferID[0]=UINT32_MAX;
+	backframebufferID[1]=UINT32_MAX;
+	backframebuffer[0]=UINT32_MAX;
+	backframebuffer[1]=UINT32_MAX;
+	backDepthRenderBuffer[0]=UINT32_MAX;
+	backDepthRenderBuffer[1]=UINT32_MAX;
+	backStencilRenderBuffer[0]=UINT32_MAX;
+	backStencilRenderBuffer[1]=UINT32_MAX;
 }
 
 void Context3D::addAction(RENDER_ACTION type, ASObject *dataobject)
@@ -892,37 +1037,37 @@ void Context3D::sinit(lightspark::Class_base *c)
 	REGISTER_GETTER_SETTER_RESULTTYPE(c,enableErrorChecking,Boolean);
 	REGISTER_GETTER_SETTER_RESULTTYPE(c,maxBackBufferHeight,Integer);
 	REGISTER_GETTER_SETTER_RESULTTYPE(c,maxBackBufferWidth,Integer);
-	REGISTER_GETTER_RESULTTYPE(c,profile,ASString);
-	c->setDeclaredMethodByQName("supportsVideoTexture","",Class<IFunction>::getFunction(c->getSystemState(),supportsVideoTexture,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("dispose","",Class<IFunction>::getFunction(c->getSystemState(),dispose),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("configureBackBuffer","",Class<IFunction>::getFunction(c->getSystemState(),configureBackBuffer),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("createIndexBuffer","",Class<IFunction>::getFunction(c->getSystemState(),createIndexBuffer,1,Class<IndexBuffer3D>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("createProgram","",Class<IFunction>::getFunction(c->getSystemState(),createProgram,0,Class<Program3D>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("createCubeTexture","",Class<IFunction>::getFunction(c->getSystemState(),createCubeTexture,3,Class<CubeTexture>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("createTexture","",Class<IFunction>::getFunction(c->getSystemState(),createTexture,4,Class<Texture>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("createRectangleTexture","",Class<IFunction>::getFunction(c->getSystemState(),createRectangleTexture),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("createVertexBuffer","",Class<IFunction>::getFunction(c->getSystemState(),createVertexBuffer,2,Class<VertexBuffer3D>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("createVideoTexture","",Class<IFunction>::getFunction(c->getSystemState(),createVideoTexture,0,Class<VideoTexture>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("clear","",Class<IFunction>::getFunction(c->getSystemState(),clear),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("drawToBitmapData","",Class<IFunction>::getFunction(c->getSystemState(),drawToBitmapData),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("drawTriangles","",Class<IFunction>::getFunction(c->getSystemState(),drawTriangles),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setBlendFactors","",Class<IFunction>::getFunction(c->getSystemState(),setBlendFactors),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setColorMask","",Class<IFunction>::getFunction(c->getSystemState(),setColorMask),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setCulling","",Class<IFunction>::getFunction(c->getSystemState(),setCulling),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setDepthTest","",Class<IFunction>::getFunction(c->getSystemState(),setDepthTest),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setProgram","",Class<IFunction>::getFunction(c->getSystemState(),setProgram),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setProgramConstantsFromByteArray","",Class<IFunction>::getFunction(c->getSystemState(),setProgramConstantsFromByteArray),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setProgramConstantsFromMatrix","",Class<IFunction>::getFunction(c->getSystemState(),setProgramConstantsFromMatrix),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setProgramConstantsFromVector","",Class<IFunction>::getFunction(c->getSystemState(),setProgramConstantsFromVector),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setRenderToBackBuffer","",Class<IFunction>::getFunction(c->getSystemState(),setRenderToBackBuffer),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setRenderToTexture","",Class<IFunction>::getFunction(c->getSystemState(),setRenderToTexture),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setSamplerStateAt","",Class<IFunction>::getFunction(c->getSystemState(),setSamplerStateAt),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setScissorRectangle","",Class<IFunction>::getFunction(c->getSystemState(),setScissorRectangle),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("present","",Class<IFunction>::getFunction(c->getSystemState(),present),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setStencilActions","",Class<IFunction>::getFunction(c->getSystemState(),setStencilActions),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setStencilReferenceValue","",Class<IFunction>::getFunction(c->getSystemState(),setStencilReferenceValue),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setTextureAt","",Class<IFunction>::getFunction(c->getSystemState(),setTextureAt),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setVertexBufferAt","",Class<IFunction>::getFunction(c->getSystemState(),setVertexBufferAt),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("profile","",c->getSystemState()->getBuiltinFunction(getProfile,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("supportsVideoTexture","",c->getSystemState()->getBuiltinFunction(supportsVideoTexture,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("dispose","",c->getSystemState()->getBuiltinFunction(dispose),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("configureBackBuffer","",c->getSystemState()->getBuiltinFunction(configureBackBuffer),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("createIndexBuffer","",c->getSystemState()->getBuiltinFunction(createIndexBuffer,1,Class<IndexBuffer3D>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("createProgram","",c->getSystemState()->getBuiltinFunction(createProgram,0,Class<Program3D>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("createCubeTexture","",c->getSystemState()->getBuiltinFunction(createCubeTexture,3,Class<CubeTexture>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("createTexture","",c->getSystemState()->getBuiltinFunction(createTexture,4,Class<Texture>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("createRectangleTexture","",c->getSystemState()->getBuiltinFunction(createRectangleTexture,4,Class<RectangleTexture>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("createVertexBuffer","",c->getSystemState()->getBuiltinFunction(createVertexBuffer,2,Class<VertexBuffer3D>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("createVideoTexture","",c->getSystemState()->getBuiltinFunction(createVideoTexture,0,Class<VideoTexture>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("clear","",c->getSystemState()->getBuiltinFunction(clear),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("drawToBitmapData","",c->getSystemState()->getBuiltinFunction(drawToBitmapData),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("drawTriangles","",c->getSystemState()->getBuiltinFunction(drawTriangles),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setBlendFactors","",c->getSystemState()->getBuiltinFunction(setBlendFactors),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setColorMask","",c->getSystemState()->getBuiltinFunction(setColorMask),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setCulling","",c->getSystemState()->getBuiltinFunction(setCulling),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setDepthTest","",c->getSystemState()->getBuiltinFunction(setDepthTest),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setProgram","",c->getSystemState()->getBuiltinFunction(setProgram),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setProgramConstantsFromByteArray","",c->getSystemState()->getBuiltinFunction(setProgramConstantsFromByteArray),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setProgramConstantsFromMatrix","",c->getSystemState()->getBuiltinFunction(setProgramConstantsFromMatrix),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setProgramConstantsFromVector","",c->getSystemState()->getBuiltinFunction(setProgramConstantsFromVector),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setRenderToBackBuffer","",c->getSystemState()->getBuiltinFunction(setRenderToBackBuffer),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setRenderToTexture","",c->getSystemState()->getBuiltinFunction(setRenderToTexture),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setSamplerStateAt","",c->getSystemState()->getBuiltinFunction(setSamplerStateAt),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setScissorRectangle","",c->getSystemState()->getBuiltinFunction(setScissorRectangle),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("present","",c->getSystemState()->getBuiltinFunction(present),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setStencilActions","",c->getSystemState()->getBuiltinFunction(setStencilActions),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setStencilReferenceValue","",c->getSystemState()->getBuiltinFunction(setStencilReferenceValue),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setTextureAt","",c->getSystemState()->getBuiltinFunction(setTextureAt),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setVertexBufferAt","",c->getSystemState()->getBuiltinFunction(setVertexBufferAt),NORMAL_METHOD,true);
 }
 
 bool Context3D::destruct()
@@ -958,25 +1103,48 @@ void Context3D::prepareShutdown()
 	if (this->preparedforshutdown)
 		return;
 	EventDispatcher::prepareShutdown();
-	for (auto it = programlist.begin(); it != programlist.end(); it++)
-		(*it)->prepareShutdown();
-	for (auto it = texturelist.begin(); it != texturelist.end(); it++)
-		(*it)->prepareShutdown();
-	for (auto it = indexbufferlist.begin(); it != indexbufferlist.end(); it++)
-		(*it)->prepareShutdown();
-	for (auto it = vectorbufferlist.begin(); it != vectorbufferlist.end(); it++)
-		(*it)->prepareShutdown();
+	for (auto it = programlist.begin(); it != programlist.end();)
+	{
+		ASObject* o = (*it);
+		it = programlist.erase(it);
+		o->prepareShutdown();
+		o->removeStoredMember();
+	}
+	for (auto it = texturelist.begin(); it != texturelist.end();)
+	{
+		ASObject* o = (*it);
+		it = texturelist.erase(it);
+		o->prepareShutdown();
+		o->removeStoredMember();
+	}
+	for (auto it = indexbufferlist.begin(); it != indexbufferlist.end();)
+	{
+		ASObject* o = (*it);
+		it = indexbufferlist.erase(it);
+		o->prepareShutdown();
+		o->removeStoredMember();
+	}
+	for (auto it = vectorbufferlist.begin(); it != vectorbufferlist.end();)
+	{
+		ASObject* o = (*it);
+		it = vectorbufferlist.erase(it);
+		o->prepareShutdown();
+		o->removeStoredMember();
+	}
 }
 
 
-ASFUNCTIONBODY_GETTER_NOT_IMPLEMENTED(Context3D,backBufferHeight)
-ASFUNCTIONBODY_GETTER_NOT_IMPLEMENTED(Context3D,backBufferWidth)
+ASFUNCTIONBODY_GETTER(Context3D,backBufferHeight)
+ASFUNCTIONBODY_GETTER(Context3D,backBufferWidth)
 ASFUNCTIONBODY_GETTER(Context3D,driverInfo)
 ASFUNCTIONBODY_GETTER_SETTER(Context3D,enableErrorChecking)
-ASFUNCTIONBODY_GETTER_SETTER_NOT_IMPLEMENTED(Context3D,maxBackBufferHeight)
-ASFUNCTIONBODY_GETTER_SETTER_NOT_IMPLEMENTED(Context3D,maxBackBufferWidth)
-ASFUNCTIONBODY_GETTER_NOT_IMPLEMENTED(Context3D,profile)
+ASFUNCTIONBODY_GETTER_SETTER(Context3D,maxBackBufferHeight)
+ASFUNCTIONBODY_GETTER_SETTER(Context3D,maxBackBufferWidth)
 
+ASFUNCTIONBODY_ATOM(Context3D,getProfile)
+{
+	ret = asAtomHandler::fromStringID(wrk->getSystemState()->getEngineData()->context3dProfile);
+}
 ASFUNCTIONBODY_ATOM(Context3D,supportsVideoTexture)
 {
 	LOG(LOG_NOT_IMPLEMENTED,"Context3D.supportsVideoTexture");
@@ -1166,7 +1334,6 @@ ASFUNCTIONBODY_ATOM(Context3D,drawTriangles)
 	{
 		// IndexBuffer3D was created during this loop, so it doesn't have a bufferID yet
 		th->rendermutex.lock();
-		indexBuffer->incRef();
 		action.dataobject = indexBuffer;
 		th->actions[th->currentactionvector].push_back(action);
 		th->rendermutex.unlock();
@@ -1286,21 +1453,21 @@ ASFUNCTIONBODY_ATOM(Context3D,setDepthTest)
 	action.action = RENDER_ACTION::RENDER_SETDEPTHTEST;
 	action.udata1= depthMask ? 1:0;
 	if (passCompareMode =="always")
-		action.udata2 = DEPTH_FUNCTION::ALWAYS;
+		action.udata2 = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_ALWAYS;
 	else if (passCompareMode =="equal")
-		action.udata2 = DEPTH_FUNCTION::EQUAL;
+		action.udata2 = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_EQUAL;
 	else if (passCompareMode =="greater")
-		action.udata2 = DEPTH_FUNCTION::GREATER;
+		action.udata2 = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_GREATER;
 	else if (passCompareMode =="greaterEqual")
-		action.udata2 = DEPTH_FUNCTION::GREATER_EQUAL;
+		action.udata2 = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_GREATER_EQUAL;
 	else if (passCompareMode =="less")
-		action.udata2 = DEPTH_FUNCTION::LESS;
+		action.udata2 = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_LESS;
 	else if (passCompareMode =="lessEqual")
-		action.udata2 = DEPTH_FUNCTION::LESS_EQUAL;
+		action.udata2 = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_LESS_EQUAL;
 	else if (passCompareMode =="never")
-		action.udata2 = DEPTH_FUNCTION::NEVER;
+		action.udata2 = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_NEVER;
 	else if (passCompareMode =="notEqual")
-		action.udata2 = DEPTH_FUNCTION::NOT_EQUAL;
+		action.udata2 = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_NOT_EQUAL;
 	else
 	{
 		createError<ArgumentError>(wrk,kInvalidArgumentError,"passCompareMode");
@@ -1442,16 +1609,12 @@ ASFUNCTIONBODY_ATOM(Context3D,setRenderToTexture)
 	if (antiAlias!=0 || surfaceSelector!=0 || colorOutputIndex!=0)
 		LOG(LOG_NOT_IMPLEMENTED,"Context3D.setRenderToTexture ignores parameters antiAlias, surfaceSelector, colorOutput");
 	th->rendermutex.lock();
-	if (tex->textureID == UINT32_MAX)
-	{
-		th->addAction(RENDER_ACTION::RENDER_GENERATETEXTURE,tex.getPtr());
-	}
 	renderaction action;
 	action.action = RENDER_ACTION::RENDER_TOTEXTURE;
-	action.udata1 = tex->textureID;
+	action.dataobject = tex;
+	action.udata1 = enableDepthAndStencil ? 1 : 0;
 	action.udata2 = tex->width;
 	action.udata3 = tex->height;
-	action.fdata[0] = enableDepthAndStencil ? 1 : 0;
 	th->addAction(action);
 	th->rendermutex.unlock();
 }
@@ -1516,7 +1679,7 @@ ASFUNCTIONBODY_ATOM(Context3D,present)
 	Locker l(th->rendermutex);
 	if (th->swapbuffers)
 	{
-		if (wrk->getSystemState()->getRenderThread()->isStarted())
+		if (wrk->getSystemState()->getRenderThread()->isStarted() && !th->actions[th->currentactionvector].empty())
 			LOG(LOG_ERROR,"last frame has not been rendered yet, skipping frame:"<<th->actions[1-th->currentactionvector].size());
 		th->actions[th->currentactionvector].clear();
 	}
@@ -1525,26 +1688,148 @@ ASFUNCTIONBODY_ATOM(Context3D,present)
 		th->swapbuffers = true;
 		th->currentactionvector=1-th->currentactionvector;
 		if (wrk->getSystemState()->getRenderThread()->isStarted())
-			wrk->getSystemState()->getRenderThread()->draw(true);
+			wrk->getSystemState()->getRenderThread()->draw(false);
 	}
 }
 ASFUNCTIONBODY_ATOM(Context3D,setStencilActions)
 {
-	LOG(LOG_NOT_IMPLEMENTED,"Context3D.setStencilActions does nothing");
+	Context3D* th = asAtomHandler::as<Context3D>(obj);
 	tiny_string triangleFace;
 	tiny_string compareMode;
 	tiny_string actionOnBothPass;
 	tiny_string actionOnDepthFail;
 	tiny_string actionOnDepthPassStencilFail;
 	ARG_CHECK(ARG_UNPACK(triangleFace,"frontAndBack")(compareMode,"always")(actionOnBothPass,"keep")(actionOnDepthFail,"keep")(actionOnDepthPassStencilFail,"keep"));
+	TRIANGLE_FACE face;
+	if (triangleFace =="frontAndBack")
+		face = TRIANGLE_FACE::FACE_FRONT_AND_BACK;
+	else if (triangleFace =="back")
+		face = TRIANGLE_FACE::FACE_BACK;
+	else if (triangleFace =="front")
+		face = TRIANGLE_FACE::FACE_FRONT;
+	else if (triangleFace =="none")
+		face = TRIANGLE_FACE::FACE_NONE;
+	else
+	{
+		createError<ArgumentError>(wrk,kInvalidArgumentError,"triangleFace");
+		return;
+	}
+	DEPTHSTENCIL_FUNCTION func;
+	if (compareMode =="always")
+		func = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_ALWAYS;
+	else if (compareMode =="equal")
+		func = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_EQUAL;
+	else if (compareMode =="greater")
+		func = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_GREATER;
+	else if (compareMode =="greaterEqual")
+		func = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_GREATER_EQUAL;
+	else if (compareMode =="less")
+		func = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_LESS;
+	else if (compareMode =="lessEqual")
+		func = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_LESS_EQUAL;
+	else if (compareMode =="never")
+		func = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_NEVER;
+	else if (compareMode =="notEqual")
+		func = DEPTHSTENCIL_FUNCTION::DEPTHSTENCIL_NOT_EQUAL;
+	else
+	{
+		createError<ArgumentError>(wrk,kInvalidArgumentError,"compareMode");
+		return;
+	}
+	DEPTHSTENCIL_OP pass;
+	if (actionOnBothPass =="keep")
+		pass = DEPTHSTENCIL_OP::DEPTHSTENCIL_KEEP;
+	else if (actionOnBothPass =="decrementSaturate")
+		pass = DEPTHSTENCIL_OP::DEPTHSTENCIL_DECR;
+	else if (actionOnBothPass =="decrementWrap")
+		pass = DEPTHSTENCIL_OP::DEPTHSTENCIL_DECR_WRAP;
+	else if (actionOnBothPass =="incrementSaturate")
+		pass = DEPTHSTENCIL_OP::DEPTHSTENCIL_INCR;
+	else if (actionOnBothPass =="incrementWrap")
+		pass = DEPTHSTENCIL_OP::DEPTHSTENCIL_INCR_WRAP;
+	else if (actionOnBothPass =="invert")
+		pass = DEPTHSTENCIL_OP::DEPTHSTENCIL_INVERT;
+	else if (actionOnBothPass =="set")
+		pass = DEPTHSTENCIL_OP::DEPTHSTENCIL_REPLACE;
+	else if (actionOnBothPass =="zero")
+		pass = DEPTHSTENCIL_OP::DEPTHSTENCIL_ZERO;
+	else
+	{
+		createError<ArgumentError>(wrk,kInvalidArgumentError,"actionOnBothPass");
+		return;
+	}
+	DEPTHSTENCIL_OP depthfail;
+	if (actionOnDepthFail =="keep")
+		depthfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_KEEP;
+	else if (actionOnDepthFail =="decrementSaturate")
+		depthfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_DECR;
+	else if (actionOnDepthFail =="decrementWrap")
+		depthfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_DECR_WRAP;
+	else if (actionOnDepthFail =="incrementSaturate")
+		depthfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_INCR;
+	else if (actionOnDepthFail =="incrementWrap")
+		depthfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_INCR_WRAP;
+	else if (actionOnDepthFail =="invert")
+		depthfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_INVERT;
+	else if (actionOnDepthFail =="set")
+		depthfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_REPLACE;
+	else if (actionOnDepthFail =="zero")
+		depthfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_ZERO;
+	else
+	{
+		createError<ArgumentError>(wrk,kInvalidArgumentError,"actionOnDepthFail");
+		return;
+	}
+	DEPTHSTENCIL_OP depthpassstencilfail;
+	if (actionOnDepthPassStencilFail =="keep")
+		depthpassstencilfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_KEEP;
+	else if (actionOnDepthPassStencilFail =="decrementSaturate")
+		depthpassstencilfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_DECR;
+	else if (actionOnDepthPassStencilFail =="decrementWrap")
+		depthpassstencilfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_DECR_WRAP;
+	else if (actionOnDepthPassStencilFail =="incrementSaturate")
+		depthpassstencilfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_INCR;
+	else if (actionOnDepthPassStencilFail =="incrementWrap")
+		depthpassstencilfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_INCR_WRAP;
+	else if (actionOnDepthPassStencilFail =="invert")
+		depthpassstencilfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_INVERT;
+	else if (actionOnDepthPassStencilFail =="set")
+		depthpassstencilfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_REPLACE;
+	else if (actionOnDepthPassStencilFail =="zero")
+		depthpassstencilfail = DEPTHSTENCIL_OP::DEPTHSTENCIL_ZERO;
+	else
+	{
+		createError<ArgumentError>(wrk,kInvalidArgumentError,"actionOnDepthPassStencilFail");
+		return;
+	}
+	
+	th->rendermutex.lock();
+	th->currentstencilfunction=func;
+	renderaction action;
+	action.action = RENDER_ACTION::RENDER_SETSTENCILACTIONS;
+	action.udata1 = face;
+	action.udata2 = func;
+	action.udata3 = (pass<<16)|(depthfail<<8)|depthpassstencilfail;
+	th->actions[th->currentactionvector].push_back(action);
+	th->rendermutex.unlock();
+	
 }
 ASFUNCTIONBODY_ATOM(Context3D,setStencilReferenceValue)
 {
-	LOG(LOG_NOT_IMPLEMENTED,"Context3D.setStencilReferenceValue does nothing");
+	Context3D* th = asAtomHandler::as<Context3D>(obj);
 	uint32_t referenceValue;
 	uint32_t readMask;
 	uint32_t writeMask;
 	ARG_CHECK(ARG_UNPACK(referenceValue)(readMask,255)(writeMask,255));
+	renderaction action;
+	th->rendermutex.lock();
+	th->currentstencilref = referenceValue&0xff;
+	th->currentstencilmask = readMask&0xff;
+	action.action = RENDER_ACTION::RENDER_SETSTENCILREFERENCEVALUE;
+	action.udata1 = (referenceValue&0xff<<16)|(readMask&0xff<<8)|(writeMask&0xff);
+	action.udata2 = th->currentstencilfunction;
+	th->actions[th->currentactionvector].push_back(action);
+	th->rendermutex.unlock();
 }
 
 ASFUNCTIONBODY_ATOM(Context3D,setTextureAt)
@@ -1559,8 +1844,6 @@ ASFUNCTIONBODY_ATOM(Context3D,setTextureAt)
 		return;
 	}
 	th->rendermutex.lock();
-	if (!texture.isNull())
-		texture->incRef();
 	renderaction action;
 	action.action = RENDER_ACTION::RENDER_SETTEXTUREAT;
 	action.udata1 = sampler;
@@ -1615,7 +1898,6 @@ ASFUNCTIONBODY_ATOM(Context3D,setVertexBufferAt)
 	{
 		// VertexBuffer was created during this loop, so it doesn't have a bufferID yet
 		th->rendermutex.lock();
-		buffer->incRef();
 		action.dataobject = buffer;
 		th->actions[th->currentactionvector].push_back(action);
 		th->rendermutex.unlock();
@@ -1785,9 +2067,9 @@ bool IndexBuffer3D::destruct()
 void IndexBuffer3D::sinit(Class_base *c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_SEALED);
-	c->setDeclaredMethodByQName("dispose","",Class<IFunction>::getFunction(c->getSystemState(),dispose),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("uploadFromByteArray","",Class<IFunction>::getFunction(c->getSystemState(),uploadFromByteArray),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("uploadFromVector","",Class<IFunction>::getFunction(c->getSystemState(),uploadFromVector),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("dispose","",c->getSystemState()->getBuiltinFunction(dispose),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("uploadFromByteArray","",c->getSystemState()->getBuiltinFunction(uploadFromByteArray),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("uploadFromVector","",c->getSystemState()->getBuiltinFunction(uploadFromVector),NORMAL_METHOD,true);
 }
 ASFUNCTIONBODY_ATOM(IndexBuffer3D,dispose)
 {
@@ -1830,11 +2112,7 @@ ASFUNCTIONBODY_ATOM(IndexBuffer3D,uploadFromByteArray)
 		if (data->readShort(d))
 			th->data[startOffset+i] = d;
 	}
-	renderaction action;
-	action.action =RENDER_ACTION::RENDER_UPLOADINDEXBUFFER;
-	th->incRef();
-	action.dataobject = _MR(th);
-	th->context->addAction(action);
+	th->context->addAction(RENDER_ACTION::RENDER_UPLOADINDEXBUFFER,th);
 	th->context->rendermutex.unlock();
 	data->setPosition(origpos);
 }
@@ -1858,19 +2136,15 @@ ASFUNCTIONBODY_ATOM(IndexBuffer3D,uploadFromVector)
 		asAtom a = data->at(i);
 		th->data[startOffset+i] = asAtomHandler::toUInt(a);
 	}
-	renderaction action;
-	action.action =RENDER_ACTION::RENDER_UPLOADINDEXBUFFER;
-	th->incRef();
-	action.dataobject = _MR(th);
-	th->context->addAction(action);
+	th->context->addAction(RENDER_ACTION::RENDER_UPLOADINDEXBUFFER,th);
 	th->context->rendermutex.unlock();
 }
 
 void Program3D::sinit(Class_base *c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_SEALED | CLASS_FINAL);
-	c->setDeclaredMethodByQName("dispose","",Class<IFunction>::getFunction(c->getSystemState(),dispose),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("upload","",Class<IFunction>::getFunction(c->getSystemState(),upload),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("dispose","",c->getSystemState()->getBuiltinFunction(dispose),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("upload","",c->getSystemState()->getBuiltinFunction(upload),NORMAL_METHOD,true);
 }
 
 ASFUNCTIONBODY_ATOM(Program3D,dispose)
@@ -1892,15 +2166,16 @@ ASFUNCTIONBODY_ATOM(Program3D,upload)
 	ARG_CHECK(ARG_UNPACK(vertexProgram)(fragmentProgram));
 	th->context->rendermutex.lock();
 	th->samplerState.clear();
+	RegisterMap vertexregistermap; // this is needed to keep track of the registers when creating the fragment program
 	if (!vertexProgram.isNull())
 	{
-		th->vertexprogram = AGALtoGLSL(vertexProgram.getPtr(),true,th->samplerState,th->vertexregistermap,th->vertexattributes);
-//		LOG(LOG_INFO,"vertex shader:"<<th<<"\n"<<th->vertexprogram);
+		th->vertexprogram = AGALtoGLSL(vertexProgram.getPtr(),true,th->samplerState,th->vertexregistermap,th->vertexattributes,vertexregistermap);
+		// LOG(LOG_INFO,"vertex shader:"<<th<<"\n"<<th->vertexprogram);
 	}
 	if (!fragmentProgram.isNull())
 	{
-		th->fragmentprogram = AGALtoGLSL(fragmentProgram.getPtr(),false,th->samplerState,th->fragmentregistermap,th->fragmentattributes);
-//		LOG(LOG_INFO,"fragment shader:"<<th<<"\n"<<th->fragmentprogram);
+		th->fragmentprogram = AGALtoGLSL(fragmentProgram.getPtr(),false,th->samplerState,th->fragmentregistermap,th->fragmentattributes,vertexregistermap);
+		// LOG(LOG_INFO,"fragment shader:"<<th<<"\n"<<th->fragmentprogram);
 	}
 	th->context->addAction(RENDER_ACTION::RENDER_UPLOADPROGRAM,th);
 	th->context->rendermutex.unlock();
@@ -1927,9 +2202,9 @@ bool VertexBuffer3D::destruct()
 void VertexBuffer3D::sinit(Class_base *c)
 {
 	CLASS_SETUP_NO_CONSTRUCTOR(c, ASObject, CLASS_SEALED);
-	c->setDeclaredMethodByQName("dispose","",Class<IFunction>::getFunction(c->getSystemState(),dispose),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("uploadFromByteArray","",Class<IFunction>::getFunction(c->getSystemState(),uploadFromByteArray),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("uploadFromVector","",Class<IFunction>::getFunction(c->getSystemState(),uploadFromVector),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("dispose","",c->getSystemState()->getBuiltinFunction(dispose),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("uploadFromByteArray","",c->getSystemState()->getBuiltinFunction(uploadFromByteArray),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("uploadFromVector","",c->getSystemState()->getBuiltinFunction(uploadFromVector),NORMAL_METHOD,true);
 }
 ASFUNCTIONBODY_ATOM(VertexBuffer3D,dispose)
 {
@@ -1976,11 +2251,7 @@ ASFUNCTIONBODY_ATOM(VertexBuffer3D,uploadFromByteArray)
 		if (data->readUnsignedInt(d.u))
 			th->data[startVertex*th->data32PerVertex+i] = d.f;
 	}
-	renderaction action;
-	action.action =RENDER_ACTION::RENDER_UPLOADVERTEXBUFFER;
-	th->incRef();
-	action.dataobject = _MR(th);
-	th->context->addAction(action);
+	th->context->addAction(RENDER_ACTION::RENDER_UPLOADVERTEXBUFFER,th);
 	th->context->rendermutex.unlock();
 	data->setPosition(origpos);
 }
@@ -2004,12 +2275,6 @@ ASFUNCTIONBODY_ATOM(VertexBuffer3D,uploadFromVector)
 		asAtom a = data->at(i);
 		th->data[startVertex*th->data32PerVertex+i] = asAtomHandler::toNumber(a);
 	}
-	renderaction action;
-	action.action =RENDER_ACTION::RENDER_UPLOADVERTEXBUFFER;
-	th->incRef();
-	action.dataobject = _MR(th);
-	th->context->addAction(action);
+	th->context->addAction(RENDER_ACTION::RENDER_UPLOADVERTEXBUFFER,th);
 	th->context->rendermutex.unlock();
-}
-
 }

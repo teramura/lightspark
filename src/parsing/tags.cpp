@@ -37,9 +37,14 @@
 #include "parsing/streams.h"
 #include "scripting/class.h"
 #include "scripting/flash/display/BitmapData.h"
+#include "scripting/flash/display/LoaderInfo.h"
+#include "scripting/flash/display/MorphShape.h"
+#include "scripting/flash/display/SimpleButton.h"
 #include "scripting/flash/text/flashtext.h"
 #include "scripting/flash/media/flashmedia.h"
 #include "scripting/flash/geom/flashgeom.h"
+#include "scripting/flash/geom/Rectangle.h"
+#include "scripting/flash/geom/Point.h"
 #include "scripting/avm1/avm1sound.h"
 #include "scripting/avm1/avm1display.h"
 #include "scripting/avm1/avm1media.h"
@@ -602,7 +607,8 @@ ASObject* DefineSpriteTag::instance(Class_base* c)
 	if (soundstartframe != UINT32_MAX)
 		spr->setSoundStartFrame(this->soundstartframe);
 	spr->loadedFrom=this->loadedFrom;
-	spr->loadedFrom->AVM1checkInitActions(spr);
+	// initactions are always executed in Vm thread, no need to check here
+	// spr->loadedFrom->AVM1checkInitActions(spr);
 	spr->setScalingGrid();
 	return spr;
 }
@@ -710,19 +716,23 @@ const TextureChunk* FontTag::getCharTexture(const CharIterator& chrIt, int fontp
 				number_t xmin, xmax, ymin, ymax;
 				if (!TokenContainer::boundsRectFromTokens(tmptokens,0.05,xmin,xmax,ymin,ymax))
 					return nullptr;
-				std::vector<IDrawable::MaskData> masks;
 				CairoTokenRenderer r(tmptokens,MATRIX()
 							, xmin, ymin, xmax, ymax
-							, xmin, ymin, xmax, ymax,0
 							, 1, 1
-							, false,_NR<DisplayObject>()
-							, 0.05,1.0, masks
-							, 1.0,1.0,1.0,1.0
-							, 0,0,0,0
-							, SMOOTH_MODE::SMOOTH_SUBPIXEL,0,0);
+							, false, false
+							, 0.05,1.0
+							, ColorTransformBase()
+							, SMOOTH_MODE::SMOOTH_SUBPIXEL,AS_BLENDMODE::BLENDMODE_NORMAL,0,0);
 				uint8_t* buf = r.getPixelBuffer();
-				CharacterRenderer* renderer = new CharacterRenderer(buf,xmax,ymax);
-				getSys()->getRenderThread()->addUploadJob(renderer);
+				CharacterRenderer* renderer = new CharacterRenderer(buf,abs(xmax),abs(ymax));
+				//force creation of buffer if neccessary
+				renderer->upload(true);
+				//Get the texture to be sure it's allocated when the upload comes
+				renderer->getTexture();
+				uint32_t w,h;
+				renderer->sizeNeeded(w,h);
+				getSys()->getRenderThread()->loadChunkBGRA(renderer->getTexture(),w,h,buf);
+				renderer->uploadFence();
 				it = getGlyphShapes().at(i).scaledtexturecache.insert(make_pair(tokenscaling,renderer)).first;
 			}
 			return &(*it).second->getTexture();
@@ -1477,7 +1487,7 @@ void DefineTextTag::computeCached()
 		return;
 
 	FontTag* curFont = nullptr;
-	Vector2 curPos;
+	Vector2f curPos;
 
 	/*
 	 * All coordinates are scaled into 1024*20*20 units per pixel.
@@ -1532,7 +1542,7 @@ void DefineTextTag::computeCached()
 			//set fillstyle of each glyph to fillstyle of this TextRecord
 			for (auto it = sr.begin(); it != sr.end(); it++)
 				(*it).FillStyle0 = i+1;
-			Vector2 glyphPos = curPos*twipsScaling;
+			Vector2f glyphPos = curPos*twipsScaling;
 
 			MATRIX glyphMatrix(scaling, scaling, 0, 0, 
 						glyphPos.x,
@@ -1541,7 +1551,7 @@ void DefineTextTag::computeCached()
 			//Apply glyphMatrix first, then scaledTextMatrix
 			glyphMatrix = scaledTextMatrix.multiplyMatrix(glyphMatrix);
 
-			TokenContainer::FromShaperecordListToShapeVector(sr,tokens,fillStyles,glyphMatrix);
+			TokenContainer::FromShaperecordListToShapeVector(sr,tokens,fillStyles,glyphMatrix,list<LINESTYLE2>(),this->TextBounds);
 			curPos.x += ge.GlyphAdvance;
 		}
 	}
@@ -1582,6 +1592,10 @@ ASObject *DefineShapeTag::instance(Class_base *c)
 		for (auto it = Shapes.FillStyles.FillStyles.begin(); it != Shapes.FillStyles.FillStyles.end(); it++)
 		{
 			it->ShapeBounds = ShapeBounds;
+		}
+		for (auto it = Shapes.LineStyles.LineStyles2.begin(); it != Shapes.LineStyles.LineStyles2.end(); it++)
+		{
+			it->FillType.ShapeBounds = ShapeBounds;
 		}
 		TokenContainer::FromShaperecordListToShapeVector(Shapes.ShapeRecords,*tokens,Shapes.FillStyles.FillStyles,MATRIX(),Shapes.LineStyles.LineStyles2,ShapeBounds);
 	}
@@ -1666,7 +1680,6 @@ void DefineMorphShapeTag::getTokensForRatio(tokensVector& tokens, uint32_t ratio
 	}
 	tokens.filltokens.assign(it->second.filltokens.begin(),it->second.filltokens.end());
 	tokens.stroketokens.assign(it->second.stroketokens.begin(),it->second.stroketokens.end());
-	tokens.canRenderToGL=it->second.canRenderToGL;
 }
 
 DefineMorphShape2Tag::DefineMorphShape2Tag(RECORDHEADER h, std::istream& in, RootMovieClip* root):DefineMorphShapeTag(h, root, 2)
@@ -1817,12 +1830,6 @@ void PlaceObject2Tag::setProperties(DisplayObject* obj, DisplayObjectContainer* 
 		//Remove the automatic name set by the DisplayObject constructor
 		obj->name = BUILTIN_STRINGS::EMPTY;
 	}
-	if (parent && parent->computeCacheAsBitmap())
-	{
-		obj->cachedAsBitmapOf=parent;
-	}
-	else
-		obj->cachedAsBitmapOf=parent->cachedAsBitmapOf;
 }
 
 void PlaceObject2Tag::execute(DisplayObjectContainer* parent, bool inskipping)
@@ -1869,20 +1876,14 @@ void PlaceObject2Tag::execute(DisplayObjectContainer* parent, bool inskipping)
 		DisplayObject *toAdd = nullptr;
 		if(PlaceFlagHasName)
 		{
-			// check if an object with this name was already created and removed earlier
 			nameID = NameID;
-			toAdd = parent->findRemovedLegacyChild(nameID);
+		}
+		if (!exists)
+		{
+			// check if we can reuse the DisplayObject from the last declared frame (only relevant if we are moving backwards in the timeline)
+			toAdd = parent->getLastFrameChildAtDepth(LEGACY_DEPTH_START+Depth);
 			if (toAdd)
-			{	
-				if (toAdd->getTagID() != CharacterId)
-					toAdd=nullptr;
-				else
-				{
-					toAdd->incRef();
-					toAdd->markedForLegacyDeletion=false;
-				}
-				parent->eraseRemovedLegacyChild(nameID);
-			}
+				toAdd->incRef();
 		}
 		if (!toAdd)
 		{
@@ -1905,6 +1906,8 @@ void PlaceObject2Tag::execute(DisplayObjectContainer* parent, bool inskipping)
 				return;
 			}
 			newInstance = true;
+			if(!PlaceFlagHasName)
+				nameID = BUILTIN_STRINGS::EMPTY;
 		}
 		assert_and_throw(toAdd);
 
@@ -1915,6 +1918,8 @@ void PlaceObject2Tag::execute(DisplayObjectContainer* parent, bool inskipping)
 		//The matrix must be set before invoking the constructor
 		toAdd->setLegacyMatrix(Matrix);
 		toAdd->legacy = true;
+		if (toAdd->placeFrame == UINT32_MAX && parent->is<MovieClip>())
+			toAdd->placeFrame = parent->as<MovieClip>()->state.FP;
 
 		setProperties(toAdd, parent);
 
@@ -1945,7 +1950,7 @@ void PlaceObject2Tag::execute(DisplayObjectContainer* parent, bool inskipping)
 			currchar=toAdd;
 		}
 	}
-	else 
+	else
 	{
 		if (currchar)
 			setProperties(currchar, parent);
@@ -1976,12 +1981,12 @@ void PlaceObject2Tag::execute(DisplayObjectContainer* parent, bool inskipping)
 	{
 		parent->setupClipActionsAt(LEGACY_DEPTH_START+Depth,ClipActions);
 	}
-
-	if (PlaceFlagHasRatio)
+	
+	if (exists && PlaceFlagHasRatio)
 		parent->checkRatioForLegacyChildAt(LEGACY_DEPTH_START + Depth, Ratio, inskipping);
-	else if (PlaceFlagHasCharacter)
+	else if (exists && PlaceFlagHasCharacter)
 		parent->checkRatioForLegacyChildAt(LEGACY_DEPTH_START + Depth, 0, inskipping);
-
+	
 	if(PlaceFlagHasColorTransform)
 		parent->checkColorTransformForLegacyChildAt(LEGACY_DEPTH_START+Depth,ColorTransformWithAlpha);
 	if (newInstance && PlaceFlagHasClipAction && this->ClipActions.AllEventFlags.ClipEventConstruct && currchar)
@@ -2009,10 +2014,6 @@ void PlaceObject2Tag::execute(DisplayObjectContainer* parent, bool inskipping)
 				ACTIONRECORD::executeActions(currchar ,&context,it->actions,it->startactionpos,m);
 			}
 		}
-	}
-	if (currchar)
-	{
-		currchar->invalidateCachedAsBitmapOf();
 	}
 }
 
@@ -2131,10 +2132,7 @@ PlaceObject3Tag::PlaceObject3Tag(RECORDHEADER h, std::istream& in, RootMovieClip
 	if(PlaceFlagHasVisible)
 		in >> Visible;
 	if(PlaceFlagOpaqueBackground)
-	{
 		in >> BackgroundColor;
-		LOG(LOG_NOT_IMPLEMENTED,"BackgroundColor in PlaceObject3 not yet supported:"<<BackgroundColor);
-	}
 
 	if(PlaceFlagHasClipAction)
 		in >> ClipActions;
@@ -2150,6 +2148,8 @@ void PlaceObject3Tag::setProperties(DisplayObject *obj, DisplayObjectContainer *
 		obj->setBlendMode(BlendMode);
 	if (PlaceFlagHasVisible)
 		obj->setVisible(Visible);
+	if (PlaceFlagOpaqueBackground) // it seems that adobe ignores the alpha value
+		obj->opaqueBackground=asAtomHandler::fromUInt((BackgroundColor.Red<<16)|(BackgroundColor.Green<<8)|(BackgroundColor.Blue));
 	obj->cacheAsBitmap=this->BitmapCache;
 	obj->setFilters(this->SurfaceFilterList);
 }
@@ -2343,6 +2343,7 @@ ASObject* DefineButtonTag::instance(Class_base* c)
 			state->legacy=true;
 			state->name = BUILTIN_STRINGS::EMPTY;
 			state->setScalingGrid();
+			state->loadedFrom=this->loadedFrom;
 			if (i->ButtonHasBlendMode && i->buttonVersion == 2)
 				state->setBlendMode(i->BlendMode);
 			if (i->ButtonHasFilterList)
@@ -2359,7 +2360,10 @@ ASObject* DefineButtonTag::instance(Class_base* c)
 			{
 				if(!isSprite[j])
 				{
-					Sprite* spr = Class<Sprite>::getInstanceS(loadedFrom->getInstanceWorker());
+					Sprite* spr = Class<Sprite>::getInstanceSNoArgs(loadedFrom->getInstanceWorker());
+					spr->loadedFrom=this->loadedFrom;
+					spr->constructionComplete();
+					spr->afterConstruction();
 					spr->insertLegacyChildAt(LEGACY_DEPTH_START+curDepth[j],states[j]);
 					states[j] = spr;
 					spr->name = BUILTIN_STRINGS::EMPTY;
@@ -2477,25 +2481,96 @@ DefineSoundTag::DefineSoundTag(RECORDHEADER h, std::istream& in, RootMovieClip* 
 	SoundRate=UB(2,bs);
 	SoundSize=UB(1,bs);
 	SoundType=UB(1,bs);
+	uint8_t sndinfo = SoundFormat<<4|SoundRate<<2|SoundSize<<1|SoundType;
 	in >> SoundSampleCount;
-
-	//TODO: get rid of the temporary copy
 	unsigned int soundDataLength = h.getLength()-7;
-	unsigned char *tmp = new unsigned char [soundDataLength];
-	in.read((char *)tmp, soundDataLength);
-	unsigned char *tmpp = tmp;
-	// it seems that adobe allows zeros at the beginning of the sound data
-	// at least for MP3 we ignore them, otherwise ffmpeg will not work properly
-	if (SoundFormat == LS_AUDIO_CODEC::MP3)
+	
+	if (SoundFormat == LS_AUDIO_CODEC::ADPCM)
 	{
-		while (*tmpp == 0 && soundDataLength)
+		// split ADPCM sound into packets and embed packets into an flv container so that ffmpeg can properly handle it
+		uint32_t bpos = 0;
+		uint8_t flv[soundDataLength+25];
+		
+		// flv header
+		flv[bpos++] = 'F'; flv[bpos++] = 'L'; flv[bpos++] = 'V';
+		flv[bpos++] = 0x01;
+		flv[bpos++] = 0x04; // indicate audio tag presence
+		flv[bpos++] = 0x00; flv[bpos++] = 0x00; flv[bpos++] = 0x00; flv[bpos++] = 0x09; // DataOffset, end of flv header
+		
+		flv[bpos++] = 0x00; flv[bpos++] = 0x00; flv[bpos++] = 0x00; flv[bpos++] = 0x00; // PreviousTagSize0
+		
+		SoundData->append(flv,bpos);
+		uint32_t timestamp=0;
+		int adpcmcodesize = UB(2,bs);
+		int32_t bitstoprocess=soundDataLength*8-2;
+		uint32_t datalenbits = (16+6+(adpcmcodesize+2)*4095)*(SoundType+1)-6;// 6 bits are stored in the first byte of the packet (with the bps)
+		while (bitstoprocess > 6)
 		{
-			soundDataLength--;
-			tmpp++;
+			bpos=0;
+			flv[bpos++] = 0x08; // audio tag indicator
+			uint32_t datasizepos=bpos;
+			bpos += 3; // skip bytes for dataSize, will be filled later
+			flv[bpos++] = (timestamp>>16) &0xff; // timestamp
+			flv[bpos++] = (timestamp>> 8) &0xff;
+			flv[bpos++] = (timestamp    ) &0xff;
+			flv[bpos++] = (timestamp>>24) &0xff; // timestamp extended
+			timestamp += 4096 *1000 / getSampleRate();
+			flv[bpos++] = 0x00; flv[bpos++] = 0x00; flv[bpos++] = 0x00; // StreamID
+			
+			uint32_t datalenstart=bpos;
+			flv[bpos++] = sndinfo; // sound format
+			
+			// ADPCM packet data
+			flv[bpos++] = ((adpcmcodesize<<6) | UB(6,bs))&0xff;
+			bitstoprocess-=6;
+			for (uint32_t i = 0; (i < datalenbits/8) && (bitstoprocess > 8); i++)
+			{
+				flv[bpos++] = UB(8,bs)&0xff;
+				bitstoprocess-=8;
+			}
+			uint32_t additionalbits = min(uint32_t(datalenbits%8),uint32_t(bitstoprocess));
+			if (additionalbits)
+			{
+				flv[bpos++] = UB(additionalbits,bs);
+				bitstoprocess-=additionalbits;
+			}
+			// compute and set dataSize
+			uint32_t dataSize = bpos-datalenstart;
+			flv[datasizepos++] = (dataSize>>16) &0xff;
+			flv[datasizepos++] = (dataSize>> 8) &0xff;
+			flv[datasizepos++] = (dataSize    ) &0xff;
+			SoundData->append(flv,bpos);
+			
+			// PreviousTagSize
+			uint32_t l = bpos;
+			flv[0] = (l>>24) &0xff;
+			flv[1] = (l>>16) &0xff;
+			flv[2] = (l>> 8) &0xff;
+			flv[3] = (l    ) &0xff;
+			SoundData->append(flv,4);
 		}
 	}
-	SoundData->append(tmpp, soundDataLength);
+	else
+	{
+		//TODO: get rid of the temporary copy
+		uint8_t* tmp = new uint8_t[soundDataLength];
+		in.read((char *)tmp, soundDataLength);
+		unsigned char *tmpp = tmp;
+		// it seems that adobe allows zeros at the beginning of the sound data
+		// at least for MP3 we ignore them, otherwise ffmpeg will not work properly
+		if (SoundFormat == LS_AUDIO_CODEC::MP3)
+		{
+			while (*tmpp == 0 && soundDataLength)
+			{
+				soundDataLength--;
+				tmpp++;
+			}
+		}
+		SoundData->append(tmpp, soundDataLength);
+		delete[] tmp;
+	}
 	SoundData->markFinished();
+
 #ifdef ENABLE_LIBAVCODEC
 	// it seems that ffmpeg doesn't properly detect PCM data, so we only autodetect the sample rate for MP3
 	if (SoundFormat == LS_AUDIO_CODEC::MP3 && soundDataLength >= 8192)
@@ -2509,7 +2584,6 @@ DefineSoundTag::DefineSoundTag(RECORDHEADER h, std::istream& in, RootMovieClip* 
 		delete sbuf;
 	}
 #endif
-	delete[] tmp;
 }
 
 ASObject* DefineSoundTag::instance(Class_base* c)
@@ -2538,7 +2612,7 @@ LS_AUDIO_CODEC DefineSoundTag::getAudioCodec() const
 }
 number_t DefineSoundTag::getDurationInMS() const
 {
-	return (SoundSampleCount/getSampleRate())*1000;
+	return ((number_t)SoundSampleCount/(number_t)getSampleRate())*1000.0;
 }
 int DefineSoundTag::getSampleRate() const
 {
@@ -2547,13 +2621,13 @@ int DefineSoundTag::getSampleRate() const
 	switch(SoundRate)
 	{
 		case 0:
-			return 5500;
+			return 5512;
 		case 1:
-			return 11000;
+			return 11025;
 		case 2:
-			return 22000;
+			return 22050;
 		case 3:
-			return 44000;
+			return 44100;
 	}
 
 	// not reached
@@ -2627,6 +2701,9 @@ void StartSoundTag::execute(DisplayObjectContainer *parent, bool inskipping)
 	if (SoundInfo.SyncNoMultiple && soundTag->isAttached)
 		return;
 	if (this->SoundInfo.SyncNoMultiple && sound->isPlaying())
+		return;
+	// it seems that sounds are not played if we get here by gotoandstop
+	if (parent->is<MovieClip>() && parent->as<MovieClip>()->state.stop_FP && parent->as<MovieClip>()->state.explicit_FP)
 		return;
 	sound->play(0);
 }
@@ -2908,9 +2985,7 @@ SoundStreamHeadTag::SoundStreamHeadTag(RECORDHEADER h, std::istream& in, RootMov
 
 SoundStreamHeadTag::~SoundStreamHeadTag()
 {
-	MemoryStreamCache* c = SoundData.getPtr();
 	SoundData.reset();
-	delete c;
 }
 
 void SoundStreamHeadTag::setSoundChannel(Sprite *spr)
@@ -2945,6 +3020,7 @@ void SoundStreamBlockTag::decodeSoundBlock(StreamCache* cache, LS_AUDIO_CODEC co
 	switch (codec)
 	{
 		case LS_AUDIO_CODEC::LINEAR_PCM_PLATFORM_ENDIAN:
+		case LS_AUDIO_CODEC::LINEAR_PCM_LE:
 		case LS_AUDIO_CODEC::ADPCM:
 			cache->append(buf,len);
 			break;
@@ -2987,6 +3063,8 @@ void AVM1ActionTag::execute(DisplayObjectContainer* parent, bool inskipping)
 		setActions(script);
 		script.avm1context = parent->as<MovieClip>()->getCurrentFrame()->getAVM1Context();
 		script.event_name_id = UINT32_MAX;
+		script.isEventScript = false;
+		parent->incRef(); // will be decreffed after script handler was executed 
 		script.clip=parent->as<MovieClip>();
 		parent->getSystemState()->stage->AVM1AddScriptToExecute(script);
 	}
@@ -3101,7 +3179,12 @@ void DoABCTag::execute(RootMovieClip* root) const
 	LOG(LOG_CALLS,"ABC Exec");
 	/* currentVM will free the context*/
 	if (root->getInstanceWorker()->isPrimordial)
-		getVm(root->getSystemState())->addEvent(NullRef,_MR(new (root->getSystemState()->unaccountedMemory) ABCContextInitEvent(context,false)));
+	{
+		if (root == root->getSystemState()->mainClip)
+			getVm(root->getSystemState())->addEvent(NullRef,_MR(new (root->getSystemState()->unaccountedMemory) ABCContextInitEvent(context,false)));
+		else
+			context->exec(false);
+	}
 	else
 	{
 		root->getInstanceWorker()->addABCContext(context);
@@ -3136,7 +3219,12 @@ void DoABCDefineTag::execute(RootMovieClip* root) const
 	// the real start of the main class is done when the symbol with id 0 is detected in SymbolClass tag
 	bool lazy = root->hasSymbolClass || ((int32_t)Flags)&1;
 	if (root->getInstanceWorker()->isPrimordial)
-		getVm(root->getSystemState())->addEvent(NullRef,_MR(new (root->getSystemState()->unaccountedMemory) ABCContextInitEvent(context,lazy)));
+	{
+		if (root == root->getSystemState()->mainClip)
+			getVm(root->getSystemState())->addEvent(NullRef,_MR(new (root->getSystemState()->unaccountedMemory) ABCContextInitEvent(context,lazy)));
+		else
+			context->exec(lazy);
+	}
 	else
 	{
 		root->getInstanceWorker()->addABCContext(context);
@@ -3160,6 +3248,7 @@ void SymbolClassTag::execute(RootMovieClip* root) const
 {
 	LOG(LOG_TRACE,"SymbolClassTag Exec");
 
+	bool isSysRoot = root == root->getSystemState()->mainClip;
 	for(int i=0;i<NumSymbols;i++)
 	{
 		LOG(LOG_CALLS,"Binding " << Tags[i] << ' ' << Names[i]);
@@ -3169,19 +3258,26 @@ void SymbolClassTag::execute(RootMovieClip* root) const
 			root->hasMainClass=true;
 			root->incRef();
 			ASWorker* worker = root->getInstanceWorker();
-			if (!worker->isPrimordial && root != root->getSystemState()->mainClip)
+			if (!worker->isPrimordial && !isSysRoot)
 			{
 				getVm(root->getSystemState())->buildClassAndInjectBase(className.raw_buf(),_MR(root));
 				worker->state ="running";
 				worker->incRef();
 				getVm(root->getSystemState())->addEvent(_MR(worker),_MR(Class<Event>::getInstanceS(root->getInstanceWorker(),"workerState")));
 			}
+			else if (!isSysRoot)
+				getVm(root->getSystemState())->addBufferEvent(NullRef, _MR(new (root->getSystemState()->unaccountedMemory) BindClassEvent(_MR(root),className)));
 			else
 				getVm(root->getSystemState())->addEvent(NullRef, _MR(new (root->getSystemState()->unaccountedMemory) BindClassEvent(_MR(root),className)));
 		}
 		else
 		{
-			root->addBinding(className, root->dictionaryLookup(Tags[i]));
+			DictionaryTag* tag = root->dictionaryLookup(Tags[i]);
+			root->addBinding(className, tag);
+			if (!isSysRoot)
+				getVm(root->getSystemState())->addBufferEvent(NullRef, _MR(new (root->getSystemState()->unaccountedMemory) BindClassEvent(tag,className)));
+			else
+				getVm(root->getSystemState())->addEvent(NullRef, _MR(new (root->getSystemState()->unaccountedMemory) BindClassEvent(tag,className)));
 		}
 	}
 }

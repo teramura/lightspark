@@ -3,6 +3,8 @@
 
 #include "swf.h"
 #include "backends/extscriptobject.h"
+#include "backends/streamcache.h"
+#include "backends/netutils.h"
 #include "platforms/engineutils.h"
 #include "ppapi/c/ppp_instance.h"
 #include "ppapi/c/pp_var.h"
@@ -180,6 +182,7 @@ private:
 	PP_Resource ppcontextmenuid;
 	PP_CompletionCallback contextmenucallback;
 	bool buffersswapped;
+	void glTexImage2Dintern(uint32_t type,int32_t level,int32_t width, int32_t height,int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat,uint32_t compressedImageSize) override;
 public:
 	SystemState* sys;
 	PP_Resource audioconfig;
@@ -237,6 +240,7 @@ public:
 	void exec_glUniform1f(int location,float v0) override;
 	void exec_glUniform2f(int location,float v0, float v1) override;
 	void exec_glUniform4f(int location,float v0, float v1, float v2, float v3) override;
+	void exec_glUniform1fv(int location,uint32_t size, float* v) override;
 	void exec_glBindTexture_GL_TEXTURE_2D(uint32_t id) override;
 	void exec_glVertexAttribPointer(uint32_t index, int32_t stride, const void* coords, VERTEXBUFFER_FORMAT format) override;
 	void exec_glEnableVertexAttribArray(uint32_t index) override;
@@ -252,12 +256,13 @@ public:
 	void exec_glEnable_GL_TEXTURE_2D() override;
 	void exec_glEnable_GL_BLEND() override;
 	void exec_glEnable_GL_DEPTH_TEST() override;
-	void exec_glDepthFunc(DEPTH_FUNCTION depthfunc) override;
+	void exec_glDepthFunc(DEPTHSTENCIL_FUNCTION depthfunc) override;
 	void exec_glDisable_GL_DEPTH_TEST() override;
 	void exec_glEnable_GL_STENCIL_TEST() override;
 	void exec_glDisable_GL_STENCIL_TEST() override;
 	void exec_glDisable_GL_TEXTURE_2D() override;
 	void exec_glFlush() override;
+	void exec_glFinish() override;
 	uint32_t exec_glCreateShader_GL_FRAGMENT_SHADER() override;
 	uint32_t exec_glCreateShader_GL_VERTEX_SHADER() override;
 	void exec_glShaderSource(uint32_t shader, int32_t count, const char** name, int32_t* length) override;
@@ -287,6 +292,8 @@ public:
 	void exec_glFramebufferRenderbuffer_GL_FRAMEBUFFER_GL_DEPTH_STENCIL_ATTACHMENT(uint32_t depthStencilRenderBuffer) override;
 	void exec_glDeleteTextures(int32_t n,uint32_t* textures) override;
 	void exec_glDeleteBuffers(uint32_t size, uint32_t* buffers) override;
+	void exec_glDeleteFramebuffers(uint32_t size, uint32_t* buffers) override;
+	void exec_glDeleteRenderbuffers(uint32_t size, uint32_t* buffers) override;
 	void exec_glBlendFunc(BLEND_FACTOR src, BLEND_FACTOR dst) override;
 	void exec_glCullFace(TRIANGLE_FACE mode) override;
 	void exec_glActiveTexture_GL_TEXTURE0(uint32_t textureindex) override;
@@ -309,7 +316,7 @@ public:
 	void exec_glSetTexParameters(int32_t lodbias, uint32_t dimension, uint32_t filter, uint32_t mipmap, uint32_t wrap) override;
 	void exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_BYTE(int32_t level, int32_t width, int32_t height, int32_t border, const void* pixels, bool hasalpha) override;
 	void exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_INT_8_8_8_8_HOST(int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels) override;
-	void exec_glTexImage2D_GL_TEXTURE_2D(int32_t level, int32_t width, int32_t height, int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat, uint32_t compressedImageSize) override;
+	void exec_glTexImage2D_GL_TEXTURE_2D(int32_t level, int32_t width, int32_t height, int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat, uint32_t compressedImageSize, bool isRectangleTexture) override;
 	void exec_glDrawBuffer_GL_BACK() override;
 	void exec_glClearColor(float red,float green,float blue,float alpha) override;
 	void exec_glClearStencil(uint32_t stencil) override;
@@ -320,16 +327,26 @@ public:
 	void exec_glTexSubImage2D_GL_TEXTURE_2D(int32_t level,int32_t xoffset,int32_t yoffset,int32_t width,int32_t height,const void* pixels) override;
 	void exec_glGetIntegerv_GL_MAX_TEXTURE_SIZE(int32_t* data) override;
 	void exec_glGenerateMipmap_GL_TEXTURE_2D() override;
+	void exec_glGenerateMipmap_GL_TEXTURE_CUBE_MAP() override;
 	void exec_glReadPixels(int32_t width, int32_t height,void* buf) override;
+	void exec_glReadPixels_GL_BGRA(int32_t width, int32_t height,void *buf) override;
 	void exec_glBindTexture_GL_TEXTURE_CUBE_MAP(uint32_t id) override;
 	void exec_glTexParameteri_GL_TEXTURE_CUBE_MAP_GL_TEXTURE_MIN_FILTER_GL_LINEAR() override;
 	void exec_glTexParameteri_GL_TEXTURE_CUBE_MAP_GL_TEXTURE_MAG_FILTER_GL_LINEAR() override;
-	void exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(uint32_t side, int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels) override;
+	void exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(uint32_t side, int32_t level,int32_t width, int32_t height,int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat, uint32_t compressedImageSize) override;
 	void exec_glScissor(int32_t x, int32_t y, int32_t width, int32_t height) override;
 	void exec_glDisable_GL_SCISSOR_TEST() override;
 	void exec_glColorMask(bool red, bool green, bool blue, bool alpha) override;
 	void exec_glStencilFunc_GL_ALWAYS() override;
-
+	void exec_glStencilFunc_GL_NEVER() override;
+	void exec_glStencilFunc_GL_EQUAL(int32_t ref, uint32_t mask) override;
+	void exec_glStencilOp_GL_DECR() override;
+	void exec_glStencilOp_GL_INCR() override;
+	void exec_glStencilOp_GL_KEEP() override;
+	void exec_glStencilOpSeparate(TRIANGLE_FACE face, DEPTHSTENCIL_OP sfail, DEPTHSTENCIL_OP dpfail, DEPTHSTENCIL_OP dppass) override;
+	void exec_glStencilMask(uint32_t mask) override;
+	void exec_glStencilFunc (DEPTHSTENCIL_FUNCTION func, uint32_t ref, uint32_t mask) override;
+	
 	// Audio handling
 	int audio_StreamInit(AudioStream* s) override;
 	void audio_StreamPause(int channel, bool dopause) override;

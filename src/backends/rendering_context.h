@@ -20,9 +20,12 @@
 #ifndef BACKENDS_RENDERING_CONTEXT_H
 #define BACKENDS_RENDERING_CONTEXT_H 1
 
+#include "forwards/scripting/flash/display/DisplayObject.h"
+#include "forwards/scripting/flash/geom/flashgeom.h"
 #include <stack>
+#include <unordered_map>
+#include "threading.h"
 #include "backends/graphics.h"
-#include "platforms/engineutils.h"
 
 namespace lightspark
 {
@@ -30,6 +33,38 @@ namespace lightspark
 enum VertexAttrib { VERTEX_ATTRIB=0, COLOR_ATTRIB, TEXCOORD_ATTRIB};
 
 class Rectangle;
+class EngineData;
+
+struct Transform2D
+{
+	MATRIX matrix;
+	ColorTransformBase colorTransform;
+	AS_BLENDMODE blendmode;
+	
+	Transform2D(const MATRIX& _matrix, const ColorTransformBase& _colorTransform,AS_BLENDMODE _blendmode) : matrix(_matrix), colorTransform(_colorTransform),blendmode(_blendmode)
+	{
+	}
+	Transform2D():blendmode(AS_BLENDMODE::BLENDMODE_NORMAL)
+	{
+	}
+	~Transform2D() {}
+};
+
+class TransformStack
+{
+private:
+	std::vector<Transform2D> transforms;
+public:
+	TransformStack() {}
+	~TransformStack() {}
+	void push(const Transform2D& transform);
+	void pop() { transforms.pop_back(); }
+	Transform2D& transform() { return transforms.back(); }
+	Transform2D& frontTransform() { return transforms.front(); }
+	const Transform2D& transform() const { return transforms.back(); }
+	const Transform2D& frontTransform() const { return transforms.front(); }
+};
+
 /*
  * The RenderContext contains all (public) functions that are needed by DisplayObjects to draw themselves.
  */
@@ -42,11 +77,26 @@ protected:
 	std::stack<float*> lsglMatrixStack;
 	~RenderContext(){}
 	void lsglMultMatrixf(const float *m);
+	std::vector<TransformStack> transformStacks;
+private:
+	bool inMaskRendering;
+	bool maskActive;
 public:
-	enum CONTEXT_TYPE { CAIRO=0, GL };
-	RenderContext(CONTEXT_TYPE t);
-	CONTEXT_TYPE contextType;
-	const DisplayObject* currentMask;
+	RenderContext();
+	TransformStack& transformStack()
+	{
+		if (transformStacks.empty())
+			createTransformStack();
+		return transformStacks.back();
+	}
+	TransformStack& frontTransformStack()
+	{
+		if (transformStacks.empty())
+			createTransformStack();
+		return transformStacks.front();
+	}
+	void createTransformStack() { transformStacks.push_back(TransformStack()); }
+	void removeTransformStack() { transformStacks.pop_back(); }
 
 	/* Modelview matrix manipulation */
 	void lsglLoadIdentity();
@@ -56,26 +106,43 @@ public:
 	void lsglRotatef(float angle);
 
 	enum COLOR_MODE { RGB_MODE=0, YUV_MODE };
-	enum MASK_MODE { NO_MASK = 0, ENABLE_MASK };
 	/* Textures */
 	/**
 		Render a quad of given size using the given chunk
 	*/
 	virtual void renderTextured(const TextureChunk& chunk, float alpha, COLOR_MODE colorMode,
-			float redMultiplier, float greenMultiplier, float blueMultiplier, float alphaMultiplier,
-			float redOffset, float greenOffset, float blueOffset, float alphaOffset,
-			bool isMask, bool hasMask, float directMode, RGB directColor,SMOOTH_MODE smooth, const MATRIX& matrix,
-			Rectangle* scalingGrid=nullptr, AS_BLENDMODE blendmode=BLENDMODE_NORMAL)=0;
+			const ColorTransformBase& colortransform,
+			bool isMask, float directMode, RGB directColor,SMOOTH_MODE smooth, const MATRIX& matrix,
+			const RECT& scalingGrid, AS_BLENDMODE blendmode)=0;
 	/**
 	 * Get the right CachedSurface from an object
 	 */
-	virtual const CachedSurface& getCachedSurface(const DisplayObject* obj) const=0;
+	virtual const CachedSurface* getCachedSurface(const DisplayObject* obj) const=0;
+	virtual void pushMask() { inMaskRendering=true; }
+	virtual void popMask() {}
+	virtual void deactivateMask() { maskActive=false; }
+	virtual void activateMask()
+	{
+		inMaskRendering=false;
+		maskActive=true;
+	}
+	bool isDrawingMask() const { return inMaskRendering; }
+	bool isMaskActive() const { return maskActive; }
+};
+struct filterstackentry
+{
+	uint32_t filterframebuffer;
+	uint32_t filterrenderbuffer;
+	uint32_t filtertextureID;
+	number_t filterborderx;
+	number_t filterbordery;
 };
 
 class GLRenderContext: public RenderContext
 {
 private:
 	static int errorCount;
+	int maskCount;
 protected:
 	EngineData* engineData;
 	int projectionMatrixUniform;
@@ -84,12 +151,18 @@ protected:
 	int yuvUniform;
 	int alphaUniform;
 	int maskUniform;
+	int isFirstFilterUniform;
+	int renderStage3DUniform;
 	int colortransMultiplyUniform;
 	int colortransAddUniform;
 	int directUniform;
 	int directColorUniform;
-	uint32_t maskframebuffer;
-	uint32_t maskTextureID;
+	int blendModeUniform;
+	int filterdataUniform;
+	int gradientcolorsUniform;
+	uint32_t baseFramebuffer;
+	uint32_t baseRenderbuffer;
+	bool flipvertical;
 
 	/* Textures */
 	Mutex mutexLargeTexture;
@@ -112,57 +185,54 @@ public:
 	 * Uploads the current matrix as the specified type.
 	 */
 	void setMatrixUniform(LSGL_MATRIX m) const;
-	GLRenderContext() : RenderContext(GL),engineData(nullptr), largeTextureSize(0)
+	GLRenderContext() : RenderContext(),maskCount(0),engineData(nullptr), largeTextureSize(0)
 	{
 	}
 	void SetEngineData(EngineData* data) { engineData = data;}
 	void lsglOrtho(float l, float r, float b, float t, float n, float f);
 
 	void renderTextured(const TextureChunk& chunk, float alpha, COLOR_MODE colorMode,
-			float redMultiplier, float greenMultiplier, float blueMultiplier, float alphaMultiplier,
-			float redOffset, float greenOffset, float blueOffset, float alphaOffset,
-			bool isMask, bool hasMask, float directMode, RGB directColor, SMOOTH_MODE smooth, const MATRIX& matrix,
-			Rectangle* scalingGrid=nullptr, AS_BLENDMODE blendmode=BLENDMODE_NORMAL) override;
+			const ColorTransformBase& colortransform,
+			bool isMask, float directMode, RGB directColor, SMOOTH_MODE smooth, const MATRIX& matrix,
+			const RECT& scalingGrid, AS_BLENDMODE blendmode) override;
 	/**
 	 * Get the right CachedSurface from an object
 	 * In the OpenGL case we just get the CachedSurface inside the object itself
 	 */
-	const CachedSurface& getCachedSurface(const DisplayObject* obj) const override;
+	CachedSurface* getCachedSurface(const DisplayObject* obj) const override;
+
+	void pushMask() override;
+	void popMask() override;
+	void deactivateMask() override;
+	void activateMask() override;
+	
+	bool getFlipVertical() const { return flipvertical; }
+	void resetCurrentFrameBuffer();
+	void setupRenderingState(float alpha, const ColorTransformBase& colortransform, SMOOTH_MODE smooth, AS_BLENDMODE blendmode);
+	// this is used to keep track of the fbos when rendering filters and some of the ancestors of the filtered object also have filters
+	std::vector<filterstackentry> filterframebufferstack;
 
 	/* Utility */
 	bool handleGLErrors() const;
 };
 
-class CairoRenderContext: public RenderContext
+class CairoRenderContext
 {
 private:
-	std::map<const DisplayObject*, CachedSurface> customSurfaces;
-	cairo_t* cr;
+	std::list<cairo_t*> cr_list;
+	cairo_surface_t* cairoSurface;
+	uint32_t width;
+	uint32_t height;
 	std::list<std::pair<cairo_surface_t*,MATRIX>> masksurfaces;
 	static cairo_surface_t* getCairoSurfaceForData(uint8_t* buf, uint32_t width, uint32_t height, uint32_t stride);
 	/*
 	 * An invalid surface to be returned for objects with no content
 	 */
-	static const CachedSurface invalidSurface;
+	void setupRenderState(cairo_t* cr, AS_BLENDMODE blendmode, bool isMask, SMOOTH_MODE smooth);
 public:
-	CairoRenderContext(uint8_t* buf, uint32_t width, uint32_t height,bool smoothing);
+	CairoRenderContext(uint8_t* buf, uint32_t _width, uint32_t _height, bool smoothing);
 	virtual ~CairoRenderContext();
-	void renderTextured(const TextureChunk& chunk, float alpha, COLOR_MODE colorMode,
-			float redMultiplier, float greenMultiplier, float blueMultiplier, float alphaMultiplier,
-			float redOffset, float greenOffset, float blueOffset, float alphaOffset,
-			bool isMask, bool hasMask, float directMode, RGB directColor, SMOOTH_MODE smooth, const MATRIX& matrix,
-			Rectangle* scalingGrid=nullptr, AS_BLENDMODE blendmode=BLENDMODE_NORMAL) override;
-	/**
-	 * Get the right CachedSurface from an object
-	 * In the Cairo case we get the right CachedSurface out of the map
-	 */
-	const CachedSurface& getCachedSurface(const DisplayObject* obj) const override;
 
-	/**
-	 * The CairoRenderContext acquires the ownership of the buffer
-	 * it will be freed on destruction
-	 */
-	CachedSurface& allocateCustomSurface(const DisplayObject* d, uint8_t* texBuf, bool isBufferOwner);
 	/**
 	 * Do a fast non filtered, non scaled blit of ARGB data
 	 */
@@ -172,8 +242,8 @@ public:
 	 * Do an optionally filtered blit with transformation
 	 */
 	enum FILTER_MODE { FILTER_NONE = 0, FILTER_SMOOTH };
-	void transformedBlit(const MATRIX& m, uint8_t* sourceBuf, uint32_t sourceTotalWidth, uint32_t sourceTotalHeight,
-			FILTER_MODE filterMode);
+	void transformedBlit(const MATRIX& m, BitmapContainer* bc, ColorTransform* ct,
+			FILTER_MODE filterMode, number_t x, number_t y, number_t w, number_t h);
 };
 
 }

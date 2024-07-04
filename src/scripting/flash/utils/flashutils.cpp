@@ -24,12 +24,15 @@
 #include "compat.h"
 #include "parsing/amf3_generator.h"
 #include "scripting/argconv.h"
+#include "scripting/toplevel/AVM1Function.h"
+#include "scripting/toplevel/Array.h"
 #include "scripting/toplevel/Number.h"
 #include "scripting/toplevel/Integer.h"
 #include "scripting/toplevel/UInteger.h"
 #include "scripting/flash/system/flashsystem.h"
 #include "scripting/flash/errors/flasherrors.h"
 #include "scripting/flash/utils/IntervalManager.h"
+#include "scripting/flash/display/DisplayObject.h"
 #include <sstream>
 #include <zlib.h>
 #include <glib.h>
@@ -181,6 +184,7 @@ ASFUNCTIONBODY_ATOM(lightspark,getDefinitionByName)
 
 	if(asAtomHandler::isInvalid(ret))
 	{
+		ret = asAtomHandler::undefinedAtom;
 		createError<ReferenceError>(wrk,kClassNotFoundError, tmp);
 		return;
 	}
@@ -195,7 +199,10 @@ ASFUNCTIONBODY_ATOM(lightspark,getDefinitionByName)
 ASFUNCTIONBODY_ATOM(lightspark,describeType)
 {
 	assert_and_throw(argslen>=1);
-	ret = asAtomHandler::fromObject(asAtomHandler::toObject(args[0],wrk)->describeType(wrk));
+	ASObject* o = asAtomHandler::toObject(args[0],wrk);
+	if (o->is<Class_inherit>())
+		o->as<Class_inherit>()->checkScriptInit();
+	ret = asAtomHandler::fromObject(o->describeType(wrk));
 }
 
 ASFUNCTIONBODY_ATOM(lightspark,describeTypeJSON)

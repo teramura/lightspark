@@ -14,14 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v2
-      - name: Delete Development Release
-        uses: dev-drprasad/delete-tag-and-release@v0.2.1
+      - uses: actions/checkout@v4
+      - run: gh release delete latest --cleanup-tag -y 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: latest
-          github_token: ${{ secrets.GITHUB_TOKEN }}
 
   draft_release:
     name: Create Release
@@ -31,7 +27,7 @@ jobs:
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Create Release
         id: create_release
         uses: ncipollo/release-action@v1
@@ -70,7 +66,7 @@ jobs:
             cxx: g++-10
             cxxpackage: g++-10
     steps:
-      - uses: actions/checkout@v3.3.0
+      - uses: actions/checkout@v4
 
       - name: Install Dependencies
         run: |
@@ -116,7 +112,7 @@ jobs:
           - ubuntu-22.04
           - ubuntu-20.04
     steps:
-      - uses: actions/checkout@v3.3.0
+      - uses: actions/checkout@v4
       - name: Install Dependencies
         run: |
           sudo `which apt || which apt-get` update
@@ -156,37 +152,35 @@ jobs:
       CFLAGS: -std=c11
       CXXFLAGS: -std=c++11
     steps:
-      - uses: actions/checkout@v3.3.0
+      - uses: actions/checkout@v4
 
       - name: Add MXE Repository to Apt
-        uses: myci-actions/add-deb-repo@10
+        uses: myci-actions/add-deb-repo@11
         with:
-          repo: deb http://pkg.mxe.cc/repos/apt bionic main
+          repo: deb http://pkg.mxe.cc/repos/apt focal main
           repo-name: mxe
-          keys: ${{ secrets.MXE_REPO_KEY }}
-          key-server: keyserver.ubuntu.com
+          keys-asc: https://pkg.mxe.cc/repos/apt/client-conf/mxeapt.gpg
+          install:
+            nasm
+            libtool
+            libtool-bin
+            gperf
+            lzip
+            p7zip-full
+            intltool
+            mxe-x86-64-w64-mingw32.static-cc
+            mxe-x86-64-w64-mingw32.static-cairo
+            mxe-x86-64-w64-mingw32.static-pango
+            mxe-x86-64-w64-mingw32.static-jpeg
+            mxe-x86-64-w64-mingw32.static-glew
+            mxe-x86-64-w64-mingw32.static-freetype
+            mxe-x86-64-w64-mingw32.static-curl
+            mxe-x86-64-w64-mingw32.static-librtmp
+            mxe-x86-64-w64-mingw32.static-ffmpeg
+            mxe-x86-64-w64-mingw32.static-sdl2
 
       - name: Install MXE Build Environment
         run: |
-          sudo apt update
-          sudo apt install \
-            nasm \
-            libtool \
-            libtool-bin \
-            gperf \
-            lzip \
-            p7zip-full \
-            intltool \
-            mxe-x86-64-w64-mingw32.static-cc \
-            mxe-x86-64-w64-mingw32.static-cairo \
-            mxe-x86-64-w64-mingw32.static-pango \
-            mxe-x86-64-w64-mingw32.static-jpeg \
-            mxe-x86-64-w64-mingw32.static-glew \
-            mxe-x86-64-w64-mingw32.static-freetype \
-            mxe-x86-64-w64-mingw32.static-curl \
-            mxe-x86-64-w64-mingw32.static-librtmp \
-            mxe-x86-64-w64-mingw32.static-ffmpeg \
-            mxe-x86-64-w64-mingw32.static-sdl2
           echo /usr/lib/mxe/usr/bin >> $GITHUB_PATH  # exposes it to all future steps
 
       - name: Configure MXE for NSIS Installer Builds
@@ -203,17 +197,15 @@ jobs:
           make
           sed -i -e "s/Lightspark Team/The Lightspark Developers/g" CPackConfig.cmake
           make package
-          mv -v Lightspark*exe installer.exe
+          mv -v Lightspark*exe Lightspark-v${{ needs.draft_release.outputs.version }}-Installer-win64.exe
 
       - name: Upload Installer Release Asset
-        uses: actions/upload-release-asset@v1
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.draft_release.outputs.upload_url }}
-          asset_path: installer.exe
-          asset_name: Lightspark-v${{ needs.draft_release.outputs.version }}-Installer-win64.exe
-          asset_content_type: application/octet-stream
+          tag_name: latest
+          files: Lightspark-v${{ needs.draft_release.outputs.version }}-Installer-win64.exe
 
   mxe32:
     name: Windows 32-bit (MXE Cross Build)
@@ -224,37 +216,35 @@ jobs:
       CFLAGS: -std=c11
       CXXFLAGS: -std=c++11
     steps:
-      - uses: actions/checkout@v3.3.0
+      - uses: actions/checkout@v4
 
       - name: Add MXE Repository to Apt
-        uses: myci-actions/add-deb-repo@10
+        uses: myci-actions/add-deb-repo@11
         with:
-          repo: deb http://pkg.mxe.cc/repos/apt bionic main
+          repo: deb http://pkg.mxe.cc/repos/apt focal main
           repo-name: mxe
-          keys: ${{ secrets.MXE_REPO_KEY }}
-          key-server: keyserver.ubuntu.com
+          keys-asc: https://pkg.mxe.cc/repos/apt/client-conf/mxeapt.gpg
+          install:
+            nasm
+            libtool
+            libtool-bin
+            gperf
+            lzip
+            p7zip-full
+            intltool
+            mxe-i686-w64-mingw32.static-cc
+            mxe-i686-w64-mingw32.static-cairo
+            mxe-i686-w64-mingw32.static-pango
+            mxe-i686-w64-mingw32.static-jpeg
+            mxe-i686-w64-mingw32.static-glew
+            mxe-i686-w64-mingw32.static-freetype
+            mxe-i686-w64-mingw32.static-curl
+            mxe-i686-w64-mingw32.static-librtmp
+            mxe-i686-w64-mingw32.static-ffmpeg
+            mxe-i686-w64-mingw32.static-sdl2
 
       - name: Install MXE Build Environment
         run: |
-          sudo apt update
-          sudo apt install \
-            nasm \
-            libtool \
-            libtool-bin \
-            gperf \
-            lzip \
-            p7zip-full \
-            intltool \
-            mxe-i686-w64-mingw32.static-cc \
-            mxe-i686-w64-mingw32.static-cairo \
-            mxe-i686-w64-mingw32.static-pango \
-            mxe-i686-w64-mingw32.static-jpeg \
-            mxe-i686-w64-mingw32.static-glew \
-            mxe-i686-w64-mingw32.static-freetype \
-            mxe-i686-w64-mingw32.static-curl \
-            mxe-i686-w64-mingw32.static-librtmp \
-            mxe-i686-w64-mingw32.static-ffmpeg \
-            mxe-i686-w64-mingw32.static-sdl2
           echo /usr/lib/mxe/usr/bin >> $GITHUB_PATH  # exposes it to all future steps
 
       - name: Configure MXE for NSIS Installer Builds
@@ -271,14 +261,12 @@ jobs:
           make
           sed -i -e "s/Lightspark Team/The Lightspark Developers/g" CPackConfig.cmake
           make package
-          mv -v Lightspark*exe installer.exe
+          mv -v Lightspark*exe Lightspark-v${{ needs.draft_release.outputs.version }}-Installer-win32.exe
 
       - name: Upload Installer Release Asset
-        uses: actions/upload-release-asset@v1
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.draft_release.outputs.upload_url }}
-          asset_path: installer.exe
-          asset_name: Lightspark-v${{ needs.draft_release.outputs.version }}-Installer-win32.exe
-          asset_content_type: application/octet-stream
+          tag_name: latest
+          files: Lightspark-v${{ needs.draft_release.outputs.version }}-Installer-win32.exe

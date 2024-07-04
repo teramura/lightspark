@@ -20,9 +20,9 @@
 #include <sstream>
 #include "scripting/toplevel/Error.h"
 #include "asobject.h"
-#include "scripting/toplevel/toplevel.h"
 #include "scripting/toplevel/Integer.h"
 #include "scripting/flash/system/flashsystem.h"
+#include "scripting/flash/display/RootMovieClip.h"
 #include "scripting/class.h"
 #include "scripting/argconv.h"
 #include "scripting/abc.h"
@@ -93,6 +93,8 @@ tiny_string lightspark::createErrorMessage(int errorID, const tiny_string& arg1,
 //	}
 //	Log::setLogLevel(LOG_CALLS);
 	LOG(LOG_INFO,"throwing exception:"<<getWorker()<<" id:"<<errorID<<" "<<msg.str());
+//	getWorker()->dumpStacktrace();
+//	getWorker()->rootClip->dumpDisplayList();
 	return msg.str();
 }
 void lightspark::setError(ASObject* error)
@@ -108,31 +110,33 @@ void lightspark::setError(ASObject* error)
 		throw error;
 }
 
-ASError::ASError(ASWorker* wrk,Class_base* c, const tiny_string& error_message, int id, const tiny_string& error_name):
-	ASObject(wrk,c),errorID(id),name(error_name),message(error_message)
+ASError::ASError(ASWorker* wrk, Class_base* c, const tiny_string& error_message, int id, const tiny_string& error_name, CLASS_SUBTYPE subtype):
+	ASObject(wrk,c,T_OBJECT,subtype),errorID(id),name(error_name),message(error_message)
 {
-	stacktrace = "";
 	for (uint32_t i = wrk->cur_recursion; i > 0; i--)
 	{
-		stacktrace += "    at ";
-		stacktrace += asAtomHandler::toObject(wrk->stacktrace[i-1].object,wrk)->getClassName();
-		stacktrace += "/";
-		stacktrace += c->getSystemState()->getStringFromUniqueId(wrk->stacktrace[i-1].name);
-		stacktrace += "()\n";
+		ASObject* o = asAtomHandler::toObject(wrk->stacktrace[i-1].object,wrk);
+		stacktrace.push_back(make_pair(o->getClass() ? o->getClass()->getQualifiedClassNameID() : (uint32_t)BUILTIN_STRINGS::EMPTY,wrk->stacktrace[i-1].name));
 	}
 }
 
 ASFUNCTIONBODY_ATOM(ASError,_getStackTrace)
 {
 	ASError* th=asAtomHandler::as<ASError>(obj);
-
 	ret = asAtomHandler::fromObject(abstract_s(wrk,th->getStackTraceString()));
 }
 tiny_string ASError::getStackTraceString()
 {
 	tiny_string ret = toString();
 	ret += "\n";
-	ret += stacktrace;
+	for (auto it = stacktrace.begin(); it != stacktrace.end(); it++)
+	{
+		ret += "    at ";
+		ret += getSystemState()->getStringFromUniqueId((*it).first);
+		ret += "/";
+		ret += getSystemState()->getStringFromUniqueId((*it).second);
+		ret += "()\n";
+	}
 	return ret;
 }
 
@@ -140,7 +144,7 @@ tiny_string ASError::toString()
 {
 	tiny_string ret;
 	ret = name;
-	if(errorID != 0)
+	if(errorID != 0 && !message.startsWith("Error #"))
 		ret += tiny_string(": Error #") + Integer::toString(errorID);
 	if (!message.empty())
 		ret += tiny_string(": ") + message;
@@ -190,9 +194,9 @@ void ASError::errorGenerator(ASError* obj, asAtom* args, const unsigned int args
 void ASError::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_DYNAMIC_NOT_FINAL);
-	c->setDeclaredMethodByQName("getStackTrace","",Class<IFunction>::getFunction(c->getSystemState(),_getStackTrace),NORMAL_METHOD,true);
-	c->prototype->setVariableByQName("toString","",Class<IFunction>::getFunction(c->getSystemState(),_toString),DYNAMIC_TRAIT);
-	c->setDeclaredMethodByQName("toString","",Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getStackTrace","",c->getSystemState()->getBuiltinFunction(_getStackTrace),NORMAL_METHOD,true);
+	c->prototype->setVariableByQName("toString","",c->getSystemState()->getBuiltinFunction(_toString),DYNAMIC_TRAIT);
+	c->setDeclaredMethodByQName("toString","",c->getSystemState()->getBuiltinFunction(_toString),NORMAL_METHOD,true);
 	REGISTER_GETTER(c, errorID);
 	REGISTER_GETTER_SETTER(c, message);
 	REGISTER_GETTER_SETTER(c, name);
@@ -201,10 +205,6 @@ void ASError::sinit(Class_base* c)
 ASFUNCTIONBODY_GETTER(ASError, errorID)
 ASFUNCTIONBODY_GETTER_SETTER(ASError, message)
 ASFUNCTIONBODY_GETTER_SETTER(ASError, name)
-
-void ASError::buildTraits(ASObject* o)
-{
-}
 
 ASFUNCTIONBODY_ATOM(SecurityError,_constructor)
 {
@@ -226,10 +226,6 @@ ASFUNCTIONBODY_ATOM(SecurityError,generator)
 void SecurityError::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASError, _constructor, CLASS_DYNAMIC_NOT_FINAL);
-}
-
-void SecurityError::buildTraits(ASObject* o)
-{
 }
 
 ASFUNCTIONBODY_ATOM(ArgumentError,_constructor)
@@ -254,10 +250,6 @@ void ArgumentError::sinit(Class_base* c)
 	CLASS_SETUP(c, ASError, _constructor, CLASS_DYNAMIC_NOT_FINAL);
 }
 
-void ArgumentError::buildTraits(ASObject* o)
-{
-}
-
 ASFUNCTIONBODY_ATOM(DefinitionError,_constructor)
 {
 	assert(argslen<=1);
@@ -278,10 +270,6 @@ ASFUNCTIONBODY_ATOM(DefinitionError,generator)
 void DefinitionError::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASError, _constructor, CLASS_DYNAMIC_NOT_FINAL);
-}
-
-void DefinitionError::buildTraits(ASObject* o)
-{
 }
 
 ASFUNCTIONBODY_ATOM(EvalError,_constructor)
@@ -306,10 +294,6 @@ void EvalError::sinit(Class_base* c)
 	CLASS_SETUP(c, ASError, _constructor, CLASS_DYNAMIC_NOT_FINAL);
 }
 
-void EvalError::buildTraits(ASObject* o)
-{
-}
-
 ASFUNCTIONBODY_ATOM(RangeError,_constructor)
 {
 	assert(argslen<=1);
@@ -330,10 +314,6 @@ ASFUNCTIONBODY_ATOM(RangeError,generator)
 void RangeError::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASError, _constructor, CLASS_DYNAMIC_NOT_FINAL);
-}
-
-void RangeError::buildTraits(ASObject* o)
-{
 }
 
 ASFUNCTIONBODY_ATOM(ReferenceError,_constructor)
@@ -358,10 +338,6 @@ void ReferenceError::sinit(Class_base* c)
 	CLASS_SETUP(c, ASError, _constructor, CLASS_DYNAMIC_NOT_FINAL);
 }
 
-void ReferenceError::buildTraits(ASObject* o)
-{
-}
-
 ASFUNCTIONBODY_ATOM(SyntaxError,_constructor)
 {
 	assert(argslen<=1);
@@ -382,10 +358,6 @@ ASFUNCTIONBODY_ATOM(SyntaxError,generator)
 void SyntaxError::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASError, _constructor, CLASS_DYNAMIC_NOT_FINAL);
-}
-
-void SyntaxError::buildTraits(ASObject* o)
-{
 }
 
 ASFUNCTIONBODY_ATOM(TypeError,_constructor)
@@ -410,10 +382,6 @@ void TypeError::sinit(Class_base* c)
 	CLASS_SETUP(c, ASError, _constructor, CLASS_DYNAMIC_NOT_FINAL);
 }
 
-void TypeError::buildTraits(ASObject* o)
-{
-}
-
 ASFUNCTIONBODY_ATOM(URIError,_constructor)
 {
 	assert(argslen<=1);
@@ -434,10 +402,6 @@ ASFUNCTIONBODY_ATOM(URIError,generator)
 void URIError::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASError, _constructor, CLASS_DYNAMIC_NOT_FINAL);
-}
-
-void URIError::buildTraits(ASObject* o)
-{
 }
 
 ASFUNCTIONBODY_ATOM(VerifyError,_constructor)
@@ -462,10 +426,6 @@ void VerifyError::sinit(Class_base* c)
 	CLASS_SETUP(c, ASError, _constructor, CLASS_DYNAMIC_NOT_FINAL);
 }
 
-void VerifyError::buildTraits(ASObject* o)
-{
-}
-
 ASFUNCTIONBODY_ATOM(UninitializedError,_constructor)
 {
 	assert(argslen<=1);
@@ -486,8 +446,4 @@ ASFUNCTIONBODY_ATOM(UninitializedError,generator)
 void UninitializedError::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASError, _constructor, CLASS_DYNAMIC_NOT_FINAL);
-}
-
-void UninitializedError::buildTraits(ASObject* o)
-{
 }

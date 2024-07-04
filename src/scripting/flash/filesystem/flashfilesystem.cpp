@@ -20,6 +20,7 @@
 #include "scripting/flash/filesystem/flashfilesystem.h"
 #include "scripting/flash/utils/ByteArray.h"
 #include "scripting/flash/errors/flasherrors.h"
+#include "scripting/toplevel/Array.h"
 #include "scripting/toplevel/UInteger.h"
 #include "scripting/toplevel/Integer.h"
 #include "scripting/toplevel/Number.h"
@@ -39,20 +40,20 @@ FileStream::FileStream(ASWorker* wrk,Class_base* c):
 void FileStream::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, EventDispatcher, _constructor, CLASS_SEALED);
-	c->setDeclaredMethodByQName("endian","",Class<IFunction>::getFunction(c->getSystemState(),_getEndian,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("endian","",Class<IFunction>::getFunction(c->getSystemState(),_setEndian),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("open", "", Class<IFunction>::getFunction(c->getSystemState(),open), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("close", "", Class<IFunction>::getFunction(c->getSystemState(),close), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("readBytes", "", Class<IFunction>::getFunction(c->getSystemState(),readBytes), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("readUTF", "", Class<IFunction>::getFunction(c->getSystemState(),readUTF,0,Class<ASString>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("readByte", "", Class<IFunction>::getFunction(c->getSystemState(),readByte,0,Class<Integer>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("readUnsignedByte", "", Class<IFunction>::getFunction(c->getSystemState(),readUnsignedByte,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("readShort", "", Class<IFunction>::getFunction(c->getSystemState(),readShort,0,Class<Integer>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("readUnsignedShort", "", Class<IFunction>::getFunction(c->getSystemState(),readUnsignedShort,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("readInt", "", Class<IFunction>::getFunction(c->getSystemState(),readInt,0,Class<Integer>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("readUnsignedInt", "", Class<IFunction>::getFunction(c->getSystemState(),readUnsignedInt,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("writeBytes", "", Class<IFunction>::getFunction(c->getSystemState(),writeBytes), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("writeUTF", "", Class<IFunction>::getFunction(c->getSystemState(),writeUTF), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("endian","",c->getSystemState()->getBuiltinFunction(_getEndian,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("endian","",c->getSystemState()->getBuiltinFunction(_setEndian),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("open", "", c->getSystemState()->getBuiltinFunction(open), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("close", "", c->getSystemState()->getBuiltinFunction(close), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("readBytes", "", c->getSystemState()->getBuiltinFunction(readBytes), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("readUTF", "", c->getSystemState()->getBuiltinFunction(readUTF,0,Class<ASString>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("readByte", "", c->getSystemState()->getBuiltinFunction(readByte,0,Class<Integer>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("readUnsignedByte", "", c->getSystemState()->getBuiltinFunction(readUnsignedByte,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("readShort", "", c->getSystemState()->getBuiltinFunction(readShort,0,Class<Integer>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("readUnsignedShort", "", c->getSystemState()->getBuiltinFunction(readUnsignedShort,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("readInt", "", c->getSystemState()->getBuiltinFunction(readInt,0,Class<Integer>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("readUnsignedInt", "", c->getSystemState()->getBuiltinFunction(readUnsignedInt,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("writeBytes", "", c->getSystemState()->getBuiltinFunction(writeBytes), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("writeUTF", "", c->getSystemState()->getBuiltinFunction(writeUTF), NORMAL_METHOD, true);
 	REGISTER_GETTER_RESULTTYPE(c,bytesAvailable,UInteger);
 	REGISTER_GETTER_SETTER_RESULTTYPE(c,position,Number);
 }
@@ -182,7 +183,7 @@ ASFUNCTIONBODY_ATOM(FileStream,readUTF)
 	th->stream.read((char*)&len,2);
 	len = th->endianOut(len);
 	th->position+=2;
-	if (th->bytesAvailable < (int32_t)len)
+	if (th->bytesAvailable < (uint32_t)len)
 	{
 		createError<EOFError>(wrk,kEOFError);
 		return;
@@ -380,8 +381,8 @@ ASFUNCTIONBODY_ATOM(FileStream,writeUTF)
 	th->stream.write(value.raw_buf(),value.numBytes());
 }
 
-ASFile::ASFile(ASWorker* wrk,Class_base* c, const tiny_string _path, bool _exists):
-	FileReference(wrk,c),path(_path),exists(_exists)
+ASFile::ASFile(ASWorker* wrk,Class_base* c, const tiny_string _path, bool _exists, bool _isHidden, bool _isDirectory):
+	FileReference(wrk,c),path(_path),exists(_exists),isHidden(_isHidden),isDirectory(_isDirectory)
 {
 	subtype=SUBTYPE_FILE;
 	setupFile(_path,wrk);
@@ -391,14 +392,21 @@ void ASFile::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, FileReference, _constructor, CLASS_SEALED);
 	REGISTER_GETTER_RESULTTYPE(c,exists,Boolean);
+	REGISTER_GETTER_RESULTTYPE(c,isHidden,Boolean);
+	REGISTER_GETTER_RESULTTYPE(c,isDirectory,Boolean);
 	REGISTER_GETTER_STATIC_RESULTTYPE(c,applicationDirectory,ASFile);
 	REGISTER_GETTER_STATIC_RESULTTYPE(c,applicationStorageDirectory,ASFile);
-	c->setDeclaredMethodByQName("resolvePath", "", Class<IFunction>::getFunction(c->getSystemState(),resolvePath,1,Class<ASFile>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("createDirectory", "", Class<IFunction>::getFunction(c->getSystemState(),createDirectory), NORMAL_METHOD, true);
-	c->setDeclaredMethodByQName("url","",Class<IFunction>::getFunction(c->getSystemState(),_getURL,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("url","",Class<IFunction>::getFunction(c->getSystemState(),_setURL),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("resolvePath", "", c->getSystemState()->getBuiltinFunction(resolvePath,1,Class<ASFile>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("createDirectory", "", c->getSystemState()->getBuiltinFunction(createDirectory), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("getDirectoryListing", "", c->getSystemState()->getBuiltinFunction(getDirectoryListing,0,Class<Array>::getRef(c->getSystemState()).getPtr()), NORMAL_METHOD, true);
+	c->setDeclaredMethodByQName("url","",c->getSystemState()->getBuiltinFunction(_getURL,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("url","",c->getSystemState()->getBuiltinFunction(_setURL),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("nativePath","",c->getSystemState()->getBuiltinFunction(_getNativePath,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("nativePath","",c->getSystemState()->getBuiltinFunction(_setNativePath),SETTER_METHOD,true);
 }
 ASFUNCTIONBODY_GETTER(ASFile, exists)
+ASFUNCTIONBODY_GETTER(ASFile, isHidden)
+ASFUNCTIONBODY_GETTER(ASFile, isDirectory)
 ASFUNCTIONBODY_GETTER_STATIC(ASFile, applicationDirectory)
 ASFUNCTIONBODY_GETTER_STATIC(ASFile, applicationStorageDirectory)
 
@@ -421,7 +429,10 @@ void ASFile::setupFile(const tiny_string& filename, ASWorker* wrk)
 		// "file:///Users/bob/Desktop" (the desktop on Bob's Mac computer)
 		path = filename;
 		exists = wrk->getSystemState()->getEngineData()->FileExists(wrk->getSystemState(),path,true);
+		isHidden = wrk->getSystemState()->getEngineData()->FileIsHidden(wrk->getSystemState(),path,true);
+		isDirectory = wrk->getSystemState()->getEngineData()->FileIsDirectory(wrk->getSystemState(),path,true);
 		size = wrk->getSystemState()->getEngineData()->FileSize(wrk->getSystemState(),path,true);
+		name = wrk->getSystemState()->getEngineData()->FileBasename(wrk->getSystemState(),path,true);
 	}
 }
 
@@ -431,7 +442,7 @@ ASFUNCTIONBODY_ATOM(ASFile,_getURL)
 	ASFile* th=asAtomHandler::as<ASFile>(obj);
 	tiny_string url = URLInfo::encode(th->path,URLInfo::ENCODE_URI);
 	url = tiny_string("file://")+url;
-	ret = asAtomHandler::fromObjectNoPrimitive(abstract_s(wrk,url));
+	ret = asAtomHandler::fromString(wrk->getSystemState(),url);
 }
 ASFUNCTIONBODY_ATOM(ASFile,_setURL)
 {
@@ -445,6 +456,18 @@ ASFUNCTIONBODY_ATOM(ASFile,_setURL)
 	}
 	else
 		createError<ArgumentError>(wrk,kInvalidParamError, "url");
+}
+ASFUNCTIONBODY_ATOM(ASFile,_getNativePath)
+{
+	ASFile* th=asAtomHandler::as<ASFile>(obj);
+	ret = asAtomHandler::fromString(wrk->getSystemState(),th->path);
+}
+ASFUNCTIONBODY_ATOM(ASFile,_setNativePath)
+{
+	ASFile* th=asAtomHandler::as<ASFile>(obj);
+	tiny_string newpath;
+	ARG_CHECK(ARG_UNPACK(newpath));
+	th->setupFile(newpath,wrk);
 }
 
 ASFUNCTIONBODY_ATOM(ASFile,resolvePath)
@@ -475,6 +498,30 @@ ASFUNCTIONBODY_ATOM(ASFile,createDirectory)
 	
 	if (!wrk->getSystemState()->getEngineData()->FileCreateDirectory(wrk->getSystemState(),p,true))
 		createError<IOError>(wrk,kFileWriteError,th->path);
+}
+
+ASFUNCTIONBODY_ATOM(ASFile,getDirectoryListing)
+{
+	ASFile* th=asAtomHandler::as<ASFile>(obj);
+	tiny_string p = th->path;
+	// ensure that directory name ends with a directory separator
+	if (!p.endsWith(G_DIR_SEPARATOR_S))
+		p += G_DIR_SEPARATOR_S;
+	std::vector<tiny_string> dirlist;
+	if (!wrk->getSystemState()->getEngineData()->FilGetDirectoryListing(wrk->getSystemState(),p,true,dirlist))
+	{
+		createError<IOError>(wrk,kFileOpenError,th->path);
+		return;
+	}
+	Array* res =Class<Array>::getInstanceSNoArgs(wrk);
+	for (auto it = dirlist.begin(); it != dirlist.end(); it++)
+	{
+		ASFile* f=Class<ASFile>::getInstanceSNoArgs(wrk);
+		tiny_string fullpath = p+(*it);
+		f->setupFile(fullpath,wrk);
+		res->push(asAtomHandler::fromObjectNoPrimitive(f));
+	}
+	ret=asAtomHandler::fromObjectNoPrimitive(res);
 }
 
 void FileMode::sinit(Class_base* c)

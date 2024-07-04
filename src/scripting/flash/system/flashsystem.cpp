@@ -21,17 +21,23 @@
 #include "scripting/flash/system/flashsystem.h"
 #include "scripting/flash/utils/ByteArray.h"
 #include "scripting/flash/system/messagechannel.h"
+#include "scripting/flash/errors/flasherrors.h"
+#include "scripting/flash/display/Loader.h"
 #include "scripting/abc.h"
 #include "scripting/argconv.h"
 #include "compat.h"
 #include "backends/security.h"
+#include "scripting/toplevel/Global.h"
 #include "scripting/toplevel/Number.h"
 #include "scripting/toplevel/UInteger.h"
 #include "scripting/toplevel/XML.h"
 #include "scripting/toplevel/XMLList.h"
 #include "scripting/toplevel/Vector.h"
+#include "scripting/toplevel/Undefined.h"
 #include "parsing/streams.h"
 #include "platforms/engineutils.h"
+#include <malloc.h>
+#include "3rdparty/pugixml/src/pugixml.hpp"
 
 #include <istream>
 
@@ -49,40 +55,40 @@ const char* Capabilities::MANUFACTURER = "Adobe Linux";
 void Capabilities::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructorNotInstantiatable, CLASS_SEALED | CLASS_FINAL);
-	c->setDeclaredMethodByQName("language","",Class<IFunction>::getFunction(c->getSystemState(),_getLanguage,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("playerType","",Class<IFunction>::getFunction(c->getSystemState(),_getPlayerType,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("version","",Class<IFunction>::getFunction(c->getSystemState(),_getVersion,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("cpuArchitecture","",Class<IFunction>::getFunction(c->getSystemState(),_getCPUArchitecture,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("isDebugger","",Class<IFunction>::getFunction(c->getSystemState(),_getIsDebugger,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("isEmbeddedInAcrobat","",Class<IFunction>::getFunction(c->getSystemState(),_getIsEmbeddedInAcrobat,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("localFileReadDisable","",Class<IFunction>::getFunction(c->getSystemState(),_getLocalFileReadDisable,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("manufacturer","",Class<IFunction>::getFunction(c->getSystemState(),_getManufacturer,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("os","",Class<IFunction>::getFunction(c->getSystemState(),_getOS,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("serverString","",Class<IFunction>::getFunction(c->getSystemState(),_getServerString,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("screenResolutionX","",Class<IFunction>::getFunction(c->getSystemState(),_getScreenResolutionX,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("screenResolutionY","",Class<IFunction>::getFunction(c->getSystemState(),_getScreenResolutionY,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("hasAccessibility","",Class<IFunction>::getFunction(c->getSystemState(),_getHasAccessibility,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("screenDPI","",Class<IFunction>::getFunction(c->getSystemState(),_getScreenDPI,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasAudio","",Class<IFunction>::getFunction(c->getSystemState(),_hasAudio,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasAudioEncoder","",Class<IFunction>::getFunction(c->getSystemState(),_hasAudioEncoder,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasEmbeddedVideo","",Class<IFunction>::getFunction(c->getSystemState(),_hasEmbeddedVideo,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasIME","",Class<IFunction>::getFunction(c->getSystemState(),_hasIME,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasMP3","",Class<IFunction>::getFunction(c->getSystemState(),_hasMP3,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasPrinting","",Class<IFunction>::getFunction(c->getSystemState(),_hasPrinting,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasScreenBroadcast","",Class<IFunction>::getFunction(c->getSystemState(),_hasScreenBroadcast,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasScreenPlayback","",Class<IFunction>::getFunction(c->getSystemState(),_hasScreenPlayback,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasStreamingAudio","",Class<IFunction>::getFunction(c->getSystemState(),_hasStreamingAudio,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasStreamingVideo","",Class<IFunction>::getFunction(c->getSystemState(),_hasStreamingVideo,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasTLS","",Class<IFunction>::getFunction(c->getSystemState(),_hasTLS,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasVideoEncoder","",Class<IFunction>::getFunction(c->getSystemState(),_hasVideoEncoder,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("supports32BitProcesses","",Class<IFunction>::getFunction(c->getSystemState(),_supports32BitProcesses,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("supports64BitProcesses","",Class<IFunction>::getFunction(c->getSystemState(),_supports64BitProcesses,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("touchscreenType","",Class<IFunction>::getFunction(c->getSystemState(),_touchscreenType,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("avHardwareDisable","",Class<IFunction>::getFunction(c->getSystemState(),_avHardwareDisable,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("pixelAspectRatio","",Class<IFunction>::getFunction(c->getSystemState(),_pixelAspectRatio,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("screenColor","",Class<IFunction>::getFunction(c->getSystemState(),_screenColor,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-    c->setDeclaredMethodByQName("hasMultiChannelAudio","",Class<IFunction>::getFunction(c->getSystemState(),_hasMultiChannelAudio),NORMAL_METHOD,false);
-    c->setDeclaredMethodByQName("maxLevelIDC","",Class<IFunction>::getFunction(c->getSystemState(),_maxLevelIDC,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("language","",c->getSystemState()->getBuiltinFunction(_getLanguage,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("playerType","",c->getSystemState()->getBuiltinFunction(_getPlayerType,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("version","",c->getSystemState()->getBuiltinFunction(_getVersion,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("cpuArchitecture","",c->getSystemState()->getBuiltinFunction(_getCPUArchitecture,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("isDebugger","",c->getSystemState()->getBuiltinFunction(_getIsDebugger,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("isEmbeddedInAcrobat","",c->getSystemState()->getBuiltinFunction(_getIsEmbeddedInAcrobat,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("localFileReadDisable","",c->getSystemState()->getBuiltinFunction(_getLocalFileReadDisable,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("manufacturer","",c->getSystemState()->getBuiltinFunction(_getManufacturer,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("os","",c->getSystemState()->getBuiltinFunction(_getOS,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("serverString","",c->getSystemState()->getBuiltinFunction(_getServerString,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("screenResolutionX","",c->getSystemState()->getBuiltinFunction(_getScreenResolutionX,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("screenResolutionY","",c->getSystemState()->getBuiltinFunction(_getScreenResolutionY,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("hasAccessibility","",c->getSystemState()->getBuiltinFunction(_getHasAccessibility,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("screenDPI","",c->getSystemState()->getBuiltinFunction(_getScreenDPI,0,Class<Number>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasAudio","",c->getSystemState()->getBuiltinFunction(_hasAudio,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasAudioEncoder","",c->getSystemState()->getBuiltinFunction(_hasAudioEncoder,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasEmbeddedVideo","",c->getSystemState()->getBuiltinFunction(_hasEmbeddedVideo,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasIME","",c->getSystemState()->getBuiltinFunction(_hasIME,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasMP3","",c->getSystemState()->getBuiltinFunction(_hasMP3,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasPrinting","",c->getSystemState()->getBuiltinFunction(_hasPrinting,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasScreenBroadcast","",c->getSystemState()->getBuiltinFunction(_hasScreenBroadcast,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasScreenPlayback","",c->getSystemState()->getBuiltinFunction(_hasScreenPlayback,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasStreamingAudio","",c->getSystemState()->getBuiltinFunction(_hasStreamingAudio,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasStreamingVideo","",c->getSystemState()->getBuiltinFunction(_hasStreamingVideo,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasTLS","",c->getSystemState()->getBuiltinFunction(_hasTLS,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasVideoEncoder","",c->getSystemState()->getBuiltinFunction(_hasVideoEncoder,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("supports32BitProcesses","",c->getSystemState()->getBuiltinFunction(_supports32BitProcesses,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("supports64BitProcesses","",c->getSystemState()->getBuiltinFunction(_supports64BitProcesses,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("touchscreenType","",c->getSystemState()->getBuiltinFunction(_touchscreenType,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("avHardwareDisable","",c->getSystemState()->getBuiltinFunction(_avHardwareDisable,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("pixelAspectRatio","",c->getSystemState()->getBuiltinFunction(_pixelAspectRatio,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("screenColor","",c->getSystemState()->getBuiltinFunction(_screenColor,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+    c->setDeclaredMethodByQName("hasMultiChannelAudio","",c->getSystemState()->getBuiltinFunction(_hasMultiChannelAudio),NORMAL_METHOD,false);
+    c->setDeclaredMethodByQName("maxLevelIDC","",c->getSystemState()->getBuiltinFunction(_maxLevelIDC,0,Class<ASString>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
 }
 
 ASFUNCTIONBODY_ATOM(Capabilities,_getPlayerType)
@@ -134,11 +140,7 @@ ASFUNCTIONBODY_ATOM(Capabilities,_getManufacturer)
 
 ASFUNCTIONBODY_ATOM(Capabilities,_getOS)
 {
-#ifdef _WIN32
-	ret = asAtomHandler::fromString(wrk->getSystemState(),"Windows");
-#else
-	ret = asAtomHandler::fromString(wrk->getSystemState(),"Linux");
-#endif
+	ret = asAtomHandler::fromString(wrk->getSystemState(),wrk->getSystemState()->getEngineData()->platformOS);
 }
 
 ASFUNCTIONBODY_ATOM(Capabilities,_getVersion)
@@ -149,7 +151,10 @@ ASFUNCTIONBODY_ATOM(Capabilities,_getVersion)
 ASFUNCTIONBODY_ATOM(Capabilities,_getServerString)
 {
 	LOG(LOG_NOT_IMPLEMENTED,"Capabilities: not all capabilities are reported in ServerString");
-	tiny_string res = "&SA=t&SV=t&OS=Linux&PT=PlugIn&L=en&TLS=t&DD=t";
+	tiny_string res = "&SA=t&SV=t";
+	res +="&OS=";
+	res += wrk->getSystemState()->getEngineData()->platformOS;
+	res +="&PT=PlugIn&L=en&TLS=t&DD=t"; // TODO
 	res +="&V=";
 	res += EMULATED_VERSION;
 	res +="&M=";
@@ -368,11 +373,11 @@ void ApplicationDomain::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_SEALED | CLASS_FINAL);
 	//Static
-	c->setDeclaredMethodByQName("currentDomain","",Class<IFunction>::getFunction(c->getSystemState(),_getCurrentDomain,0,Class<ApplicationDomain>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("MIN_DOMAIN_MEMORY_LENGTH","",Class<IFunction>::getFunction(c->getSystemState(),_getMinDomainMemoryLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("currentDomain","",c->getSystemState()->getBuiltinFunction(_getCurrentDomain,0,Class<ApplicationDomain>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("MIN_DOMAIN_MEMORY_LENGTH","",c->getSystemState()->getBuiltinFunction(_getMinDomainMemoryLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
 	//Instance
-	c->setDeclaredMethodByQName("hasDefinition","",Class<IFunction>::getFunction(c->getSystemState(),hasDefinition,1,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("getDefinition","",Class<IFunction>::getFunction(c->getSystemState(),getDefinition,0,Class<ASObject>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("hasDefinition","",c->getSystemState()->getBuiltinFunction(hasDefinition,1,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getDefinition","",c->getSystemState()->getBuiltinFunction(getDefinition,0,Class<ASObject>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
 	REGISTER_GETTER_SETTER_RESULTTYPE(c,domainMemory,ByteArray);
 	REGISTER_GETTER_RESULTTYPE(c,parentDomain,ApplicationDomain);
 }
@@ -412,6 +417,111 @@ void ApplicationDomain::prepareShutdown()
 	for(auto it = instantiatedTemplates.begin(); it != instantiatedTemplates.end(); ++it)
 		it->second->prepareShutdown();
 }
+
+void ApplicationDomain::addSuperClassNotFilled(Class_base *cls)
+{
+	auto i = classesBeingDefined.cbegin();
+	while (i != classesBeingDefined.cend())
+	{
+		if(i->second == cls->super.getPtr())
+		{
+			classesSuperNotFilled.insert(make_pair(cls,cls->super.getPtr()));
+			break;
+		}
+		i++;
+	}
+}
+
+void ApplicationDomain::SetAllClassLinks()
+{
+	for (unsigned int i = 0; i < classesToLinkInterfaces.size(); i++)
+	{
+		Class_base* cls = classesToLinkInterfaces[i];
+		if (!cls)
+			continue;
+		if (newClassRecursiveLink(cls, cls))
+			classesToLinkInterfaces[i] = nullptr;
+	}
+}
+void ApplicationDomain::AddClassLinks(Class_base* target)
+{
+	classesToLinkInterfaces.push_back(target);
+}
+
+bool ApplicationDomain::newClassRecursiveLink(Class_base* target, Class_base* c)
+{
+	if(c->super)
+	{
+		if (!newClassRecursiveLink(target, c->super.getPtr()))
+			return false;
+	}
+	bool bAllDefined = false;
+	const vector<Class_base*>& interfaces=c->getInterfaces(&bAllDefined);
+	if (!bAllDefined)
+	{
+		return false;
+	}
+	for(unsigned int i=0;i<interfaces.size();i++)
+	{
+		LOG_CALL("Linking with interface " << interfaces[i]->class_name);
+		interfaces[i]->linkInterface(target);
+	}
+	return true;
+}
+
+void ApplicationDomain::copyBorrowedTraitsFromSuper(Class_base *cls)
+{
+	if (!cls)
+		return;
+	bool super_initialized=true;
+	bool cls_initialized=cls->super.isNull() || classesSuperNotFilled.empty();
+	if (cls->super)
+	{
+		for (auto itsup = classesSuperNotFilled.begin();itsup != classesSuperNotFilled.end(); itsup++)
+		{
+			if(itsup->second == cls->super.getPtr())
+			{
+				super_initialized=false;
+				break;
+			}
+		}
+	}
+	auto it = classesSuperNotFilled.begin();
+	while (it != classesSuperNotFilled.end())
+	{
+		if(it->second == cls)
+		{
+			it->first->copyBorrowedTraits(cls);
+			if (super_initialized)
+			{
+				it = classesSuperNotFilled.erase(it);
+				cls_initialized=true;
+			}
+			else
+			{
+				// cls->super was not yet initialized, make sure all classes that have cls as super get borrowed traits from cls->super
+				it->second = cls->super.getPtr();
+				it++;
+			}
+		}
+		else
+			it++;
+	}
+	if (cls_initialized)
+	{
+		// borrowed traits are all available for this class, so we can link the interfaces
+		if(!cls->isInterface)
+		{
+			//Link all the interfaces for this class and all the bases
+			if (!newClassRecursiveLink(cls, cls))
+			{
+				// remember classes where not all interfaces are defined yet
+				AddClassLinks(cls);
+			}
+		}
+	}
+}
+
 ASFUNCTIONBODY_ATOM(ApplicationDomain,_constructor)
 {
 	ApplicationDomain* th = asAtomHandler::as<ApplicationDomain>(obj);
@@ -464,13 +574,8 @@ ASFUNCTIONBODY_ATOM(ApplicationDomain,hasDefinition)
 		asAtomHandler::setBool(ret,false);
 	else
 	{
-		if(!asAtomHandler::isClass(o))
-			asAtomHandler::setBool(ret,false);
-		else
-		{
-			LOG(LOG_CALLS,"Found definition for " << name<<"|"<<asAtomHandler::toDebugString(o)<<"|"<<asAtomHandler::toDebugString(obj));
-			asAtomHandler::setBool(ret,true);
-		}
+		LOG(LOG_CALLS,"Found definition for " << name<<"|"<<asAtomHandler::toDebugString(o)<<"|"<<asAtomHandler::toDebugString(obj));
+		asAtomHandler::setBool(ret,true);
 	}
 }
 
@@ -487,8 +592,8 @@ ASFUNCTIONBODY_ATOM(ApplicationDomain,getDefinition)
 	tiny_string tmpName;
 	stringToQName(tmp,tmpName,nsName);
 	name.name_s_id=wrk->getSystemState()->getUniqueStringId(tmpName);
-	if (nsName != "")
-		name.ns.push_back(nsNameAndKind(wrk->getSystemState(),nsName,NAMESPACE));
+	name.hasEmptyNS=nsName == "";
+	name.ns.push_back(nsNameAndKind(wrk->getSystemState(),nsName,NAMESPACE));
 
 	LOG(LOG_CALLS,"Looking for definition of " << name);
 	ret = asAtomHandler::invalidAtom;
@@ -496,6 +601,7 @@ ASFUNCTIONBODY_ATOM(ApplicationDomain,getDefinition)
 	th->getVariableAndTargetByMultinameIncludeTemplatedClasses(ret,name,target,wrk);
 	if(asAtomHandler::isInvalid(ret))
 	{
+		ret = asAtomHandler::undefinedAtom;
 		createError<ReferenceError>(wrk,kClassNotFoundError,name.normalizedNameUnresolved(wrk->getSystemState()));
 		return;
 	}
@@ -503,7 +609,7 @@ ASFUNCTIONBODY_ATOM(ApplicationDomain,getDefinition)
 	//TODO: specs says that also namespaces and function may be returned
 	//assert_and_throw(o->getObjectType()==T_CLASS);
 
-	LOG(LOG_CALLS,"Getting definition for " << name);
+	LOG(LOG_CALLS,"Getting definition for " << name<<" "<<asAtomHandler::toDebugString(ret));
 	ASATOM_INCREF(ret);
 }
 
@@ -615,7 +721,7 @@ void ApplicationDomain::getVariableAndTargetByMultinameIncludeTemplatedClasses(a
 			getVariableAndTargetByMultiname(typeobj,tn, tntarget,wrk);
 			if (asAtomHandler::isValid(typeobj))
 			{
-				const Type* t = asAtomHandler::getObject(typeobj)->as<Type>();
+				Type* t = asAtomHandler::getObject(typeobj)->as<Type>();
 				this->incRef();
 				ret = asAtomHandler::fromObject(Template<Vector>::getTemplateInstance(wrk->rootClip.getPtr(),t,_NR<ApplicationDomain>(this)).getPtr());
 			}
@@ -671,8 +777,8 @@ LoaderContext::LoaderContext(ASWorker* wrk, Class_base* c):
 void LoaderContext::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_SEALED);
-	c->setDeclaredMethodByQName("allowLoadBytesCodeExecution","",Class<IFunction>::getFunction(c->getSystemState(),_getter_allowCodeImport),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("allowLoadBytesCodeExecution","",Class<IFunction>::getFunction(c->getSystemState(),_setter_allowCodeImport),SETTER_METHOD,false);
+	c->setDeclaredMethodByQName("allowLoadBytesCodeExecution","",c->getSystemState()->getBuiltinFunction(_getter_allowCodeImport),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("allowLoadBytesCodeExecution","",c->getSystemState()->getBuiltinFunction(_setter_allowCodeImport),SETTER_METHOD,false);
 	REGISTER_GETTER_SETTER(c, allowCodeImport);
 	REGISTER_GETTER_SETTER(c, applicationDomain);
 	REGISTER_GETTER_SETTER(c, checkPolicyFile);
@@ -717,7 +823,7 @@ void SecurityDomain::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_SEALED);
 	//Static
-	c->setDeclaredMethodByQName("currentDomain","",Class<IFunction>::getFunction(c->getSystemState(),_getCurrentDomain),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("currentDomain","",c->getSystemState()->getBuiltinFunction(_getCurrentDomain),GETTER_METHOD,false);
 }
 
 void SecurityDomain::buildTraits(ASObject* o)
@@ -739,9 +845,9 @@ void Security::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructorNotInstantiatable, CLASS_SEALED | CLASS_FINAL);
 	//Fully static class
-	c->setDeclaredMethodByQName("exactSettings","",Class<IFunction>::getFunction(c->getSystemState(),_getExactSettings),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("exactSettings","",Class<IFunction>::getFunction(c->getSystemState(),_setExactSettings),SETTER_METHOD,false);
-	c->setDeclaredMethodByQName("sandboxType","",Class<IFunction>::getFunction(c->getSystemState(),_getSandboxType),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("exactSettings","",c->getSystemState()->getBuiltinFunction(_getExactSettings),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("exactSettings","",c->getSystemState()->getBuiltinFunction(_setExactSettings),SETTER_METHOD,false);
+	c->setDeclaredMethodByQName("sandboxType","",c->getSystemState()->getBuiltinFunction(_getSandboxType),GETTER_METHOD,false);
 
 	// Value is undefined and not "httpResponseStatus" like stated in documentation
 	c->setVariableAtomByQName("APPLICATION",nsNameAndKind(),asAtomHandler::fromObject(c->getSystemState()->getUndefinedRef()),DECLARED_TRAIT);
@@ -750,11 +856,11 @@ void Security::sinit(Class_base* c)
 	c->setVariableAtomByQName("LOCAL_WITH_FILE",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),c->getSystemState()->securityManager->getSandboxName(SecurityManager::LOCAL_WITH_FILE)),DECLARED_TRAIT);
 	c->setVariableAtomByQName("LOCAL_WITH_NETWORK",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),c->getSystemState()->securityManager->getSandboxName(SecurityManager::LOCAL_WITH_NETWORK)),DECLARED_TRAIT);
 	c->setVariableAtomByQName("REMOTE",nsNameAndKind(),asAtomHandler::fromString(c->getSystemState(),c->getSystemState()->securityManager->getSandboxName(SecurityManager::REMOTE)),DECLARED_TRAIT);
-	c->setDeclaredMethodByQName("allowDomain","",Class<IFunction>::getFunction(c->getSystemState(),allowDomain),NORMAL_METHOD,false);
-	c->setDeclaredMethodByQName("allowInsecureDomain","",Class<IFunction>::getFunction(c->getSystemState(),allowInsecureDomain),NORMAL_METHOD,false);
-	c->setDeclaredMethodByQName("loadPolicyFile","",Class<IFunction>::getFunction(c->getSystemState(),loadPolicyFile),NORMAL_METHOD,false);
-	c->setDeclaredMethodByQName("showSettings","",Class<IFunction>::getFunction(c->getSystemState(),showSettings),NORMAL_METHOD,false);
-	c->setDeclaredMethodByQName("pageDomain","",Class<IFunction>::getFunction(c->getSystemState(),pageDomain),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("allowDomain","",c->getSystemState()->getBuiltinFunction(allowDomain),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("allowInsecureDomain","",c->getSystemState()->getBuiltinFunction(allowInsecureDomain),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("loadPolicyFile","",c->getSystemState()->getBuiltinFunction(loadPolicyFile),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("showSettings","",c->getSystemState()->getBuiltinFunction(showSettings),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("pageDomain","",c->getSystemState()->getBuiltinFunction(pageDomain),GETTER_METHOD,false);
 
 	c->getSystemState()->securityManager->setExactSettings(true, false);
 }
@@ -837,18 +943,54 @@ ASFUNCTIONBODY_ATOM(lightspark, fscommand)
 void System::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructorNotInstantiatable, CLASS_SEALED | CLASS_FINAL);
-	c->setDeclaredMethodByQName("totalMemory","",Class<IFunction>::getFunction(c->getSystemState(),totalMemory),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("disposeXML","",Class<IFunction>::getFunction(c->getSystemState(),disposeXML),NORMAL_METHOD,false);
-	c->setDeclaredMethodByQName("pauseForGCIfCollectionImminent","",Class<IFunction>::getFunction(c->getSystemState(),pauseForGCIfCollectionImminent),NORMAL_METHOD,false);
-	c->setDeclaredMethodByQName("gc","",Class<IFunction>::getFunction(c->getSystemState(),gc),NORMAL_METHOD,false);
-	c->setDeclaredMethodByQName("pause","",Class<IFunction>::getFunction(c->getSystemState(),pause),NORMAL_METHOD,false);
-	c->setDeclaredMethodByQName("resume","",Class<IFunction>::getFunction(c->getSystemState(),resume),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("totalMemory","",c->getSystemState()->getBuiltinFunction(totalMemory),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("disposeXML","",c->getSystemState()->getBuiltinFunction(disposeXML),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("pauseForGCIfCollectionImminent","",c->getSystemState()->getBuiltinFunction(pauseForGCIfCollectionImminent),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("gc","",c->getSystemState()->getBuiltinFunction(gc),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("pause","",c->getSystemState()->getBuiltinFunction(pause),NORMAL_METHOD,false);
+	c->setDeclaredMethodByQName("resume","",c->getSystemState()->getBuiltinFunction(resume),NORMAL_METHOD,false);
 }
 
 ASFUNCTIONBODY_ATOM(System,totalMemory)
 {
-	LOG(LOG_NOT_IMPLEMENTED, "System.totalMemory not implemented");
+#ifdef _WIN32
+	LOG(LOG_NOT_IMPLEMENTED,"System.totalMemory not implemented for Windows");
 	asAtomHandler::setUInt(ret,wrk,1024);
+	return;
+#else
+	char* buf=nullptr;
+	size_t size=0;
+	FILE* f = open_memstream(&buf, &size);
+	if (!f || malloc_info(0,f)!=0)
+	{
+		LOG(LOG_ERROR,"System.totalMemory failed");
+		asAtomHandler::setUInt(ret,wrk,1024);
+		return;
+	}
+	fclose(f);
+	
+	uint32_t memsize = 0;
+	pugi::xml_document xmldoc;
+	xmldoc.load_buffer((void*)buf,size);
+	free(buf);
+	pugi::xml_node m = xmldoc.root().child("malloc");
+	pugi::xml_node n = m.child("heap");
+	while (n.type() != pugi::node_null)
+	{
+		pugi::xml_node s = n.child("system");
+		pugi::xml_attribute a = s.attribute("type");
+		while (strcmp(a.value(),"current")!= 0)
+		{
+			s = s.next_sibling("system");
+			if (s.type() == pugi::node_null)
+				break;
+			a = s.attribute("type");
+		}
+		memsize += s.attribute("size").as_uint(0);
+		n = n.next_sibling("heap");
+	}
+	asAtomHandler::setUInt(ret,wrk,memsize);
+#endif
 }
 ASFUNCTIONBODY_ATOM(System,disposeXML)
 {
@@ -891,7 +1033,8 @@ extern uint32_t asClassCount;
 ASWorker::ASWorker(SystemState* s):
 	EventDispatcher(this,nullptr),parser(nullptr),
 	giveAppPrivileges(false),started(false),inGarbageCollection(false),inShutdown(false),inFinalize(false),
-	freelist(new asfreelist[asClassCount]),currentCallContext(nullptr),cur_recursion(0),isPrimordial(true),state("running")
+	freelist(new asfreelist[asClassCount]),currentCallContext(nullptr),cur_recursion(0),isPrimordial(true),state("running"),
+	nativeExtensionCallCount(0)
 {
 	subtype = SUBTYPE_WORKER;
 	setSystemState(s);
@@ -907,7 +1050,8 @@ ASWorker::ASWorker(SystemState* s):
 ASWorker::ASWorker(Class_base* c):
 	EventDispatcher(c->getSystemState()->worker,c),parser(nullptr),
 	giveAppPrivileges(false),started(false),inGarbageCollection(false),inShutdown(false),inFinalize(false),
-	freelist(new asfreelist[asClassCount]),currentCallContext(nullptr),cur_recursion(0),isPrimordial(false),state("new")
+	freelist(new asfreelist[asClassCount]),currentCallContext(nullptr),cur_recursion(0),isPrimordial(false),state("new"),
+	nativeExtensionCallCount(0)
 {
 	subtype = SUBTYPE_WORKER;
 	// TODO: it seems that AIR applications have a higher default value for max_recursion
@@ -921,7 +1065,8 @@ ASWorker::ASWorker(Class_base* c):
 ASWorker::ASWorker(ASWorker* wrk, Class_base* c):
 	EventDispatcher(wrk,c),parser(nullptr),
 	giveAppPrivileges(false),started(false),inGarbageCollection(false),inShutdown(false),inFinalize(false),
-	freelist(new asfreelist[asClassCount]),currentCallContext(nullptr),cur_recursion(0),isPrimordial(false),state("new")
+	freelist(new asfreelist[asClassCount]),currentCallContext(nullptr),cur_recursion(0),isPrimordial(false),state("new"),
+	nativeExtensionCallCount(0)
 {
 	subtype = SUBTYPE_WORKER;
 	// TODO: it seems that AIR applications have a higher default value for max_recursion
@@ -1059,22 +1204,22 @@ Prototype* ASWorker::getClassPrototype(const Class_base* cls)
 void ASWorker::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, EventDispatcher, _constructorNotInstantiatable, CLASS_SEALED | CLASS_FINAL);
-	c->setDeclaredMethodByQName("current","",Class<IFunction>::getFunction(c->getSystemState(),_getCurrent,0,Class<ASWorker>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("getSharedProperty","",Class<IFunction>::getFunction(c->getSystemState(),getSharedProperty,1,Class<ASObject>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("isSupported","",Class<IFunction>::getFunction(c->getSystemState(),isSupported,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("current","",c->getSystemState()->getBuiltinFunction(_getCurrent,0,Class<ASWorker>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("getSharedProperty","",c->getSystemState()->getBuiltinFunction(getSharedProperty,1,Class<ASObject>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("isSupported","",c->getSystemState()->getBuiltinFunction(isSupported,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
 	REGISTER_GETTER_RESULTTYPE(c, isPrimordial,Boolean);
 	REGISTER_GETTER_RESULTTYPE(c, state,ASString);
-	c->setDeclaredMethodByQName("addEventListener","",Class<IFunction>::getFunction(c->getSystemState(),_addEventListener),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("createMessageChannel","",Class<IFunction>::getFunction(c->getSystemState(),createMessageChannel,1,Class<MessageChannel>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("removeEventListener","",Class<IFunction>::getFunction(c->getSystemState(),_removeEventListener),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setSharedProperty","",Class<IFunction>::getFunction(c->getSystemState(),setSharedProperty),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("start","",Class<IFunction>::getFunction(c->getSystemState(),start),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("terminate","",Class<IFunction>::getFunction(c->getSystemState(),terminate,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("addEventListener","",c->getSystemState()->getBuiltinFunction(_addEventListener),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("createMessageChannel","",c->getSystemState()->getBuiltinFunction(createMessageChannel,1,Class<MessageChannel>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("removeEventListener","",c->getSystemState()->getBuiltinFunction(_removeEventListener),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setSharedProperty","",c->getSystemState()->getBuiltinFunction(setSharedProperty),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("start","",c->getSystemState()->getBuiltinFunction(start),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("terminate","",c->getSystemState()->getBuiltinFunction(terminate,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
 }
 
 void ASWorker::throwStackOverflow()
 {
-	createError<ASError>(this,kStackOverflowError);
+	createError<StackOverflowError>(this,kStackOverflowError);
 }
 
 void ASWorker::execute()
@@ -1411,14 +1556,14 @@ void WorkerDomain::prepareShutdown()
 void WorkerDomain::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_SEALED | CLASS_FINAL);
-	c->setDeclaredMethodByQName("current","",Class<IFunction>::getFunction(c->getSystemState(),_getCurrent,0,Class<WorkerDomain>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("isSupported","",Class<IFunction>::getFunction(c->getSystemState(),_isSupported,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
-	c->setDeclaredMethodByQName("createWorker","",Class<IFunction>::getFunction(c->getSystemState(),createWorker,1,Class<ASWorker>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("listWorkers","",Class<IFunction>::getFunction(c->getSystemState(),listWorkers),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("current","",c->getSystemState()->getBuiltinFunction(_getCurrent,0,Class<WorkerDomain>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("isSupported","",c->getSystemState()->getBuiltinFunction(_isSupported,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,false);
+	c->setDeclaredMethodByQName("createWorker","",c->getSystemState()->getBuiltinFunction(createWorker,1,Class<ASWorker>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("listWorkers","",c->getSystemState()->getBuiltinFunction(listWorkers),NORMAL_METHOD,true);
 	if(c->getSystemState()->flashMode==SystemState::AVMPLUS)
 	{
-		c->setDeclaredMethodByQName("createWorkerFromPrimordial","",Class<IFunction>::getFunction(c->getSystemState(),createWorkerFromPrimordial),NORMAL_METHOD,true);
-		c->setDeclaredMethodByQName("createWorkerFromByteArray","",Class<IFunction>::getFunction(c->getSystemState(),createWorkerFromByteArray),NORMAL_METHOD,true);
+		c->setDeclaredMethodByQName("createWorkerFromPrimordial","",c->getSystemState()->getBuiltinFunction(createWorkerFromPrimordial),NORMAL_METHOD,true);
+		c->setDeclaredMethodByQName("createWorkerFromByteArray","",c->getSystemState()->getBuiltinFunction(createWorkerFromByteArray),NORMAL_METHOD,true);
 	}
 
 }

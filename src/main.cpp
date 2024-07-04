@@ -21,14 +21,17 @@
 #include "version.h"
 #include "backends/security.h"
 #include "backends/config.h"
+#include "backends/streamcache.h"
 #include "swf.h"
 #include "logger.h"
 #include "platforms/engineutils.h"
 #include "compat.h"
-#include <SDL2/SDL.h>
+#include <SDL.h>
 #include "flash/utils/ByteArray.h"
+#include "scripting/flash/display/RootMovieClip.h"
 #include <sys/stat.h>
 #include "parsing/streams.h"
+#include "launcher.h"
 
 #ifdef __MINGW32__
     #ifndef PATH_MAX
@@ -84,7 +87,7 @@ class StandaloneEngineData: public EngineData
 		return st.st_size;
 	}
 public:
-	StandaloneEngineData(const tiny_string& filedatapath)
+	StandaloneEngineData(const tiny_string& filedatapath,const tiny_string& absolutepath)
 	{
 		sharedObjectDatapath = Config::getConfig()->getCacheDirectory();
 		sharedObjectDatapath += G_DIR_SEPARATOR_S;
@@ -95,7 +98,7 @@ public:
 		mApplicationStoragePath += filedatapath;
 		mApplicationStoragePath += G_DIR_SEPARATOR_S;
 		mApplicationStoragePath += "appstorage";
-		mBaseDir = g_get_current_dir();
+		mBaseDir = g_path_get_dirname(absolutepath.raw_buf());
 	}
 	~StandaloneEngineData()
 	{
@@ -113,6 +116,7 @@ public:
 			if (window == 0)
 				LOG(LOG_ERROR,"createWidget failed:"<<SDL_GetError());
 		}
+		Launcher::setWindowIcon(window);
 		return window;
 	}
 
@@ -131,6 +135,26 @@ public:
 	{
 		/* Nothing to do because the standalone main window is
 		 * always focused */
+	}
+	void getWindowPosition(int* x, int* y) override
+	{
+		if (widget)
+		{
+			SDL_GetWindowPosition(widget,x,y);
+		}
+		else
+		{
+			x=0;
+			y=0;
+		}
+	}
+	void setWindowPosition(int x, int y, uint32_t width, uint32_t height) override
+	{
+		if (widget)
+		{
+			SDL_SetWindowPosition(widget,x,y);
+			SDL_SetWindowSize(widget,width,height);
+		}
 	}
 	void openPageInBrowser(const tiny_string& url, const tiny_string& window) override
 	{
@@ -175,7 +199,25 @@ public:
 	{
 		SDL_GL_DeleteContext(mSDLContext);
 	}
-
+	bool getAIRApplicationDescriptor(SystemState* sys,tiny_string& xmlstring) override
+	{
+		if (sys->flashMode == SystemState::FLASH_MODE::AIR)
+		{
+			tiny_string swfpath = FileFullPath(sys,"");
+			gchar* dir = g_path_get_dirname(swfpath.raw_buf());
+			std::string p = dir;
+			p += G_DIR_SEPARATOR_S;
+			p += "META-INF";
+			p += G_DIR_SEPARATOR_S;
+			p += "AIR";
+			p += G_DIR_SEPARATOR_S;
+			p += "application.xml";
+			tiny_string filename(p);
+			xmlstring = FileRead(sys,filename,true);
+			return true;
+		}
+		return false;
+	}
 	bool FileExists(SystemState* sys,const tiny_string& filename, bool isfullpath) override
 	{
 		if (!isvalidfilename(filename))
@@ -184,6 +226,28 @@ public:
 		if (p.empty())
 			return false;
 		return g_file_test(p.raw_buf(),G_FILE_TEST_EXISTS);
+	}
+	bool FileIsHidden(SystemState* sys,const tiny_string& filename, bool isfullpath) override
+	{
+		if (!isvalidfilename(filename))
+			return false;
+		tiny_string p = isfullpath ? filename : FileFullPath(sys,filename);
+		if (p.empty())
+			return false;
+		char* f = g_path_get_basename(p.raw_buf());
+#ifdef _WIN32
+		LOG(LOG_NOT_IMPLEMENTED,"File.IsHidden not properly implemented for windows");
+#endif
+		return *f == '.';
+	}
+	bool FileIsDirectory(SystemState* sys,const tiny_string& filename, bool isfullpath) override
+	{
+		if (!isvalidfilename(filename))
+			return false;
+		tiny_string p = isfullpath ? filename : FileFullPath(sys,filename);
+		if (p.empty())
+			return false;
+		return g_file_test(p.raw_buf(),G_FILE_TEST_IS_DIR);
 	}
 
 	uint32_t FileSize(SystemState* sys,const tiny_string& filename, bool isfullpath) override
@@ -211,6 +275,17 @@ public:
 		p += G_DIR_SEPARATOR_S;
 		p += filename.raw_buf();
 		return p;
+	}
+
+	tiny_string FileBasename(SystemState* sys, const tiny_string& filename, bool isfullpath) override
+	{
+		if (!isvalidfilename(filename))
+			return "";
+		tiny_string p = isfullpath ? filename : FileFullPath(sys,filename);
+		if (p.empty())
+			return "";
+		char* b = g_path_get_basename(p.raw_buf());
+		return tiny_string(b);
 	}
 
 	tiny_string FileRead(SystemState* sys,const tiny_string& filename, bool isfullpath) override
@@ -315,6 +390,30 @@ public:
 		}
 		return g_mkdir_with_parents(p.raw_buf(),0755) == 0;
 	}
+	bool FilGetDirectoryListing(SystemState* sys, const tiny_string &filename, bool isfullpath, std::vector<tiny_string>& filelist) override
+	{
+		if (!isvalidfilename(filename))
+			return false;
+		tiny_string p = isfullpath ? filename : FileFullPath(sys,filename);
+		if (p.empty())
+			return false;
+		GDir* dir = g_dir_open(p.raw_buf(),0,nullptr);
+		if (dir)
+		{
+			while (true)
+			{
+				const char* filename = g_dir_read_name(dir);
+				if (!filename)
+					break;
+				tiny_string s(filename,true);
+				filelist.push_back(s);;
+			}
+			g_dir_close(dir);
+			return true;
+		}
+		return false;
+	}
+	
 	bool FilePathIsAbsolute(const tiny_string& filename) override
 	{
 		return g_path_is_absolute(filename.raw_buf());
@@ -324,6 +423,72 @@ public:
 		return mApplicationStoragePath;
 	}
 };
+void checkForNativeAIRExtensions(std::vector<tiny_string>& extensions,char* fileName)
+{
+	tiny_string p = g_path_get_dirname(fileName);
+	p += G_DIR_SEPARATOR_S;
+	p += "META-INF";
+	p += G_DIR_SEPARATOR_S;
+	p += "AIR";
+	p += G_DIR_SEPARATOR_S;
+	p += "extensions";
+	GDir* dir = g_dir_open(p.raw_buf(),0,nullptr);
+	if (dir)
+	{
+		while (true)
+		{
+			const char* subpath = g_dir_read_name(dir);
+			if (!subpath)
+				break;
+			tiny_string extensionpath=p;
+			extensionpath += G_DIR_SEPARATOR_S;
+			extensionpath += subpath;
+			extensionpath += G_DIR_SEPARATOR_S;
+			extensionpath += "library.swf";
+			if (g_file_test(p.raw_buf(),G_FILE_TEST_EXISTS))
+			{
+				LOG(LOG_INFO,"native extension found:"<<extensionpath);
+				extensions.push_back(extensionpath);
+			}
+		}
+		g_dir_close(dir);
+	}
+	if (!extensions.empty())
+	{
+		// try to load additional libraries that may be needed for the extensions
+		tiny_string basedir = g_path_get_dirname(fileName);
+		GDir* dir = g_dir_open(basedir.raw_buf(),0,nullptr);
+		if (dir)
+		{
+			while (true)
+			{
+				const char* file = g_dir_read_name(dir);
+				if (!file)
+					break;
+				if (g_file_test(file,G_FILE_TEST_IS_DIR))
+					continue;
+				tiny_string s=file;
+#ifdef _WIN32
+				const char* suffix = ".dll";
+#else
+				const char* suffix = ".so";
+#endif
+				if (!s.endsWith(suffix))
+					continue;
+				tiny_string libpath=basedir;
+				libpath += G_DIR_SEPARATOR_S;
+				libpath += s;
+				void* lib = SDL_LoadObject(libpath.raw_buf());
+				if (lib==nullptr)
+					LOG(LOG_ERROR,"loading additional lib failed:"<<SDL_GetError()<<" "<<libpath);
+				else
+					LOG(LOG_INFO,"additional lib loaded:"<<lib<<" "<<libpath);
+			}
+			g_dir_close(dir);
+		}
+	}
+}
+
 
 int main(int argc, char* argv[])
 {
@@ -347,7 +512,8 @@ int main(int argc, char* argv[])
 	std::vector<tiny_string> extensions;
 
 	LOG(LOG_INFO,"Lightspark version " << VERSION << " Copyright 2009-2013 Alessandro Pignotti and others");
-
+	
+	tiny_string spoof_os;
 	for(int i=1;i<argc;i++)
 	{
 		if(strcmp(argv[i],"-u")==0 || 
@@ -475,6 +641,38 @@ int main(int argc, char* argv[])
 			}
 			HTTPcookie=argv[i];
 		}
+		else if(strcmp(argv[i],"-os")==0 || 
+				 strcmp(argv[i],"--spoof-os")==0)
+		{
+			i++;
+			if(i==argc)
+			{
+				break;
+			}
+			spoof_os = argv[i];
+		}
+		else if(strcmp(argv[i],"-h")==0 || 
+				 strcmp(argv[i],"--help")==0)
+		{
+			LOG(LOG_ERROR, "Usage: " << argv[0] << " [--url|-u http://loader.url/file.swf]" <<
+							   " [--disable-interpreter|-ni] [--enable-fast-interpreter|-fi]" <<
+#ifdef LLVM_ENABLED
+							   " [--enable-jit|-j]" <<
+#endif
+							   " [--log-level|-l 0-4] [--parameters-file|-p params-file] [--security-sandbox|-s sandbox]" <<
+							   " [--exit-on-error] [--HTTP-cookies cookie] [--air] [--avmplus] [--disable-rendering]" <<
+#ifdef PROFILING_SUPPORT
+							   " [--profiling-output|-o profiling-file]" <<
+#endif
+							   " [--ignore-unhandled-exceptions|-ne]"
+							   " [--fullscreen|-fs]"
+							   " [--scale|-sc]"
+							   " [--load-extension|-le extension-file"
+							   " [--help|-h]" <<
+							   " [--version|-v]" <<
+							   " [<file.swf>]");
+			exit(0);
+		}
 		else
 		{
 			//No options flag, so set the swf file name
@@ -486,26 +684,34 @@ int main(int argc, char* argv[])
 			fileName=argv[i];
 		}
 	}
-
+	
+	// no filename give, we start the launcher
+	Launcher l; // define launcher here, so that the char pointers into the tiny_strings stay valid until the end
 	if(fileName==nullptr)
 	{
-		LOG(LOG_ERROR, "Usage: " << argv[0] << " [--url|-u http://loader.url/file.swf]" <<
-			" [--disable-interpreter|-ni] [--enable-fast-interpreter|-fi]" <<
-#ifdef LLVM_ENABLED
-			" [--enable-jit|-j]" <<
-#endif
-			" [--log-level|-l 0-4] [--parameters-file|-p params-file] [--security-sandbox|-s sandbox]" <<
-			" [--exit-on-error] [--HTTP-cookies cookie] [--air] [--avmplus] [--disable-rendering]" <<
-#ifdef PROFILING_SUPPORT
-			" [--profiling-output|-o profiling-file]" <<
-#endif
-			" [--ignore-unhandled-exceptions|-ne]"
-			" [--fullscreen|-fs]"
-			" [--scale|-sc]"
-			" [--load-extension|-le extension-file"
-			" [--version|-v]" <<
-			" <file.swf>");
-		exit(1);
+		bool fileselected = l.start();
+		if (fileselected)
+		{
+			if (l.selectedfile.empty())
+				exit(0);
+			ignoreUnhandledExceptions=true; // always ignore exception when running from launcher
+			fileName= (char*)l.selectedfile.raw_buf();
+			if (l.needsAIR)
+				flashMode=SystemState::AIR;
+			else if (l.needsAVMplus)
+				flashMode=SystemState::AVMPLUS;
+			
+			if (l.needsfilesystem && l.needsnetwork)
+				sandboxType = SecurityManager::LOCAL_TRUSTED;
+			else if (l.needsfilesystem)
+				sandboxType = SecurityManager::LOCAL_WITH_FILE;
+			else if (l.needsnetwork)
+				sandboxType = SecurityManager::LOCAL_WITH_NETWORK;
+			
+			url = !l.baseurl.empty() ? (char*)l.baseurl.raw_buf() : nullptr;
+		}
+		else
+			exit(0);
 	}
 
 	Log::setLogLevel(log_level);
@@ -529,6 +735,14 @@ int main(int argc, char* argv[])
 		SystemState::staticDeinit();
 		exit(3);
 	}
+	char absolutepath[PATH_MAX];
+	if (realpath(fileName,absolutepath) == nullptr)
+	{
+		LOG(LOG_ERROR, "Unable to resolve file");
+		exit(1);
+	}
+	if (flashMode==SystemState::AIR)
+		checkForNativeAIRExtensions(extensions,absolutepath);
 	//NOTE: see SystemState declaration
 	SystemState* sys = new SystemState(fileSize, flashMode);
 	ParseThread* pt = new ParseThread(f, sys->mainClip);
@@ -553,17 +767,17 @@ int main(int argc, char* argv[])
 			sandboxType = SecurityManager::REMOTE;
 		}
 	}
-#ifndef _WIN32
 	//When running in a local sandbox, set the root URL to the current working dir
 	else if(sandboxType != SecurityManager::REMOTE)
 	{
 		char * cwd = g_get_current_dir();
-		string cwdStr = string("file://") + string(cwd);
+		char* baseurl = g_filename_to_uri(cwd,nullptr,nullptr);
+		string cwdStr = string(baseurl);
 		free(cwd);
+		free(baseurl);
 		cwdStr += "/";
 		sys->mainClip->setOrigin(cwdStr, fileName);
 	}
-#endif
 	else
 	{
 		sys->mainClip->setOrigin(string("file://") + fileName);
@@ -591,22 +805,18 @@ int main(int argc, char* argv[])
 		sys->setCookies(HTTPcookie);
 
 	// create path for shared object local storage
-	char absolutepath[PATH_MAX];
-	if (realpath(fileName,absolutepath) == nullptr)
-	{
-		LOG(LOG_ERROR, "Unable to resolve file");
-		exit(1);
-	}
 	tiny_string homedir(g_get_home_dir());
 	tiny_string filedatapath = absolutepath;
 	if (filedatapath.find(homedir) == 0) // remove home dir, if file is located below home dir
 		filedatapath = filedatapath.substr_bytes(homedir.numBytes(),UINT32_MAX);
 
-	sys->setParamsAndEngine(new StandaloneEngineData(filedatapath), true);
+	sys->setParamsAndEngine(new StandaloneEngineData(filedatapath,absolutepath), true);
 	// on standalone local storage is always allowed
 	sys->getEngineData()->setLocalStorageAllowedMarker(true);
 	sys->getEngineData()->startInFullScreenMode=startInFullScreenMode;
 	sys->getEngineData()->startscalefactor=startscalefactor;
+	if (!spoof_os.empty())
+		sys->getEngineData()->platformOS=spoof_os;
 
 	sys->securityManager->setSandboxType(sandboxType);
 	if(sandboxType == SecurityManager::REMOTE)
@@ -627,7 +837,7 @@ int main(int argc, char* argv[])
 	 * SystemState::setShutdownFlag.
 	 */
 	sys->destroy();
-	bool isonerror = sys->exitOnError==SystemState::ERROR_ANY && sys->isOnError();
+	int exitcode = sys->getExitCode();
 	SDL_Event event;
 	SDL_zero(event);
 	event.type = LS_USEREVENT_QUIT;
@@ -639,6 +849,6 @@ int main(int argc, char* argv[])
 
 	SystemState::staticDeinit();
 	
-	return isonerror ? 1 : 0;
+	return exitcode;
 }
 

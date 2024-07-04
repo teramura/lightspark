@@ -18,7 +18,10 @@
 **************************************************************************/
 #include <cassert>
 
+#include "interfaces/threading.h"
 #include "thread_pool.h"
+#include "threading.h"
+#include "timer.h"
 #include "exceptions.h"
 #include "compat.h"
 #include "logger.h"

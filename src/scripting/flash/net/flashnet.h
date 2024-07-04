@@ -20,14 +20,18 @@
 #ifndef SCRIPTING_FLASH_NET_FLASHNET_H
 #define SCRIPTING_FLASH_NET_FLASHNET_H 1
 
+#include "forwards/threading.h"
+#include "forwards/timer.h"
+#include "forwards/backends/netutils.h"
+#include "interfaces/threading.h"
+#include "interfaces/timer.h"
+#include "interfaces/backends/netutils.h"
 #include "compat.h"
 #include "asobject.h"
 #include "scripting/flash/events/flashevents.h"
-#include "thread_pool.h"
-#include "backends/netutils.h"
-#include "timer.h"
 #include "backends/decoder.h"
 #include "backends/audio.h"
+#include "backends/netutils.h"
 #include "NetStreamInfo.h"
 
 namespace lightspark
@@ -46,8 +50,9 @@ private:
 	void validateHeaderName(const tiny_string& headerName) const;
 	ASPROPERTY_GETTER_SETTER(tiny_string,contentType);
 	ASPROPERTY_GETTER_SETTER(_NR<Array>,requestHeaders);
+	RootMovieClip* root;
 public:
-	URLRequest(ASWorker* wrk,Class_base* c, const tiny_string u="", const tiny_string m="GET", _NR<ASObject> d = NullRef);
+	URLRequest(ASWorker* wrk,Class_base* c, const tiny_string u="", const tiny_string m="GET", _NR<ASObject> d = NullRef,RootMovieClip* _root=nullptr);
 	void finalize() override;
 	bool destruct() override;
 	void prepareShutdown() override;
@@ -392,7 +397,7 @@ public:
 		@pre lock on the object should be acquired and object should be ready
 		@return a TextureChunk ready to be blitted
 	*/
-	const TextureChunk& getTexture() const;
+	TextureChunk& getTexture() const;
 	/**
 	  	Get the stream time
 
@@ -430,22 +435,6 @@ public:
 	void clearFrameBuffer();
 };
 
-class LocalConnection: public EventDispatcher
-{
-public:
-	LocalConnection(ASWorker* wrk,Class_base* c);
-	static void sinit(Class_base*);
-	ASFUNCTION_ATOM(_constructor);
-	ASPROPERTY_GETTER(bool,isSupported);
-	ASFUNCTION_ATOM(allowDomain);
-	ASFUNCTION_ATOM(allowInsecureDomain);
-	ASFUNCTION_ATOM(send);
-	ASFUNCTION_ATOM(connect);
-	ASFUNCTION_ATOM(close);
-	ASFUNCTION_ATOM(domain);
-	ASPROPERTY_GETTER_SETTER(_NR<ASObject>,client);
-};
-
 class NetGroup: public EventDispatcher
 {
 public:
@@ -461,6 +450,7 @@ public:
 	static void sinit(Class_base*);
 	ASFUNCTION_ATOM(_constructor);
 	ASPROPERTY_GETTER(number_t,size);
+	ASPROPERTY_GETTER(tiny_string,name);
 	
 };
 class FileFilter: public ASObject

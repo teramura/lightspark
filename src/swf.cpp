@@ -26,18 +26,29 @@
 #include "scripting/flash/utils/IntervalManager.h"
 #include "scripting/flash/media/flashmedia.h"
 #include "scripting/flash/filesystem/flashfilesystem.h"
+#include "scripting/flash/desktop/flashdesktop.h"
+#include "scripting/flash/display/Bitmap.h"
+#include "scripting/flash/display/Loader.h"
+#include "scripting/flash/display/LoaderInfo.h"
+#include "scripting/flash/display/RootMovieClip.h"
+#include "scripting/flash/geom/Rectangle.h"
+#include "scripting/toplevel/toplevel.h"
 #include "scripting/toplevel/ASString.h"
+#include "scripting/toplevel/Null.h"
 #include "scripting/toplevel/Number.h"
 #include "scripting/toplevel/Boolean.h"
 #include "scripting/toplevel/Vector.h"
+#include "scripting/toplevel/Undefined.h"
 #include "scripting/avm1/avm1display.h"
 #include "logger.h"
 #include "parsing/streams.h"
+#include "thread_pool.h"
 #include "asobject.h"
 #include "scripting/class.h"
 #include "backends/audio.h"
 #include "backends/config.h"
 #include "backends/rendering.h"
+#include "backends/cachedsurface.h"
 #include "backends/image.h"
 #include "backends/extscriptobject.h"
 #include "backends/input.h"
@@ -45,6 +56,7 @@
 #include "backends/currency.h"
 #include "memory_support.h"
 #include "parsing/tags.h"
+#include "scripting/flash/external/ExtensionContext.h"
 
 #ifdef ENABLE_CURL
 #include <curl/curl.h>
@@ -92,73 +104,6 @@ ASWorker* lightspark::getWorker()
 }
 
 
-RootMovieClip::RootMovieClip(ASWorker* wrk, _NR<LoaderInfo> li, _NR<ApplicationDomain> appDomain, _NR<SecurityDomain> secDomain, Class_base* c):
-	MovieClip(wrk,c),
-	parsingIsFailed(false),waitingforparser(false),Background(0xFF,0xFF,0xFF),frameRate(0),
-	finishedLoading(false),applicationDomain(appDomain),securityDomain(secDomain)
-{
-	subtype=SUBTYPE_ROOTMOVIECLIP;
-	loaderInfo=li;
-	parsethread=nullptr;
-	hasSymbolClass=false;
-	hasMainClass=false;
-	usesActionScript3=false;
-}
-
-RootMovieClip::~RootMovieClip()
-{
-	for(auto it=dictionary.begin();it!=dictionary.end();++it)
-		delete it->second;
-}
-
-void RootMovieClip::destroyTags()
-{
-	for(auto it=frames.begin();it!=frames.end();++it)
-		it->destroyTags();
-}
-
-void RootMovieClip::parsingFailed()
-{
-	//The parsing is failed, we have no change to be ever valid
-	parsingIsFailed=true;
-}
-
-void RootMovieClip::setOrigin(const tiny_string& u, const tiny_string& filename)
-{
-	//We can use this origin to implement security measures.
-	//Note that for plugins, this url is NOT the page url, but it is the swf file url.
-	origin = URLInfo(u);
-	//If this URL doesn't contain a filename, add the one passed as an argument (used in main.cpp)
-	if(origin.getPathFile() == "" && filename != "")
-		origin = origin.goToURL(filename);
-
-	if(!loaderInfo.isNull())
-	{
-		loaderInfo->setURL(origin.getParsedURL(), false);
-		loaderInfo->setLoaderURL(origin.getParsedURL());
-	}
-}
-
-void RootMovieClip::setBaseURL(const tiny_string& url)
-{
-	//Set the URL to be used in resolving relative paths. For the
-	//plugin this is either the value of base attribute in the
-	//OBJECT or EMBED tag or, if the attribute is not provided,
-	//the address of the hosting HTML page.
-	baseURL = URLInfo(url);
-}
-
-const URLInfo& RootMovieClip::getBaseURL()
-{
-	//The plugin uses the address of the HTML page (baseURL) for
-	//resolving relative paths. AIR and the standalone Lightspark
-	//use the SWF location (origin).
-	if(baseURL.isValid())
-		return baseURL;
-	else
-		return origin;
-}
-
 void SystemState::registerFrameListener(DisplayObject* obj)
 {
 	Locker l(mutexFrameListeners);
@@ -186,14 +131,25 @@ void SystemState::addBroadcastEvent(const tiny_string& event)
 	}
 }
 
-RootMovieClip* RootMovieClip::getInstance(ASWorker* wrk,_NR<LoaderInfo> li, _R<ApplicationDomain> appDomain, _R<SecurityDomain> secDomain)
+void SystemState::handleBroadcastEvent(const tiny_string& event)
 {
-	Class_base* movieClipClass = Class<MovieClip>::getClass(getSys());
-	RootMovieClip* ret=new (movieClipClass->memoryAccount) RootMovieClip(wrk,li, appDomain, secDomain, movieClipClass);
-	ret->constructIndicator = true;
-	ret->constructorCallComplete = true;
-	ret->loadedFrom=ret;
-	return ret;
+	std::set<DisplayObject*> tmplisteners; // work on copy of framelistners, as the list may change during event handling
+	{
+		Locker l(mutexFrameListeners);
+		for (auto it : frameListeners)
+		{
+			it->incRef();
+			tmplisteners.insert(it);
+		}
+	}
+	_R<Event> e(Class<Event>::getInstanceS(worker, event));
+	for (auto it : tmplisteners)
+		ABCVm::publicHandleEvent(it, e);
+
+	for (auto it : tmplisteners)
+	{
+		it->decRef();
+	}
 }
 
 void SystemState::staticInit()
@@ -235,18 +191,20 @@ static const char* builtinStrings[] = {"any", "void", "prototype", "Function", "
 									   "onEnterFrame","onMouseMove","onMouseDown","onMouseUp","onPress","onRelease","onReleaseOutside","onMouseWheel","onLoad",
 									   "object","undefined","boolean","number","string","function","onRollOver","onRollOut",
 									   "__proto__","target","flash.events:IEventDispatcher","addEventListener","removeEventListener","dispatchEvent","hasEventListener",
-									   "onConnect","onData","onClose","onSelect"
+									   "onConnect","onData","onClose","onSelect",
+									   "add","alpha","darken","difference","erase","hardlight","invert","layer","lighten","multiply","overlay","screen","subtract",
+									   "text"
 									  };
 
 extern uint32_t asClassCount;
 
 SystemState::SystemState(uint32_t fileSize, FLASH_MODE mode):
-	terminated(0),renderRate(0),error(false),shutdown(false),firsttick(true),localstorageallowed(false),
+	terminated(0),renderRate(0),error(false),shutdown(false),firsttick(true),localstorageallowed(false),influshing(false),inMouseEvent(false),inWindowMove(false),hasExitCode(false),innerGotoCount(0),
 	renderThread(nullptr),inputThread(nullptr),engineData(nullptr),dumpedSWFPathAvailable(0),
 	vmVersion(VMNONE),childPid(0),
 	parameters(NullRef),
-	invalidateQueueHead(NullRef),invalidateQueueTail(NullRef),lastUsedStringId(0),lastUsedNamespaceId(0x7fffffff),
-	showProfilingData(false),allowFullscreen(false),flashMode(mode),swffilesize(fileSize),avm1global(nullptr),
+	invalidateQueueHead(NullRef),invalidateQueueTail(NullRef),lastUsedStringId(0),lastUsedNamespaceId(0x7fffffff),framePhase(FramePhase::IDLE),
+	showProfilingData(false),allowFullscreen(false),flashMode(mode),swffilesize(fileSize),instanceCounter(0),avm1global(nullptr),
 	currentVm(nullptr),builtinClasses(nullptr),useInterpreter(true),useFastInterpreter(false),useJit(false),ignoreUnhandledExceptions(false),exitOnError(ERROR_NONE),
 	systemDomain(nullptr),worker(nullptr),workerDomain(nullptr),singleworker(true),
 	downloadManager(nullptr),extScriptObject(nullptr),scaleMode(SHOW_ALL),unaccountedMemory(nullptr),tagsMemory(nullptr),stringMemory(nullptr),textTokenMemory(nullptr),shapeTokenMemory(nullptr),morphShapeTokenMemory(nullptr),bitmapTokenMemory(nullptr),spriteTokenMemory(nullptr),
@@ -660,8 +618,14 @@ void SystemState::systemFinalize()
 #ifndef NDEBUG
 extern std::set<ASObject*> memcheckset;
 #endif
+#ifdef PROFILING_SUPPORT
+extern void dumpFunctionCallCount(bool builtinonly = false,uint32_t mincallcount=0, uint32_t mincallduration=0, uint64_t minaverageduration=0);
+#endif
 SystemState::~SystemState()
 {
+#ifdef PROFILING_SUPPORT
+	dumpFunctionCallCount();
+#endif
 	// finalize main worker
 	worker->finalize();
 	workerDomain->finalize();
@@ -817,7 +781,7 @@ void SystemState::setError(const string& c, ERROR_TYPE type)
 void SystemState::setShutdownFlag()
 {
 	Locker l(rootMutex);
-	if(currentVm)
+	if(currentVm && !error)
 	{
 		workerDomain->stopAllBackgroundWorkers();
 		_R<ShutdownEvent> e(new (unaccountedMemory) ShutdownEvent);
@@ -829,6 +793,39 @@ void SystemState::setShutdownFlag()
 	}
 	shutdown=true;
 }
+void SystemState::setExitCode(int exitcode)
+{
+	Locker l(rootMutex);
+	hasExitCode=true;
+	exitCode=exitcode;
+}
+
+int SystemState::getExitCode()
+{
+	if (hasExitCode)
+		return exitCode;
+	return exitOnError==SystemState::ERROR_ANY && isOnError() ? 1 : 0;
+}
+
+void SystemState::setInMouseEvent(bool inmouseevent)
+{
+	inMouseEvent=inmouseevent;
+}
+bool SystemState::getInMouseEvent() const
+{
+	return inMouseEvent;
+}
+
+void SystemState::setWindowMoveMode(bool startmove)
+{
+	Locker l(rootMutex);
+	inWindowMove=startmove;
+}
+bool SystemState::getInWindowMoveMode() const
+{
+	return inWindowMove;
+}
+
 void SystemState::signalTerminated()
 {
 	Locker l(rootMutex);
@@ -1187,6 +1184,8 @@ void SystemState::setParamsAndEngine(EngineData* e, bool s)
 		static_ASFile_applicationDirectory->setRefConstant();
 		static_ASFile_applicationStorageDirectory=_MNR(Class<ASFile>::getInstanceS(this->worker,getEngineData()->FileGetApplicationStorageDir(),true));
 		static_ASFile_applicationStorageDirectory->setRefConstant();
+		static_NativeApplication_nativeApplication=_MNR(Class<NativeApplication>::getInstanceS(this->worker));
+		static_NativeApplication_nativeApplication->setRefConstant();
 	}
 	
 	if(vmVersion)
@@ -1200,14 +1199,17 @@ void SystemState::setRenderRate(float rate)
 		return;
 	
 	//The requested rate is different than the current rate, let's reschedule the job
-	renderRate=rate;
-	startRenderTicks();
-
-	if (this->mainClip && this->mainClip->isConstructed())
+	if (rate > 0)
 	{
-		removeJob(this);
-		addTick(1000/renderRate,this);
+		renderRate=rate;
+		startRenderTicks();
+		if (this->mainClip && this->mainClip->isConstructed())
+		{
+			removeJob(this);
+			addTick(1000/renderRate,this);
+		}
 	}
+
 }
 
 void SystemState::addJob(IThreadJob* j)
@@ -1254,27 +1256,17 @@ void SystemState::addToInvalidateQueue(_R<DisplayObject> d)
 {
 	Locker l(invalidateQueueLock);
 	//Check if the object is already in the queue
-	if(!d->invalidateQueueNext.isNull() || d==invalidateQueueTail)
+	if(!d->invalidateQueueNext.isNull() || d==invalidateQueueTail || !EngineData::enablerendering)
 		return;
-	if (d->getNeedsTextureRecalculation())
-	{
-		DisplayObject* o = d->getParent();
-		while (o)
-		{
-			if (o->getCachedBitmap())
-			{
-				// ancestor is cached as bitmap, needs to be redrawn
-				o->incRef();
-				o->hasChanged=true;
-				o->setNeedsTextureRecalculation();
-				addToInvalidateQueue(_MR(o));
-				return;
-			}
-			o = o->getParent();
-		}
-	}
 	if(!invalidateQueueHead)
 		invalidateQueueHead=invalidateQueueTail=d;
+	else if (influshing)
+	{
+		// DisplayObject added to invalidation queue during flushing, has to be added at tail of queue
+		// this can happen if cached bitmaps are invalidated
+		invalidateQueueTail->invalidateQueueNext=d;
+		invalidateQueueTail=d;
+	}
 	else
 	{
 		d->invalidateQueueNext=invalidateQueueHead;
@@ -1285,25 +1277,38 @@ void SystemState::addToInvalidateQueue(_R<DisplayObject> d)
 void SystemState::flushInvalidationQueue()
 {
 	if (isShuttingDown())
+	{
+		_NR<DisplayObject> cur=invalidateQueueHead;
+		while(!cur.isNull())
+		{
+			_NR<DisplayObject> next=cur->invalidateQueueNext;
+			cur->invalidateQueueNext=NullRef;
+			cur=next;
+		}
 		return;
+	}
 	Locker l(invalidateQueueLock);
+	influshing=true;
 	_NR<DisplayObject> cur=invalidateQueueHead;
+	MATRIX initialMatrix;
+	if (!cur.isNull())
+	{
+		float scalex, scaley;
+		int offx, offy;
+		stageCoordinateMapping(renderThread->windowWidth, renderThread->windowHeight, offx, offy, scalex, scaley);
+		initialMatrix.scale(scalex,scaley);
+	}
 	while(!cur.isNull())
 	{
 		if((cur->isOnStage() || cur->isMask()) && cur->hasChanged)
 		{
 			_NR<DisplayObject> drawobj=cur;
-			_NR<DisplayObject> cachedBitmap;
-			float scalex, scaley;
-			int offx, offy;
-			stageCoordinateMapping(renderThread->windowWidth, renderThread->windowHeight, offx, offy, scalex, scaley);
-			IDrawable* d=cur->invalidate(stage, MATRIX(scalex, scaley), true, nullptr, &cachedBitmap);
+			IDrawable* d=cur->invalidate(true);
 			//Check if the drawable is valid and forge a new job to
 			//render it and upload it to GPU
 			if(d)
 			{
-				if (cachedBitmap)
-					drawobj = cachedBitmap;
+				cur->setupSurfaceState(d);
 				if (drawobj->getNeedsTextureRecalculation() || !d->isCachedSurfaceUsable(drawobj.getPtr()))
 				{
 					drawjobLock.lock();
@@ -1337,7 +1342,7 @@ void SystemState::flushInvalidationQueue()
 				}
 				else
 					renderThread->addRefreshableSurface(d,drawobj);
-				if (getRenderThread()->isStarted())
+				if (renderThread->isStarted())
 					drawobj->resetNeedsTextureRecalculation();
 			}
 			drawobj->hasChanged=false;
@@ -1346,6 +1351,7 @@ void SystemState::flushInvalidationQueue()
 		cur->invalidateQueueNext=NullRef;
 		cur=next;
 	}
+	influshing=false;
 	renderThread->signalSurfaceRefresh();
 	invalidateQueueHead=NullRef;
 	invalidateQueueTail=NullRef;
@@ -1661,17 +1667,16 @@ void ParseThread::parseSWF(UI8 ver)
 		root=RootMovieClip::getInstance(applicationDomain->getInstanceWorker(),li, applicationDomain, securityDomain);
 		if (!applicationDomain->getInstanceWorker()->isPrimordial)
 		{
+			root->incRef();
 			applicationDomain->getInstanceWorker()->rootClip = _MR(root);
 		}
 		parsedObject=_MNR(root);
-		li->setWaitedObject(parsedObject);
 		if(!url.empty())
 			root->setOrigin(url, "");
 	}
 	else
 	{
 		root=getRootMovie();
-		parsedObject->loaderInfo->setWaitedObject(parsedObject);
 	}
 	objectSpinlock.unlock();
 
@@ -1813,7 +1818,6 @@ void ParseThread::parseSWF(UI8 ver)
 				// fall through
 				case ABC_TAG:
 				case ACTION_TAG:
-				case AVM1INITACTION_TAG:
 				case DEFINESCALINGGRID_TAG:
 				{
 					// Add symbol class tags or action to the queue, to be executed when the rest of the 
@@ -1822,6 +1826,12 @@ void ParseThread::parseSWF(UI8 ver)
 					// in "undefined dictionary ID" errors.
 					const ControlTag* stag = static_cast<const ControlTag*>(tag);
 					queuedTags.push(stag);
+					break;
+				}
+				case AVM1INITACTION_TAG:
+				{
+					const ControlTag* ctag = static_cast<const ControlTag*>(tag);
+					ctag->execute(root);
 					break;
 				}
 				case BACKGROUNDCOLOR_TAG:
@@ -1902,6 +1912,7 @@ void ParseThread::parseExtensions(RootMovieClip* root)
 	for (auto it = extensions.begin(); it != extensions.end(); it++)
 	{
 		LOG(LOG_INFO,"loading extension:"<<(*it));
+		ExtensionContext::registerExtension(*it);
 		lsfilereader r((*it).raw_buf());
 		istream fext(&r);
 		UI8 Signature[4];
@@ -2063,247 +2074,40 @@ void ParseThread::threadAbort()
 	root->parsingFailed();
 }
 
-bool RootMovieClip::boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax)
+
+void SystemState::runInnerGotoFrame(DisplayObject* innerClip, const std::vector<_R<DisplayObject>>& removedFrameScripts)
 {
-	// at least for hittest the bounds of the root are computed by the bounds of its contents
-	return MovieClip::boundsRect(xmin, xmax, ymin, ymax);
-//	RECT f=getFrameSize();
-//	xmin=f.Xmin/20;
-//	ymin=f.Ymin/20;
-//	xmax=f.Xmax/20;
-//	ymax=f.Ymax/20;
-//	return true;
-}
-
-void RootMovieClip::setFrameSize(const lightspark::RECT& f)
-{
-	frameSize=f;
-}
-
-lightspark::RECT RootMovieClip::getFrameSize() const
-{
-	return frameSize;
-}
-
-void RootMovieClip::setFrameRate(float f)
-{
-	if (frameRate != f)
-	{
-		frameRate=f;
-		if (this == getSystemState()->mainClip )
-			getSystemState()->setRenderRate(frameRate);
-	}
-}
-
-float RootMovieClip::getFrameRate() const
-{
-	return frameRate;
-}
-
-void RootMovieClip::commitFrame(bool another)
-{
-	setFramesLoaded(frames.size());
-
-	if(another)
-		frames.push_back(Frame());
-	checkSound(frames.size());
-
-	if(getFramesLoaded()==1 && frameRate!=0)
-	{
-		SystemState* sys = getSys();
-		if(this==sys->mainClip || !hasMainClass)
-		{
-			/* now the frameRate is available and all SymbolClass tags have created their classes */
-			// in AS3 this is added to the stage after the construction of the main object is completed (if a main object exists)
-			if (!usesActionScript3 || !hasMainClass)
-			{
-				while (!getVm(sys)->hasEverStarted()) // ensure that all builtin classes are defined
-					compat_msleep(10);
-				constructionComplete();
-				afterConstruction();
-			}
-		}
-	}
-}
-
-void RootMovieClip::constructionComplete()
-{
-	if(isConstructed())
+	if (innerClip == nullptr || !innerClip->needsActionScript3())
 		return;
-	if (!isVmThread() && !getInstanceWorker()->isPrimordial)
+
+	if (innerClip->loadedFrom->version <= 9)
 	{
-		this->incRef();
-		getVm(getSystemState())->prependEvent(NullRef,_MR(new (getSystemState()->unaccountedMemory) RootConstructedEvent(_MR(this))));
+		innerClip->initFrame();
+		innerClip->skipFrame = true;
 		return;
 	}
-	getSystemState()->stage->AVM1AddDisplayObject(this);
-	if (this!=getSystemState()->mainClip)
-	{
-		MovieClip::constructionComplete();
-		return;
-	}
-	MovieClip::constructionComplete();
 	
-	incRef();
-	getSystemState()->stage->_addChildAt(this,0);
-	this->setOnStage(true,true);
-	if (!needsActionScript3())
-	{
-		getSystemState()->stage->advanceFrame(true);
-		initFrame();
-	}
-	if (!loaderInfo.isNull())
-		loaderInfo->setComplete();
-	getSystemState()->addTick(1000/frameRate,getSystemState());
-}
-void RootMovieClip::afterConstruction()
-{
-	DisplayObject::afterConstruction();
-}
-void RootMovieClip::revertFrame()
-{
-	//TODO: The next should be a regular assert
-	assert_and_throw(frames.size() && getFramesLoaded()==(frames.size()-1));
-	frames.pop_back();
-}
+	++innerGotoCount;
+	// according to http://www.senocular.com/flash/tutorials/orderofoperations/
+	// a subset of the normal events are added when navigation commands are executed when changing to a new frame by actionscript
+	FramePhase oldPhase = getFramePhase();
 
-RGB RootMovieClip::getBackground()
-{
-	return Background;
+	setFramePhase(FramePhase::INIT_FRAME);
+	innerClip->initFrame();
+	handleBroadcastEvent("frameConstructed");
+
+	setFramePhase(FramePhase::EXECUTE_FRAMESCRIPT);
+	innerClip->executeFrameScript();
+	for (auto it : removedFrameScripts)
+		it->executeFrameScript();
+
+	setFramePhase(FramePhase::EXIT_FRAME);
+	handleBroadcastEvent("exitFrame");
+
+	stage->cleanupDeadHiddenObjects();
+	setFramePhase(oldPhase);
+	--innerGotoCount;
 }
-
-void RootMovieClip::setBackground(const RGB& bg)
-{
-	Background=bg;
-}
-
-/* called in parser's thread context */
-void RootMovieClip::addToDictionary(DictionaryTag* r)
-{
-	Locker l(dictSpinlock);
-	dictionary[r->getId()] = r;
-}
-
-/* called in vm's thread context */
-DictionaryTag* RootMovieClip::dictionaryLookup(int id)
-{
-	Locker l(dictSpinlock);
-	auto it = dictionary.find(id);
-	if(it==dictionary.end())
-	{
-		LOG(LOG_ERROR,"No such Id on dictionary " << id << " for " << origin);
-		//throw RunTimeException("Could not find an object on the dictionary");
-		return nullptr;
-	}
-	return it->second;
-}
-DictionaryTag* RootMovieClip::dictionaryLookupByName(uint32_t nameID)
-{
-	Locker l(dictSpinlock);
-	auto it = dictionary.begin();
-	for(;it!=dictionary.end();++it)
-	{
-		if(it->second->nameID==nameID)
-			break;
-	}
-	if(it==dictionary.end())
-	{
-		LOG(LOG_ERROR,"No such name on dictionary " << getSystemState()->getStringFromUniqueId(nameID) << " for " << origin);
-		return nullptr;
-	}
-	return it->second;
-}
-
-void RootMovieClip::addToScalingGrids(const DefineScalingGridTag* r)
-{
-	Locker l(scalinggridsmutex);
-	scalinggrids[r->CharacterId] = r->Splitter;
-}
-
-lightspark::RECT* RootMovieClip::ScalingGridsLookup(int id)
-{
-	Locker l(scalinggridsmutex);
-	auto it = scalinggrids.find(id);
-	if(it==scalinggrids.end())
-		return nullptr;
-	return &(*it).second;
-}
-
-void RootMovieClip::resizeCompleted()
-{
-	for(auto it=dictionary.begin();it!=dictionary.end();++it)
-		it->second->resizeCompleted();
-}
-
-_NR<RootMovieClip> RootMovieClip::getRoot()
-{
-	this->incRef();
-	return _MR(this);
-}
-
-_NR<Stage> RootMovieClip::getStage()
-{
-	getSystemState()->stage->incRef();
-	return _MR(getSystemState()->stage);
-}
-
-/*ASObject* RootMovieClip::getVariableByQName(const tiny_string& name, const tiny_string& ns, ASObject*& owner)
-{
-	sem_wait(&mutex);
-	ASObject* ret=ASObject::getVariableByQName(name, ns, owner);
-	sem_post(&mutex);
-	return ret;
-}
-
-void RootMovieClip::setVariableByMultiname(multiname& name, asAtom o)
-{
-	sem_wait(&mutex);
-	ASObject::setVariableByMultiname(name,o);
-	sem_post(&mutex);
-}
-
-void RootMovieClip::setVariableByQName(const tiny_string& name, const tiny_string& ns, ASObject* o)
-{
-	sem_wait(&mutex);
-	ASObject::setVariableByQName(name,ns,o);
-	sem_post(&mutex);
-}
-
-void RootMovieClip::setVariableByString(const string& s, ASObject* o)
-{
-	abort();
-	//TODO: ActionScript2 support
-	string sub;
-	int f=0;
-	int l=0;
-	ASObject* target=this;
-	for(l;l<s.size();l++)
-	{
-		if(s[l]=='.')
-		{
-			sub=s.substr(f,l-f);
-			ASObject* next_target;
-			if(f==0 && sub=="__Packages")
-			{
-				next_target=&sys->cur_render_thread->vm.Global;
-				owner=&sys->cur_render_thread->vm.Global;
-			}
-			else
-				next_target=target->getVariableByQName(sub.c_str(),"",owner);
-
-			f=l+1;
-			if(!owner)
-			{
-				next_target=new Package;
-				target->setVariableByQName(sub.c_str(),"",next_target);
-			}
-			target=next_target;
-		}
-	}
-	sub=s.substr(f,l-f);
-	target->setVariableByQName(sub.c_str(),"",o);
-}*/
-
 
 void SystemState::tick()
 {
@@ -2316,42 +2120,50 @@ void SystemState::tick()
 	}
 	if(currentVm==nullptr)
 		return;
+	if (this->isShuttingDown())
+		return;
 	/* See http://www.senocular.com/flash/tutorials/orderofoperations/
 	 * for the description of steps.
 	 */
 
 	currentVm->setIdle(false);
-	if (firsttick)
+
+	if (mainClip && mainClip->getFrameRate() > 0)
 	{
-		// the first AdvanceFrame is done during the construction of the RootMovieClip,
-		// so we skip it here
-		firsttick = false;
+		if (firsttick)
+		{
+			// the first AdvanceFrame is done during the construction of the RootMovieClip,
+			// so we skip it here
+			firsttick = false;
+		}
+		else
+		{
+			/* Step 0: Set current frame number to the next frame 
+			 * Step 1: declare new objects */
+			_R<AdvanceFrameEvent> advFrame = _MR(new (unaccountedMemory) AdvanceFrameEvent());
+			currentVm->addEvent(NullRef, advFrame);
+		}
+
+		/* Step 2: Send enterFrame events, if needed */
+		addBroadcastEvent("enterFrame");
+
+		/* Step 3: create legacy objects, which are new in this frame (top-down),
+		 * run their constructors (bottom-up) */
+		stage->incRef();
+		currentVm->addEvent(NullRef, _MR(new (unaccountedMemory) InitFrameEvent(_MR(stage))));
+
+		/* Step 4: dispatch frameConstructed events */
+		addBroadcastEvent("frameConstructed");
+
+		/* Step 5: run all frameScripts (bottom-up) */
+		stage->incRef();
+		currentVm->addEvent(NullRef, _MR(new (unaccountedMemory) ExecuteFrameScriptEvent(_MR(stage))));
+
+		/* Step 6: dispatch exitFrame event */
+		addBroadcastEvent("exitFrame");
+
+		stage->cleanupDeadHiddenObjects();
 	}
-	else
-	{
-		/* Step 0: Set current frame number to the next frame 
-		 * Step 1: declare new objects */
-		_R<AdvanceFrameEvent> advFrame = _MR(new (unaccountedMemory) AdvanceFrameEvent());
-		currentVm->addEvent(NullRef, advFrame);
-	}
-
-	/* Step 2: Send enterFrame events, if needed */
-	addBroadcastEvent("enterFrame");
-
-	/* Step 3: create legacy objects, which are new in this frame (top-down),
-	 * run their constructors (bottom-up) */
-	stage->incRef();
-	currentVm->addEvent(NullRef, _MR(new (unaccountedMemory) InitFrameEvent(_MR(stage))));
-
-	/* Step 4: dispatch frameConstructed events */
-	addBroadcastEvent("frameConstructed");
-
-	/* Step 5: run all frameScripts (bottom-up) */
-	stage->incRef();
-	currentVm->addEvent(NullRef, _MR(new (unaccountedMemory) ExecuteFrameScriptEvent(_MR(stage))));
-
-	/* Step 6: dispatch exitFrame event */
-	addBroadcastEvent("exitFrame");
 	/* Step 7: dispatch render event (Assuming stage.invalidate() has been called) */
 	if (stage->invalidated)
 	{
@@ -2383,6 +2195,24 @@ void SystemState::resizeCompleted()
 		stage->incRef();
 		currentVm->addEvent(_MR(stage),_MR(Class<StageVideoAvailabilityEvent>::getInstanceS(this->worker)));
 	}
+	if (currentVm && stage->nativeWindow)
+	{
+		Rectangle *rectBefore=Class<Rectangle>::getInstanceS(worker);
+		rectBefore->x = getEngineData()->old_x;
+		rectBefore->y = getEngineData()->old_y;
+		rectBefore->width = getEngineData()->old_width;
+		rectBefore->height = getEngineData()->old_height;
+		Rectangle *rectAfter=Class<Rectangle>::getInstanceS(worker);
+		rectAfter->x = getEngineData()->x;
+		rectAfter->y = getEngineData()->y;
+		rectAfter->width = getEngineData()->width;
+		rectAfter->height = getEngineData()->height;
+		currentVm->addEvent(_MR(stage->nativeWindow),_MR(Class<NativeWindowBoundsEvent>::getInstanceS(worker,"resize",_MR(rectBefore),_MR(rectAfter))));
+	}
+	getEngineData()->old_x = getEngineData()->x;
+	getEngineData()->old_y = getEngineData()->y;
+	getEngineData()->old_width = getEngineData()->width;
+	getEngineData()->old_height = getEngineData()->height;
 }
 
 const tiny_string& SystemState::getStringFromUniqueId(uint32_t id) const
@@ -2451,6 +2281,14 @@ void SystemState::stageCoordinateMapping(uint32_t windowWidth, uint32_t windowHe
 	r.Ymin/=20;
 	r.Xmax/=20;
 	r.Ymax/=20;
+	if (stage->fullScreenSourceRect)
+	{
+		offsetX=stage->fullScreenSourceRect->x;
+		offsetY=stage->fullScreenSourceRect->y;
+		scaleX=number_t(windowWidth)/stage->fullScreenSourceRect->width;
+		scaleY=number_t(windowHeight)/stage->fullScreenSourceRect->height;
+		return;
+	}
 	//Now compute the scalings and offsets
 	switch(scaleMode)
 	{
@@ -2531,6 +2369,36 @@ void SystemState::windowToStageCoordinates(int windowX, int windowY, int& stageX
 	stageX = (windowX-offsetX)/scaleX;
 	stageY = (windowY-offsetY)/scaleY;
 }
+void SystemState::handleLocalConnectionEvent(LocalConnectionEvent* ev)
+{
+	_NR<ASObject> obj;
+	mutexLocalConnection.lock();
+	LOG_CALL("handleLocalConnectionEvent:"<<getStringFromUniqueId(ev->nameID)<<" "<<getStringFromUniqueId(ev->methodID)<<" "<<ev->numargs);
+	auto it = this->localconnection_client_map.find(ev->nameID);
+	if (it != this->localconnection_client_map.end())
+		obj =(*it).second;
+	else
+		LOG(LOG_ERROR,"no client for LocalConnection found:"<<getStringFromUniqueId(ev->nameID)<<" "<<getStringFromUniqueId(ev->methodID)<<" "<<ev->numargs);
+	mutexLocalConnection.unlock();
+	if (!obj.isNull())
+	{
+		multiname m(nullptr);
+		m.name_type=multiname::NAME_STRING;
+		m.name_s_id=ev->methodID;
+		m.isAttribute = false;
+		asAtom func = asAtomHandler::invalidAtom;
+		(*it).second->getVariableByMultiname(func,m,GET_VARIABLE_OPTION::NONE,this->worker);
+		if (asAtomHandler::isFunction(func))
+		{
+			asAtom o = asAtomHandler::fromObject(obj.getPtr());
+			asAtom ret;
+			asAtomHandler::callFunction(func,worker,ret,o,ev->args,ev->numargs,false);
+			ASATOM_DECREF(ret);
+		}
+		else
+			LOG(LOG_ERROR,"no method for LocalConnection found:"<<getStringFromUniqueId(ev->nameID)<<" "<<getStringFromUniqueId(ev->methodID)<<" "<<(*it).second->toDebugString());
+	}
+}
 
 void SystemState::openPageInBrowser(const tiny_string& url, const tiny_string& window)
 {
@@ -2610,251 +2478,58 @@ void SystemState::getClassInstanceByName(ASWorker* wrk,asAtom& ret, const tiny_s
 		c = it->second;
 	c->getInstance(wrk,ret,true,nullptr,0);
 }
-/* This is run in vm's thread context */
-void RootMovieClip::initFrame()
-{
-	if (waitingforparser)
-		return;
-	LOG_CALL("Root:initFrame " << getFramesLoaded() << " " << state.FP<<" "<<state.stop_FP<<" "<<state.next_FP<<" "<<state.explicit_FP);
-	/* We have to wait for at least one frame
-	 * so our class get the right classdef. Else we will
-	 * call the wrong constructor. */
-	if(getFramesLoaded() == 0)
-		return;
 
-	MovieClip::initFrame();
+void SystemState::addDisplayObjectToResetParentList(DisplayObject* child)
+{
+	Locker l(resetParentMutex);
+	child->incRef();
+	child->addStoredMember();
+	listResetParent.insert(child);
 }
 
-/* This is run in vm's thread context */
-void RootMovieClip::advanceFrame(bool implicit)
+void SystemState::resetParentList()
 {
-	/* We have to wait until enough frames are available */
-	if(getFramesLoaded() == 0 || (state.next_FP>=(uint32_t)getFramesLoaded() && !hasFinishedLoading()))
+	Locker l(resetParentMutex);
+	auto it = listResetParent.begin();
+	while (it != listResetParent.end())
 	{
-		waitingforparser=true;
-		return;
-	}
-	waitingforparser=false;
-
-	MovieClip::advanceFrame(implicit);
-}
-
-void RootMovieClip::executeFrameScript()
-{
-	if (waitingforparser)
-		return;
-	MovieClip::executeFrameScript();
-}
-
-bool RootMovieClip::destruct()
-{
-	applicationDomain.reset();
-	securityDomain.reset();
-	waitingforparser=false;
-	parsethread=nullptr;
-	return MovieClip::destruct();
-}
-void RootMovieClip::finalize()
-{
-	applicationDomain.reset();
-	securityDomain.reset();
-	parsethread=nullptr;
-	MovieClip::finalize();
-}
-
-void RootMovieClip::prepareShutdown()
-{
-	if (preparedforshutdown)
-		return;
-	MovieClip::prepareShutdown();
-	if (applicationDomain)
-		applicationDomain->prepareShutdown();
-	if (securityDomain)
-		securityDomain->prepareShutdown();
-}
-
-void RootMovieClip::addBinding(const tiny_string& name, DictionaryTag *tag)
-{
-	// This function will be called only be the parsing thread,
-	// and will only access the last frame, so no locking needed.
-	tag->bindingclassname = name;
-	uint32_t pos = name.rfind(".");
-	if (pos== tiny_string::npos)
-		classesToBeBound[QName(getSystemState()->getUniqueStringId(name),BUILTIN_STRINGS::EMPTY)] =  tag;
-	else
-		classesToBeBound[QName(getSystemState()->getUniqueStringId(name.substr(pos+1,name.numChars()-(pos+1))),getSystemState()->getUniqueStringId(name.substr(0,pos)))] = tag;
-}
-
-void RootMovieClip::bindClass(const QName& classname, Class_inherit* cls)
-{
-	if (cls->isBinded() || classesToBeBound.empty())
-		return;
-
-	auto it=classesToBeBound.find(classname);
-	if(it!=classesToBeBound.end())
-	{
-		cls->bindToTag(it->second);
-		classesToBeBound.erase(it);
+		(*it)->setParent(nullptr);
+		(*it)->removeStoredMember();
+		it = listResetParent.erase(it);
 	}
 }
 
-void RootMovieClip::checkBinding(DictionaryTag *tag)
+bool SystemState::isInResetParentList(DisplayObject* d)
 {
-	if (tag->bindingclassname.empty())
-		return;
-	multiname clsname(nullptr);
-	clsname.name_type=multiname::NAME_STRING;
-	clsname.isAttribute = false;
+	Locker l(resetParentMutex);
+	auto it = listResetParent.begin();
+	while (it != listResetParent.end())
+	{
+		if ((*it)==d)
+			return true;
+		it++;
+	}
+	return false;
+}
 
-	uint32_t pos = tag->bindingclassname.rfind(".");
-	tiny_string ns;
-	tiny_string nm;
-	if (pos != tiny_string::npos)
+void SystemState::removeFromResetParentList(DisplayObject* d)
+{
+	Locker l(resetParentMutex);
+	auto it = listResetParent.begin();
+	while (it != listResetParent.end())
 	{
-		nm = tag->bindingclassname.substr(pos+1,tag->bindingclassname.numBytes());
-		ns = tag->bindingclassname.substr(0,pos);
-		clsname.hasEmptyNS=false;
-	}
-	else
-	{
-		nm = tag->bindingclassname;
-		ns = "";
-	}
-	clsname.name_s_id=getSystemState()->getUniqueStringId(nm);
-	clsname.ns.push_back(nsNameAndKind(getSystemState(),ns,NAMESPACE));
-	
-	ASObject* typeObject = nullptr;
-	auto i = applicationDomain->classesBeingDefined.cbegin();
-	while (i != applicationDomain->classesBeingDefined.cend())
-	{
-		if(i->first->name_s_id == clsname.name_s_id && i->first->ns[0].nsRealId == clsname.ns[0].nsRealId)
+		if ((*it)==d)
 		{
-			typeObject = i->second;
+			d->removeStoredMember();
+			listResetParent.erase(it);
 			break;
 		}
-		i++;
-	}
-	if (typeObject == nullptr)
-	{
-		ASObject* target;
-		asAtom o=asAtomHandler::invalidAtom;
-		applicationDomain->getVariableAndTargetByMultiname(o,clsname,target,getInstanceWorker());
-		if (asAtomHandler::isValid(o))
-			typeObject=asAtomHandler::getObject(o);
-	}
-	if (typeObject != nullptr)
-	{
-		Class_inherit* cls = typeObject->as<Class_inherit>();
-		if (cls)
-		{
-			ABCVm *vm = getVm(getSystemState());
-			vm->buildClassAndBindTag(tag->bindingclassname.raw_buf(), tag,cls);
-			tag->bindedTo=cls;
-			tag->bindingclassname = "";
-			cls->bindToTag(tag);
-		}
+		it++;
 	}
 }
 
-void RootMovieClip::registerEmbeddedFont(const tiny_string fontname, FontTag *tag)
+ASObject* SystemState::getBuiltinFunction(as_atom_function v, int len, Class_base* returnType, Class_base* returnTypeAllArgsInt)
 {
-	if (!fontname.empty())
-	{
-		auto it = embeddedfonts.find(fontname);
-		if (it == embeddedfonts.end())
-		{
-			embeddedfonts[fontname] = tag;
-			// it seems that adobe allows fontnames to be lowercased and stripped of spaces and numbers
-			tiny_string tmp = fontname.lowercase();
-			tiny_string fontnamenormalized;
-			for (auto it = tmp.begin();it != tmp.end(); it++)
-			{
-				if (*it == ' ' || (*it >= '0' &&  *it <= '9'))
-					continue;
-				fontnamenormalized += *it;
-			}
-			embeddedfonts[fontnamenormalized] = tag;
-		}
-	}
-	embeddedfontsByID[tag->getId()] = tag;
+	return Class<IFunction>::getFunction(this,v,len,returnType, returnTypeAllArgsInt);
 }
 
-FontTag *RootMovieClip::getEmbeddedFont(const tiny_string fontname) const
-{
-	auto it = embeddedfonts.find(fontname);
-	if (it != embeddedfonts.end())
-		return it->second;
-	it = embeddedfonts.find(fontname.lowercase());
-	if (it != embeddedfonts.end())
-		return it->second;
-	return nullptr;
-}
-FontTag *RootMovieClip::getEmbeddedFontByID(uint32_t fontID) const
-{
-	auto it = embeddedfontsByID.find(fontID);
-	if (it != embeddedfontsByID.end())
-		return it->second;
-	return nullptr;
-}
-
-void RootMovieClip::setupAVM1RootMovie()
-{
-	if (!usesActionScript3)
-	{
-		getSystemState()->stage->AVM1RootClipAdded();
-		this->classdef = Class<AVM1MovieClip>::getRef(getSystemState()).getPtr();
-		if (!getSystemState()->avm1global)
-			getVm(getSystemState())->registerClassesAVM1();
-		// it seems that the url parameters and flash vars are made available as properties of the root movie clip
-		// I haven't found anything in the documentation but gnash also does this
-		_NR<ASObject> params;
-		if (this == getSystemState()->mainClip)
-			params = getSystemState()->getParameters();
-		else
-			params = this->loaderInfo->parameters;
-		if (params)
-			params->copyValues(this,getInstanceWorker());
-	}
-}
-
-bool RootMovieClip::AVM1registerTagClass(const tiny_string &name, _NR<IFunction> theClassConstructor)
-{
-	uint32_t nameID = getSystemState()->getUniqueStringId(name);
-	DictionaryTag* t = dictionaryLookupByName(nameID);
-	if (!t)
-	{
-		LOG(LOG_ERROR,"registerClass:no tag found in dictionary for "<<name);
-		return false;
-	}
-	if (theClassConstructor.isNull())
-		avm1ClassConstructors.erase(t->getId());
-	else
-		avm1ClassConstructors.insert(make_pair(t->getId(),theClassConstructor));
-	return true;
-}
-
-AVM1Function* RootMovieClip::AVM1getClassConstructor(uint32_t spriteID)
-{
-	auto it = avm1ClassConstructors.find(spriteID);
-	if (it == avm1ClassConstructors.end())
-		return nullptr;
-	return it->second->is<AVM1Function>() ? it->second->as<AVM1Function>() : nullptr;
-}
-
-void RootMovieClip::AVM1registerInitActionTag(uint32_t spriteID, AVM1InitActionTag *tag)
-{
-	avm1InitActionTags[spriteID] = tag;
-}
-void RootMovieClip::AVM1checkInitActions(MovieClip* sprite)
-{
-	if (!sprite)
-		return;
-	auto it = avm1InitActionTags.find(sprite->getTagID());
-	if (it != avm1InitActionTags.end())
-	{
-		AVM1InitActionTag* t = it->second;
-		// a new instance of the sprite may be constructed during code execution, so we remove it from the initactionlist before executing the code to ensure it's only executed once
-		avm1InitActionTags.erase(it);
-		t->executeDirect(sprite);
-	}
-}

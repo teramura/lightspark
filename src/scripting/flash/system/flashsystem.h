@@ -20,8 +20,10 @@
 #ifndef SCRIPTING_FLASH_SYSTEM_FLASHSYSTEM_H
 #define SCRIPTING_FLASH_SYSTEM_FLASHSYSTEM_H 1
 
+#include "interfaces/threading.h"
 #include "compat.h"
 #include "asobject.h"
+#include "threading.h"
 #include "scripting/abcutils.h"
 #include "scripting/flash/utils/ByteArray.h"
 #include "scripting/toplevel/Error.h"
@@ -85,6 +87,10 @@ private:
 	std::vector<Global*> globalScopes;
 	_NR<ByteArray> defaultDomainMemory;
 	void cbDomainMemory(_NR<ByteArray> oldvalue);
+	// list of classes where super class is not defined yet
+	std::unordered_map<Class_base*,Class_base*> classesSuperNotFilled;
+	// list of classes where interfaces are not yet linked
+	std::vector<Class_base*> classesToLinkInterfaces;
 public:
 	ByteArray* currentDomainMemory;
 	ApplicationDomain(ASWorker* wrk, Class_base* c, _NR<ApplicationDomain> p=NullRef);
@@ -92,9 +98,12 @@ public:
 	void prepareShutdown() override;
 	std::map<const multiname*, Class_base*> classesBeingDefined;
 	std::map<QName, Class_base*> instantiatedTemplates;
-
-	// list of classes where super class is not defined yet 
-	std::list<Class_base*> classesSuperNotFilled;
+	
+	void SetAllClassLinks();
+	void AddClassLinks(Class_base* target);
+	bool newClassRecursiveLink(Class_base* target, Class_base* c);
+	void addSuperClassNotFilled(Class_base* cls);
+	void copyBorrowedTraitsFromSuper(Class_base* cls);
 
 	static void sinit(Class_base* c);
 	void registerGlobalScope(Global* scope);
@@ -350,8 +359,10 @@ public:
 	Prototype* getClassPrototype(const Class_base* cls);
 	static void sinit(Class_base*);
 
+	bool isExplicitlyConstructed() const { return currentCallContext != nullptr && currentCallContext->explicitConstruction; }
 	//  TODO merge stacktrace handling with ABCVm
 	abc_limits limits;
+	std::vector<call_context*> callStack;
 	call_context* currentCallContext;
 	/* The current recursion level. Each call increases this by one,
 	 * each return from a call decreases this. */
@@ -371,7 +382,8 @@ public:
 	FORCE_INLINE void decStack(call_context* saved_cc)
 	{
 		currentCallContext = saved_cc;
-		--cur_recursion; //decrement current recursion depth
+		if (cur_recursion > 0)
+			--cur_recursion; //decrement current recursion depth
 	}
 	void throwStackOverflow();
 	ASFUNCTION_ATOM(_getCurrent);
@@ -415,6 +427,11 @@ public:
 	}
 	inline bool inFinalization() const { return inFinalize; }
 	void registerConstantRef(ASObject* obj);
+	
+	// these are needed keep track of native extension calls
+	std::list<asAtom> nativeExtensionAtomlist;
+	std::list<uint8_t*> nativeExtensionStringlist;
+	uint32_t nativeExtensionCallCount;
 };
 class WorkerDomain: public ASObject
 {

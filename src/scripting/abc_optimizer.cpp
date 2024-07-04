@@ -20,13 +20,15 @@
 #include "abc.h"
 #include "compat.h"
 #include "abcutils.h"
-#include "toplevel/toplevel.h"
+#include "scripting/toplevel/toplevel.h"
 #include "scripting/toplevel/Boolean.h"
 #include "scripting/toplevel/ASString.h"
 #include "scripting/toplevel/Number.h"
+#include "scripting/toplevel/Null.h"
 #include "scripting/toplevel/Integer.h"
 #include "scripting/toplevel/UInteger.h"
 #include "scripting/flash/system/flashsystem.h"
+#include "scripting/flash/display/RootMovieClip.h"
 #include <string>
 #include <sstream>
 
@@ -37,10 +39,10 @@ enum SPECIAL_OPCODES { SET_SLOT_NO_COERCE = 0xfb, COERCE_EARLY = 0xfc, GET_SCOPE
 
 struct lightspark::InferenceData
 {
-	const Type* type;
+	Type* type;
 	const ASObject* obj;
 	InferenceData():type(NULL),obj(NULL){}
-	InferenceData(const Type* t):type(t),obj(NULL){}
+	InferenceData(Type* t):type(t),obj(NULL){}
 	InferenceData(const ASObject* o):type(NULL),obj(o){}
 	bool isValid() const { return type!=NULL || obj!=NULL; }
 	/* Method to understand if the passed InferenceData is of the type of this InferenceData
@@ -50,7 +52,7 @@ struct lightspark::InferenceData
 	{
 		if(this->type)
 		{
-			const Class_base* classType=dynamic_cast<const Class_base*>(this->type);
+			Class_base* classType=dynamic_cast<Class_base*>((Type*)this->type);
 			if(classType && classType->isSubClass(c))
 				return true;
 		}
@@ -111,7 +113,7 @@ struct lightspark::BasicBlock
 		for(uint32_t i=0;i<n;i++)
 			stackTypes.pop_back();
 	}
-	void pushStack(const Type* t)
+	void pushStack(Type* t)
 	{
 		stackTypes.push_back(InferenceData(t));
 	}
@@ -125,7 +127,7 @@ struct lightspark::BasicBlock
 			throw ParseException("Invalid code in optimizer");
 		scopeStackTypes.pop_back();
 	}
-	void pushScopeStack(const Type* t)
+	void pushScopeStack(Type* t)
 	{
 		scopeStackTypes.push_back(InferenceData(t));
 	}
@@ -270,7 +272,7 @@ InferenceData ABCVm::earlyBindGetLex(ostream& out, const SyntheticFunction* f, c
 	return ret;
 }
 
-const Type* ABCVm::getLocalType(const SyntheticFunction* f, unsigned localIndex)
+Type* ABCVm::getLocalType(const SyntheticFunction* f, unsigned localIndex)
 {
 	if(localIndex==0 && f->isMethod())
 		return f->inClass;
@@ -1216,7 +1218,7 @@ void ABCVm::optimizeFunction(SyntheticFunction* function)
 				out << (uint8_t)opcode;
 				writeInt32(out,i);
 
-				const Type* t=getLocalType(function, i);
+				Type* t=getLocalType(function, i);
 				curBlock->pushStack(t);
 				break;
 			}
@@ -1627,7 +1629,7 @@ void ABCVm::optimizeFunction(SyntheticFunction* function)
 				//TODO: collapse on getlocal
 				out << (uint8_t)opcode;
 				//Infer the type of the object when possible
-				const Type* t=getLocalType(function, opcode-0xd0);
+				Type* t=getLocalType(function, opcode-0xd0);
 				curBlock->pushStack(t);
 				break;
 			}

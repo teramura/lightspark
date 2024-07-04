@@ -23,7 +23,6 @@
 #include "compat.h"
 #include "asobject.h"
 #include "scripting/flash/display/flashdisplay.h"
-#include "tiny_string.h"
 #include "backends/graphics.h"
 
 namespace lightspark
@@ -34,11 +33,16 @@ class GroupElement;
 class ContentElement: public ASObject
 {
 public:
-	ContentElement(ASWorker* wrk,Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_CONTENTELEMENT) {}
+	ContentElement(ASWorker* wrk,Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_CONTENTELEMENT),textBlockBeginIndex(-1) {}
 	static void sinit(Class_base* c);
+	void finalize() override;
+	bool destruct() override;
+	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
 	ASPROPERTY_GETTER(tiny_string,rawText);
 	ASPROPERTY_GETTER_SETTER(_NR<ElementFormat>,elementFormat);
 	ASPROPERTY_GETTER(_NR<GroupElement>,groupElement);
+	ASPROPERTY_GETTER(int,textBlockBeginIndex);
 };
 
 class FontDescription;
@@ -47,6 +51,10 @@ class ElementFormat: public ASObject
 public:
 	ElementFormat(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base* c);
+	void finalize() override;
+	bool destruct() override;
+	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(_clone);
 	ASPROPERTY_GETTER_SETTER(tiny_string,alignmentBaseline);
@@ -164,7 +172,7 @@ public:
 class TextJustifier: public ASObject
 {
 public:
-	TextJustifier(ASWorker* wrk,Class_base* c):ASObject(wrk,c) {}
+	TextJustifier(ASWorker* wrk,Class_base* c):ASObject(wrk,c,T_OBJECT,SUBTYPE_TEXTJUSTIFIER) {}
 	static void sinit(Class_base* c);
 	ASFUNCTION_ATOM(_constructor);
 };
@@ -172,7 +180,7 @@ public:
 class SpaceJustifier: public TextJustifier
 {
 public:
-	SpaceJustifier(ASWorker* wrk,Class_base* c): TextJustifier(wrk,c) {}
+	SpaceJustifier(ASWorker* wrk,Class_base* c): TextJustifier(wrk,c) { subtype = SUBTYPE_SPACEJUSTIFIER; }
 	static void sinit(Class_base* c);
 	ASFUNCTION_ATOM(_constructor);
 };
@@ -180,7 +188,7 @@ public:
 class EastAsianJustifier: public TextJustifier
 {
 public:
-	EastAsianJustifier(ASWorker* wrk,Class_base* c): TextJustifier(wrk,c) {}
+	EastAsianJustifier(ASWorker* wrk,Class_base* c): TextJustifier(wrk,c) { subtype = SUBTYPE_EASTASIANJUSTIFIER; }
 	static void sinit(Class_base* c);
 	ASFUNCTION_ATOM(_constructor);
 };
@@ -188,6 +196,8 @@ public:
 class TextLine;
 class TextBlock: public ASObject
 {
+private:
+	bool fillTextLine(NullableRef<TextLine> textLine, bool fitSomething, _NR<TextLine> previousLine);
 public:
 	TextBlock(ASWorker* wrk,Class_base* c);
 	static void sinit(Class_base* c);
@@ -214,13 +224,17 @@ public:
 class TextElement: public ContentElement
 {
 private:
-	void settext_cb(tiny_string oldValue);
+	void settext_cb(asAtom oldValue);
 public:
 	TextElement(ASWorker* wrk,Class_base* c): ContentElement(wrk,c) { subtype = SUBTYPE_TEXTELEMENT; }
 	static void sinit(Class_base* c);
+	void finalize() override;
+	bool destruct() override;
+	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
 	ASFUNCTION_ATOM(_constructor);
 	ASFUNCTION_ATOM(replaceText);
-	ASPROPERTY_GETTER_SETTER(tiny_string,text);
+	ASPROPERTY_GETTER_SETTER(asAtom,text);
 	
 };
 class GroupElement: public ContentElement
@@ -228,22 +242,28 @@ class GroupElement: public ContentElement
 public:
 	GroupElement(ASWorker* wrk,Class_base* c): ContentElement(wrk,c) {}
 	static void sinit(Class_base* c);
+	void finalize() override;
+	bool destruct() override;
+	void prepareShutdown() override;
+	bool countCylicMemberReferences(garbagecollectorstate& gcstate) override;
 	ASFUNCTION_ATOM(_constructor);
 };
-class TextLine: public DisplayObjectContainer, public TextData
+class TextLine: public DisplayObjectContainer, public TextData, public TokenContainer
 {
 private:
+	// these are only used when drawing to DisplayObject, so they are guarranteed not to be destroyed during rendering
+	list<FILLSTYLE> fillstyleTextColor;
 	// Much of the rendering/bounds checking/hit testing code is
 	// similar to TextField and should be shared
-	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax) override;
+	bool boundsRect(number_t& xmin, number_t& xmax, number_t& ymin, number_t& ymax, bool visibleOnly) override;
 	void requestInvalidation(InvalidateQueue* q, bool forceTextureRefresh=false) override;
-	IDrawable* invalidate(DisplayObject* target, const MATRIX& initialMatrix, bool smoothing, InvalidateQueue* q, _NR<DisplayObject>* cachedBitmap) override;
-	bool renderImpl(RenderContext& ctxt) override;
-	_NR<DisplayObject> hitTestImpl(number_t x, number_t y, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
+	IDrawable* invalidate(bool smoothing) override;
+	_NR<DisplayObject> hitTestImpl(const Vector2f& globalPoint, const Vector2f& localPoint, DisplayObject::HIT_TYPE type,bool interactiveObjectsOnly) override;
 public:
-	TextLine(ASWorker* wrk,Class_base* c,tiny_string linetext = "", _NR<TextBlock> owner=NullRef);
+	TextLine(ASWorker* wrk,Class_base* c, _NR<TextBlock> owner=NullRef);
 	static void sinit(Class_base* c);
 	void finalize() override;
+	float getScaleFactor() const override { return this->scaling; }
 	void updateSizes();
 	ASPROPERTY_GETTER(_NR<TextBlock>, textBlock);
 	ASPROPERTY_GETTER(_NR<TextLine>, nextLine);
@@ -256,6 +276,7 @@ public:
 	ASFUNCTION_ATOM(getTextHeight);
 	ASFUNCTION_ATOM(getBaselinePosition);
 	ASFUNCTION_ATOM(getUnjustifiedTextWidth);
+	ASFUNCTION_ATOM(flushAtomData);
 	ASPROPERTY_GETTER(bool,hasGraphicElement);
 	ASPROPERTY_GETTER(bool,hasTabs);
 	ASPROPERTY_GETTER(int,rawTextLength);

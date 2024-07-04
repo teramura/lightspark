@@ -19,7 +19,7 @@
 
 #include "scripting/abc.h"
 #include "parsing/amf3_generator.h"
-#include "scripting/toplevel/toplevel.h"
+#include "scripting/toplevel/IFunction.h"
 #include "scripting/toplevel/Array.h"
 #include "scripting/toplevel/ASString.h"
 #include "scripting/toplevel/Date.h"
@@ -88,7 +88,7 @@ asAtom Amf3Deserializer::parseInteger() const
 	uint32_t tmp;
 	if(!input->readU29(tmp))
 		throw ParseException("Not enough data to parse integer");
-	return asAtomHandler::fromUInt(tmp);
+	return asAtomHandler::fromInt((int32_t)tmp);
 }
 
 asAtom Amf3Deserializer::parseDouble() const
@@ -223,7 +223,7 @@ asAtom Amf3Deserializer::parseVector(uint8_t marker, std::vector<tiny_string>& s
 	uint8_t b;
 	if (!input->readByte(b))
 		throw ParseException("Not enough data to parse AMF3 vector");
-	const Type* type =NULL;
+	Type* type =NULL;
 	switch (marker)
 	{
 		case vector_int_marker:

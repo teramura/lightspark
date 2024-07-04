@@ -22,6 +22,7 @@
 #include "scripting/class.h"
 #include "parsing/amf3_generator.h"
 #include "scripting/argconv.h"
+#include "scripting/toplevel/Array.h"
 #include "scripting/toplevel/Number.h"
 #include "scripting/toplevel/Integer.h"
 #include "scripting/toplevel/UInteger.h"
@@ -36,74 +37,74 @@ void Vector::sinit(Class_base* c)
 {
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_FINAL);
 	c->isReusable = true;
-	c->setDeclaredMethodByQName("length",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),getLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("length",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),setLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("toString",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("toString",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("fixed",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),getFixed,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("fixed",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),setFixed,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),SETTER_METHOD,true);
-	c->setDeclaredMethodByQName("concat",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_concat),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("concat",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_concat),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("every",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),every),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("every",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),every),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("filter",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),filter),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("filter",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),filter),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("forEach",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),forEach),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("forEach",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),forEach),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("indexOf",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),indexOf),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("indexOf",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),indexOf),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("lastIndexOf",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),lastIndexOf),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("lastIndexOf",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),lastIndexOf),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("join",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),join),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("join",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),join),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("map",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_map),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("map",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_map),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("pop",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_pop),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("pop",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_pop),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("push",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),push),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("push",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),push),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("reverse",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_reverse),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("reverse",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_reverse),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("shift",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),shift),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("shift",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),shift),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("slice",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),slice),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("slice",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),slice),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("some",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),some),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("some",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),some),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("sort",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_sort),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("sort",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_sort),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("splice",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),splice),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("splice",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),splice),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("toLocaleString",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("toLocaleString",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_toString),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("unshift",nsNameAndKind(),Class<IFunction>::getFunction(c->getSystemState(),unshift),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("unshift",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),unshift),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("insertAt",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),insertAt,2),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("removeAt",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),removeAt,1),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("length",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(getLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("length",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(setLength,0,Class<UInteger>::getRef(c->getSystemState()).getPtr()),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("toString",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(_toString),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("toString",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_toString),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("fixed",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(getFixed,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("fixed",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(setFixed,0,Class<Boolean>::getRef(c->getSystemState()).getPtr()),SETTER_METHOD,true);
+	c->setDeclaredMethodByQName("concat",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(_concat),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("concat",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_concat),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("every",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(every),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("every",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(every),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("filter",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(filter),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("filter",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(filter),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("forEach",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(forEach),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("forEach",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(forEach),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("indexOf",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(indexOf),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("indexOf",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(indexOf),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("lastIndexOf",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(lastIndexOf),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("lastIndexOf",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(lastIndexOf),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("join",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(join),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("join",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(join),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("map",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(_map),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("map",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_map),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("pop",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(_pop),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("pop",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_pop),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("push",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(push),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("push",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(push),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("reverse",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(_reverse),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("reverse",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_reverse),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("shift",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(shift),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("shift",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(shift),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("slice",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(slice),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("slice",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(slice),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("some",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(some),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("some",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(some),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("sort",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(_sort),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("sort",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_sort),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("splice",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(splice),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("splice",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(splice),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("toLocaleString",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(_toString),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("toLocaleString",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_toString),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("unshift",nsNameAndKind(),c->getSystemState()->getBuiltinFunction(unshift),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("unshift",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(unshift),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("insertAt",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(insertAt,2),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("removeAt",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(removeAt,1),NORMAL_METHOD,true);
 	
 
-	c->prototype->setVariableByQName(BUILTIN_STRINGS::STRING_TOSTRING,nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_toString),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("concat",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_concat),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("every",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),every),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("filter",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),filter),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("forEach",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),forEach),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("indexOf",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),indexOf),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("lastIndexOf",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),lastIndexOf),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("join",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),join),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("map",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_map),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("pop",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_pop),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("push",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),push),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("reverse",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_reverse),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("shift",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),shift),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("slice",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),slice),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("some",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),some),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("sort",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_sort),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("splice",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),splice),CONSTANT_TRAIT);
-	c->prototype->setVariableByQName("toLocaleString",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),_toString),DYNAMIC_TRAIT);
-	c->prototype->setVariableByQName("unshift",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),Class<IFunction>::getFunction(c->getSystemState(),unshift),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName(BUILTIN_STRINGS::STRING_TOSTRING,nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_toString),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("concat",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_concat),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("every",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(every),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("filter",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(filter),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("forEach",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(forEach),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("indexOf",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(indexOf),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("lastIndexOf",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(lastIndexOf),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("join",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(join),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("map",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_map),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("pop",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_pop),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("push",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(push),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("reverse",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_reverse),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("shift",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(shift),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("slice",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(slice),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("some",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(some),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("sort",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_sort),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("splice",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(splice),CONSTANT_TRAIT);
+	c->prototype->setVariableByQName("toLocaleString",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(_toString),DYNAMIC_TRAIT);
+	c->prototype->setVariableByQName("unshift",nsNameAndKind(c->getSystemState(),BUILTIN_STRINGS::STRING_AS3NS,NAMESPACE),c->getSystemState()->getBuiltinFunction(unshift),CONSTANT_TRAIT);
 }
 
-Vector::Vector(ASWorker* wrk, Class_base* c, const Type *vtype):ASObject(wrk,c,T_OBJECT,SUBTYPE_VECTOR),vec_type(vtype),fixed(false),vec(reporter_allocator<asAtom>(c->memoryAccount))
+Vector::Vector(ASWorker* wrk, Class_base* c, Type *vtype):ASObject(wrk,c,T_OBJECT,SUBTYPE_VECTOR),vec_type(vtype),fixed(false),vec(reporter_allocator<asAtom>(c->memoryAccount))
 {
 }
 
@@ -143,11 +144,15 @@ void Vector::prepareShutdown()
 	if (this->preparedforshutdown)
 		return;
 	ASObject::prepareShutdown();
-	for(unsigned int i=0;i<size();i++)
+	while(vec.size())
 	{
-		ASObject* v = asAtomHandler::getObject(vec[i]);
+		ASObject* v = asAtomHandler::getObject(vec.back());
+		vec.pop_back();
 		if (v)
+		{
 			v->prepareShutdown();
+			v->removeStoredMember();
+		}
 	}
 }
 bool Vector::countCylicMemberReferences(garbagecollectorstate& gcstate)
@@ -163,7 +168,7 @@ bool Vector::countCylicMemberReferences(garbagecollectorstate& gcstate)
 	return ret;
 }
 
-void Vector::setTypes(const std::vector<const Type *> &types)
+void Vector::setTypes(const std::vector<Type *> &types)
 {
 	assert(vec_type == nullptr);
 	if(types.size() == 1)
@@ -183,7 +188,7 @@ void Vector::generator(asAtom& ret, ASWorker* wrk, asAtom &o_class, asAtom* args
 	assert_and_throw(asAtomHandler::toObject(args[0],wrk)->getClass());
 	assert_and_throw(asAtomHandler::as<TemplatedClass<Vector>>(o_class)->getTypes().size() == 1);
 
-	const Type* type = asAtomHandler::as<TemplatedClass<Vector>>(o_class)->getTypes()[0];
+	Type* type = asAtomHandler::as<TemplatedClass<Vector>>(o_class)->getTypes()[0];
 
 	RootMovieClip* root = wrk->rootClip.getPtr();
 	if(asAtomHandler::is<Array>(args[0]))
@@ -581,7 +586,7 @@ ASFUNCTIONBODY_ATOM(Vector,setLength)
 	}
 	uint32_t len;
 	ARG_CHECK(ARG_UNPACK (len));
-	if(len <= th->vec.size())
+	if(len < th->vec.size())
 	{
 		for(size_t i=len; i< th->vec.size(); ++i)
 		{
@@ -801,12 +806,10 @@ ASFUNCTIONBODY_ATOM(Vector,slice)
 		{
 			res->vec[j] =th->vec[i];
 			if (!th->vec_type->coerce(th->getInstanceWorker(),res->vec[j]))
-			{
 				ASATOM_INCREF(res->vec[j]);
-				ASObject* obj = asAtomHandler::getObject(res->vec[j]);
-				if (obj)
-					obj->addStoredMember();
-			}
+			ASObject* obj = asAtomHandler::getObject(res->vec[j]);
+			if (obj)
+				obj->addStoredMember();
 		}
 		j++;
 	}
@@ -936,7 +939,7 @@ bool Vector::sortComparatorDefault::operator()(const asAtom& d1, const asAtom& d
 		if(std::isnan(a) || std::isnan(b))
 			throw RunTimeException("Cannot sort non number with Array.NUMERIC option");
 		if(isDescending)
-			return b>a;
+			return a>b;
 		else
 			return a<b;
 	}
@@ -1218,13 +1221,12 @@ ASFUNCTIONBODY_ATOM(Vector,unshift)
 		{
 			th->vec[i] = args[i];
 			if (!th->vec_type->coerce(th->getInstanceWorker(),th->vec[i]))
+				ASATOM_INCREF(th->vec[i]);
+			ASObject* obj = asAtomHandler::getObject(th->vec[i]);
+			if (obj)
 			{
-				ASObject* obj = asAtomHandler::getObject(th->vec[i]);
-				if (obj)
-				{
-					obj->incRef();
-					obj->addStoredMember();
-				}
+				obj->incRef();
+				obj->addStoredMember();
 			}
 		}
 	}
@@ -1258,10 +1260,7 @@ ASFUNCTIONBODY_ATOM(Vector,_map)
 		assert_and_throw(asAtomHandler::isValid(funcRet));
 		ASObject* obj = asAtomHandler::getObject(funcRet);
 		if (obj)
-		{
-			obj->incRef();
 			obj->addStoredMember();
-		}
 		res->vec.push_back(funcRet);
 	}
 
@@ -1338,7 +1337,10 @@ ASFUNCTIONBODY_ATOM(Vector,removeAt)
 		ASObject* ob = asAtomHandler::getObject(ret);
 		th->vec.erase(th->vec.begin()+index);
 		if (ob)
+		{
+			ob->incRef(); // for result
 			ob->removeStoredMember();
+		}
 	}
 	else
 		createError<RangeError>(wrk,kOutOfRangeError);
@@ -1611,6 +1613,20 @@ void Vector::nextValue(asAtom& ret,uint32_t index)
 	}
 	else
 		throw RunTimeException("Vector::nextValue out of bounds");
+}
+
+bool Vector::ensureLength(uint32_t len)
+{
+	if (len > size())
+	{
+		if (fixed)
+		{
+			createError<RangeError>(getInstanceWorker(),kVectorFixedError);
+			return false;
+		}
+		vec.resize(len, getDefaultValue());
+	}
+	return true;
 }
 
 bool Vector::isValidMultiname(SystemState* sys,const multiname& name, uint32_t& index, bool* isNumber)

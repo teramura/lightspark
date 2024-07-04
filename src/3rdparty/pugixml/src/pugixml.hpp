@@ -211,10 +211,21 @@ namespace pugi
 	// This flag is off by default.
 	const unsigned int parse_embed_pcdata = 0x2000;
 
+	#ifdef PUGIXML_LIGHTSPARK_MODE
+	// This flag determines if closing tags will be validated.
+	// This flag is on by default. Turning this flag off is only recommended if you already know your data is formatted properly, or
+	// dealing with something that allows for mismatched tags, such as HTML.
+	const unsigned int parse_validate_closing_tags = 0x4000;
+	#endif
+
 	// The default parsing mode.
 	// Elements, PCDATA and CDATA sections are added to the DOM tree, character/reference entities are expanded,
 	// End-of-Line characters are normalized, attribute values are normalized using CDATA normalization rules.
+	#ifndef PUGIXML_LIGHTSPARK_MODE
 	const unsigned int parse_default = parse_cdata | parse_escapes | parse_wconv_attribute | parse_eol;
+	#else
+	const unsigned int parse_default = parse_cdata | parse_escapes | parse_wconv_attribute | parse_eol | parse_validate_closing_tags;
+	#endif
 
 	// The full parsing mode.
 	// Nodes of all types are added to the DOM tree, character/reference entities are expanded,
@@ -980,8 +991,11 @@ namespace pugi
 		status_internal_error,		// Internal error occurred
 
 		status_unrecognized_tag,	// Parser could not determine tag type
-
+		
 		status_bad_pi,				// Parsing error occurred while parsing document declaration/processing instruction
+#ifdef PUGIXML_LIGHTSPARK_MODE // flash xml needs distinction between declaration/processing instruction errors
+		status_bad_declaration,		// Parsing error occurred while parsing document declaration
+#endif
 		status_bad_comment,			// Parsing error occurred while parsing comment
 		status_bad_cdata,			// Parsing error occurred while parsing CDATA section
 		status_bad_doctype,			// Parsing error occurred while parsing document type declaration

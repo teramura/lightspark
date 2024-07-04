@@ -20,8 +20,6 @@
 
 #include "platforms/engineutils.h"
 #include "swf.h"
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_mouse.h>
 #include "backends/input.h"
 #include "backends/rendering.h"
 #include "backends/lsopengl.h"
@@ -31,8 +29,11 @@
 #include "abc.h"
 #include "class.h"
 #include "scripting/flash/events/flashevents.h"
+#include "scripting/flash/display/flashdisplay.h"
+#include "scripting/flash/geom/Rectangle.h"
 #include "flash/display/NativeMenuItem.h"
 #include "flash/utils/ByteArray.h"
+#include "flash/geom/flashgeom.h"
 #include <glib/gstdio.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -63,10 +64,19 @@ bool EngineData::mainthread_running = false;
 bool EngineData::sdl_needinit = true;
 bool EngineData::enablerendering = true;
 SDL_Cursor* EngineData::handCursor = nullptr;
+SDL_Cursor* EngineData::arrowCursor = nullptr;
+SDL_Cursor* EngineData::ibeamCursor = nullptr;
 Semaphore EngineData::mainthread_initialized(0);
-EngineData::EngineData() : contextmenu(nullptr),contextmenurenderer(nullptr),sdleventtickjob(nullptr),incontextmenu(false),incontextmenupreparing(false),widget(nullptr),nvgcontext(nullptr), width(0), height(0),needrenderthread(true),supportPackedDepthStencil(false),hasExternalFontRenderer(false),
+EngineData::EngineData() : contextmenu(nullptr),contextmenurenderer(nullptr),sdleventtickjob(nullptr),incontextmenu(false),incontextmenupreparing(false),widget(nullptr),
+	nvgcontext(nullptr),
+	width(0), height(0),needrenderthread(true),supportPackedDepthStencil(false),hasExternalFontRenderer(false),
 	startInFullScreenMode(false),startscalefactor(1.0)
 {
+#ifdef _WIN32
+	platformOS="Windows";
+#else
+	platformOS="Linux";
+#endif
 }
 
 EngineData::~EngineData()
@@ -126,7 +136,7 @@ bool EngineData::mainloop_handleevent(SDL_Event* event,SystemState* sys)
 	}
 	else
 	{
-		if (sys && sys->getInputThread() && sys->getInputThread()->handleEvent(event))
+		if (sys && sys->getInputThread() && sys->getInputThread()->queueEvent(*event))
 			return false;
 		switch (event->type)
 		{
@@ -136,8 +146,43 @@ bool EngineData::mainloop_handleevent(SDL_Event* event,SystemState* sys)
 				{
 					case SDL_WINDOWEVENT_RESIZED:
 					case SDL_WINDOWEVENT_SIZE_CHANGED:
-						if (sys && (!sys->getEngineData() || !sys->getEngineData()->inFullScreenMode()) &&  sys->getRenderThread())
+						if (sys && (!sys->getEngineData() || !sys->getEngineData()->inFullScreenMode()) && sys->getRenderThread())
 							sys->getRenderThread()->requestResize(event->window.data1,event->window.data2,false);
+						break;
+					case SDL_WINDOWEVENT_MOVED:
+						// TODO there doesn't seem to be a way to detect the starting of window movement in SDL, so for now we emit "moving" and "moved" events for every SDL_WINDOWEVENT_MOVED
+						sys->getEngineData()->x = event->window.data1;
+						sys->getEngineData()->y = event->window.data2;
+						if (sys && getVm(sys) && sys->stage->nativeWindow)
+						{
+							Rectangle *rectBefore=Class<Rectangle>::getInstanceS(sys->worker);
+							rectBefore->x = sys->getEngineData()->old_x;
+							rectBefore->y = sys->getEngineData()->old_y;
+							rectBefore->width = sys->getEngineData()->width;
+							rectBefore->height = sys->getEngineData()->height;
+							Rectangle *rectAfter=Class<Rectangle>::getInstanceS(sys->worker);
+							rectAfter->x = sys->getEngineData()->x;
+							rectAfter->y = sys->getEngineData()->y;
+							rectAfter->width = sys->getEngineData()->width;
+							rectAfter->height = sys->getEngineData()->height;
+							getVm(sys)->addEvent(_MR(sys->stage->nativeWindow),_MR(Class<NativeWindowBoundsEvent>::getInstanceS(sys->worker,"moving",_MR(rectBefore),_MR(rectAfter))));
+						}
+						if (sys && getVm(sys) && sys->stage->nativeWindow)
+						{
+							Rectangle *rectBefore=Class<Rectangle>::getInstanceS(sys->worker);
+							rectBefore->x = sys->getEngineData()->old_x;
+							rectBefore->y = sys->getEngineData()->old_y;
+							rectBefore->width = sys->getEngineData()->width;
+							rectBefore->height = sys->getEngineData()->height;
+							Rectangle *rectAfter=Class<Rectangle>::getInstanceS(sys->worker);
+							rectAfter->x = sys->getEngineData()->x;
+							rectAfter->y = sys->getEngineData()->y;
+							rectAfter->width = sys->getEngineData()->width;
+							rectAfter->height = sys->getEngineData()->height;
+							getVm(sys)->addEvent(_MR(sys->stage->nativeWindow),_MR(Class<NativeWindowBoundsEvent>::getInstanceS(sys->worker,"moved",_MR(rectBefore),_MR(rectAfter))));
+						}
+						sys->getEngineData()->old_x = event->window.data1;
+						sys->getEngineData()->old_y = event->window.data2;
 						break;
 					case SDL_WINDOWEVENT_EXPOSED:
 					{
@@ -190,6 +235,7 @@ bool initSDL()
 			else
 				sdl_available = !SDL_Init ( SDL_INIT_VIDEO );
 			SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8); // needed for nanovg
+			SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24 );
 			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);// needed for nanovg
 			SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);// needed for nanovg
 #ifdef ENABLE_GLES2
@@ -285,6 +331,16 @@ bool EngineData::FileExists(SystemState* sys, const tiny_string &filename, bool 
 	LOG(LOG_ERROR,"FileExists not implemented");
 	return false;
 }
+bool EngineData::FileIsHidden(SystemState* sys, const tiny_string &filename, bool isfullpath)
+{
+	LOG(LOG_ERROR,"FileIsHidden not implemented");
+	return false;
+}
+bool EngineData::FileIsDirectory(SystemState* sys, const tiny_string &filename, bool isfullpath)
+{
+	LOG(LOG_ERROR,"FileIsDirectory not implemented");
+	return false;
+}
 
 uint32_t EngineData::FileSize(SystemState* sys, const tiny_string& filename, bool isfullpath)
 {
@@ -295,6 +351,12 @@ uint32_t EngineData::FileSize(SystemState* sys, const tiny_string& filename, boo
 tiny_string EngineData::FileFullPath(SystemState* sys, const tiny_string& filename)
 {
 	LOG(LOG_ERROR,"FileFullPath not implemented");
+	return "";
+}
+
+tiny_string EngineData::FileBasename(SystemState* sys, const tiny_string& filename, bool isfullpath)
+{
+	LOG(LOG_ERROR,"FileBasename not implemented");
 	return "";
 }
 
@@ -330,6 +392,11 @@ bool EngineData::FileCreateDirectory(SystemState* sys, const tiny_string &filena
 	LOG(LOG_ERROR,"FileCreateDirectory not implemented");
 	return false;
 }
+bool EngineData::FilGetDirectoryListing(SystemState* sys, const tiny_string &filename, bool isfullpath, std::vector<tiny_string>& filelist)
+{
+	LOG(LOG_ERROR,"FilGetDirectoryListing not implemented");
+	return false;
+}
 
 bool EngineData::FilePathIsAbsolute(const tiny_string& filename)
 {
@@ -346,7 +413,11 @@ tiny_string EngineData::FileGetApplicationStorageDir()
 void EngineData::initGLEW()
 {
 //For now GLEW does not work with GLES2
-#ifndef ENABLE_GLES2
+#ifdef ENABLE_GLES2
+#ifdef GL_DEPTH24_STENCIL8_OES
+	supportPackedDepthStencil=true;
+#endif
+#else
 	//Now we can initialize GLEW
 	GLenum err = glewInit();
 	if (GLEW_OK != err)
@@ -398,7 +469,15 @@ void EngineData::showWindow(uint32_t w, uint32_t h)
 		this->width = w;
 	if (this->height == 0)
 		this->height = h;
+	x=0;
+	y=0;
 	widget = createWidget(this->width,this->height);
+	if (widget)
+		SDL_GetWindowPosition(widget,&x,&y);
+	old_x =x;
+	old_y =y;
+	old_width = this->width;
+	old_height = this->height;
 	// plugins create a hidden window that should not be shown
 	if (widget && !(SDL_GetWindowFlags(widget) & SDL_WINDOW_HIDDEN))
 		SDL_ShowWindow(widget);
@@ -585,6 +664,7 @@ void EngineData::InteractiveObjectRemovedFromStage()
 	event.type = LS_USEREVENT_INTERACTIVEOBJECT_REMOVED_FOM_STAGE;
 	SDL_PushEvent(&event);
 }
+
 void EngineData::selectContextMenuItemIntern()
 {
 	if (contextmenucurrentitem >=0)
@@ -742,7 +822,45 @@ void EngineData::resetMouseHandCursor(SystemState* /*sys*/)
 {
 	SDL_SetCursor(SDL_GetDefaultCursor());
 }
-
+void EngineData::setMouseCursor(SystemState* /*sys*/, const tiny_string& name)
+{
+	if (name=="hand")
+	{
+		if (!handCursor)
+			handCursor = SDL_CreateSystemCursor(SDL_SystemCursor::SDL_SYSTEM_CURSOR_HAND);
+		SDL_SetCursor(handCursor);
+	}
+	else if (name=="arrow")
+	{
+		if (!arrowCursor)
+			arrowCursor = SDL_CreateSystemCursor(SDL_SystemCursor::SDL_SYSTEM_CURSOR_ARROW);
+		SDL_SetCursor(arrowCursor);
+	}
+	else if (name=="ibeam")
+	{
+		if (!ibeamCursor)
+			ibeamCursor = SDL_CreateSystemCursor(SDL_SystemCursor::SDL_SYSTEM_CURSOR_IBEAM);
+		SDL_SetCursor(ibeamCursor);
+	}
+	else if (name=="auto")
+		SDL_SetCursor(SDL_GetDefaultCursor());
+	else
+	{
+		LOG(LOG_NOT_IMPLEMENTED,"showCursor for name:"<<name);
+		SDL_SetCursor(SDL_GetDefaultCursor());
+	}		
+}
+tiny_string EngineData::getMouseCursor(SystemState *sys)
+{
+	SDL_Cursor* cursor = SDL_GetCursor();
+	if (cursor == handCursor)
+		return "hand";
+	if (cursor == arrowCursor)
+		return "arrow";
+	if (cursor == ibeamCursor)
+		return "ibeam";
+	return "auto";
+}
 void EngineData::setClipboardText(const std::string txt)
 {
 	int ret = SDL_SetClipboardText(txt.c_str());
@@ -789,6 +907,8 @@ void EngineData::getGlCompressedTextureFormats()
 		LOG(LOG_INFO,"OpenGL supported compressed texture format:"<<hex<<formats[i]);
 		if (formats[i] == GL_COMPRESSED_RGBA_S3TC_DXT5_EXT)
 			compressed_texture_formats.push_back(TEXTUREFORMAT_COMPRESSED::DXT5);
+		if (formats[i] == GL_COMPRESSED_RGBA_S3TC_DXT1_EXT)
+			compressed_texture_formats.push_back(TEXTUREFORMAT_COMPRESSED::DXT1);
 	}
 	delete [] formats;
 }
@@ -805,6 +925,11 @@ void EngineData::exec_glUniform2f(int location,float v0,float v1)
 void EngineData::exec_glUniform4f(int location,float v0,float v1,float v2,float v3)
 {
 	glUniform4f(location,v0,v1,v2,v3);
+}
+
+void EngineData::exec_glUniform1fv(int location, uint32_t size, float* v)
+{
+	glUniform1fv(location,size,v);
 }
 
 void EngineData::exec_glBindTexture_GL_TEXTURE_2D(uint32_t id)
@@ -890,32 +1015,32 @@ void EngineData::exec_glDisable_GL_STENCIL_TEST()
 {
 	glDisable(GL_STENCIL_TEST);
 }
-void EngineData::exec_glDepthFunc(DEPTH_FUNCTION depthfunc)
+void EngineData::exec_glDepthFunc(DEPTHSTENCIL_FUNCTION depthfunc)
 {
 	switch (depthfunc)
 	{
-		case ALWAYS:
+		case DEPTHSTENCIL_ALWAYS:
 			glDepthFunc(GL_ALWAYS);
 			break;
-		case EQUAL:
+		case DEPTHSTENCIL_EQUAL:
 			glDepthFunc(GL_EQUAL);
 			break;
-		case GREATER:
+		case DEPTHSTENCIL_GREATER:
 			glDepthFunc(GL_GREATER);
 			break;
-		case GREATER_EQUAL:
+		case DEPTHSTENCIL_GREATER_EQUAL:
 			glDepthFunc(GL_GEQUAL);
 			break;
-		case LESS:
+		case DEPTHSTENCIL_LESS:
 			glDepthFunc(GL_LESS);
 			break;
-		case LESS_EQUAL:
+		case DEPTHSTENCIL_LESS_EQUAL:
 			glDepthFunc(GL_LEQUAL);
 			break;
-		case NEVER:
+		case DEPTHSTENCIL_NEVER:
 			glDepthFunc(GL_NEVER);
 			break;
-		case NOT_EQUAL:
+		case DEPTHSTENCIL_NOT_EQUAL:
 			glDepthFunc(GL_NOTEQUAL);
 			break;
 	}
@@ -940,6 +1065,10 @@ void EngineData::exec_glDisable_GL_TEXTURE_2D()
 void EngineData::exec_glFlush()
 {
 	glFlush();
+}
+void EngineData::exec_glFinish()
+{
+	glFinish();
 }
 
 uint32_t EngineData::exec_glCreateShader_GL_FRAGMENT_SHADER()
@@ -1051,17 +1180,22 @@ void EngineData::exec_glBindRenderbuffer(uint32_t renderBuffer)
 	glBindRenderbuffer(GL_RENDERBUFFER,renderBuffer);
 }
 
-void EngineData::exec_glRenderbufferStorage_GL_RENDERBUFFER_GL_DEPTH_STENCIL(uint32_t width, uint32_t height)
+void EngineData::
+	exec_glRenderbufferStorage_GL_RENDERBUFFER_GL_DEPTH_STENCIL(uint32_t width, uint32_t height)
 {
-#ifndef ENABLE_GLES2
-	glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH_STENCIL,width,height);
+#ifdef ENABLE_GLES2
+#ifdef GL_DEPTH24_STENCIL8_OES
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH24_STENCIL8_OES,width,height);
+#endif
+#else
+	glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH24_STENCIL8,width,height);
 #endif
 }
 
 void EngineData::exec_glFramebufferRenderbuffer_GL_FRAMEBUFFER_GL_DEPTH_STENCIL_ATTACHMENT(uint32_t depthStencilRenderBuffer)
 {
 #ifndef ENABLE_GLES2
-	glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER,depthStencilRenderBuffer);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER,depthStencilRenderBuffer);	
 #endif
 }
 
@@ -1093,6 +1227,16 @@ void EngineData::exec_glDeleteTextures(int32_t n,uint32_t* textures)
 void EngineData::exec_glDeleteBuffers(uint32_t size, uint32_t* buffers)
 {
 	glDeleteBuffers(size,buffers);
+}
+
+void EngineData::exec_glDeleteFramebuffers(uint32_t size, uint32_t* buffers)
+{
+	glDeleteFramebuffers(size,buffers);
+}
+
+void EngineData::exec_glDeleteRenderbuffers(uint32_t size, uint32_t* buffers)
+{
+	glDeleteRenderbuffers(size,buffers);
 }
 
 void EngineData::exec_glBlendFunc(BLEND_FACTOR src, BLEND_FACTOR dst)
@@ -1269,12 +1413,12 @@ void EngineData::exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_INT_8_8_8_8_HOST(in
 {
 	glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA8, width, height, border, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_HOST, pixels);
 }
-void EngineData::exec_glTexImage2D_GL_TEXTURE_2D(int32_t level,int32_t width, int32_t height,int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat,uint32_t compressedImageSize)
+void EngineData::glTexImage2Dintern(uint32_t type,int32_t level,int32_t width, int32_t height,int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat,uint32_t compressedImageSize)
 {
 	switch (format)
 	{
 		case TEXTUREFORMAT::BGRA:
-			glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA8, width, height, border, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+			glTexImage2D(type, level, GL_RGBA8, width, height, border, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
 			break;
 		case TEXTUREFORMAT::BGR:
 #if ENABLE_GLES2
@@ -1283,20 +1427,19 @@ void EngineData::exec_glTexImage2D_GL_TEXTURE_2D(int32_t level,int32_t width, in
 				((uint8_t*)pixels)[i] = ((uint8_t*)pixels)[i+2];
 				((uint8_t*)pixels)[i+2] = t;
 			}
-			glTexImage2D(GL_TEXTURE_2D, level, GL_RGB, width, height, border, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+			glTexImage2D(type, level, GL_RGB, width, height, border, GL_RGB, GL_UNSIGNED_BYTE, pixels);
 #else
-			glTexImage2D(GL_TEXTURE_2D, level, GL_RGB, width, height, border, GL_BGR, GL_UNSIGNED_BYTE, pixels);
+			glTexImage2D(type, level, GL_RGB, width, height, border, GL_BGR, GL_UNSIGNED_BYTE, pixels);
 #endif
 			break;
 		case TEXTUREFORMAT::BGRA_PACKED:
-			glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA8, width, height, border, GL_BGRA, GL_UNSIGNED_SHORT_4_4_4_4, pixels);
+			glTexImage2D(type, level, GL_RGBA8, width, height, border, GL_BGRA, GL_UNSIGNED_SHORT_4_4_4_4, pixels);
 			break;
 		case TEXTUREFORMAT::BGR_PACKED:
 #if ENABLE_GLES2
 			LOG(LOG_NOT_IMPLEMENTED,"textureformat BGR_PACKED for opengl es");
-			glTexImage2D(GL_TEXTURE_2D, level, GL_RGB, width, height, border, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, pixels);
 #else
-			glTexImage2D(GL_TEXTURE_2D, level, GL_RGB, width, height, border, GL_BGR, GL_UNSIGNED_SHORT_5_6_5, pixels);
+			glTexImage2D(type, level, GL_RGB, width, height, border, GL_BGR, GL_UNSIGNED_SHORT_5_6_5, pixels);
 #endif
 			break;
 		case TEXTUREFORMAT::COMPRESSED:
@@ -1305,7 +1448,10 @@ void EngineData::exec_glTexImage2D_GL_TEXTURE_2D(int32_t level,int32_t width, in
 			switch (compressedformat)
 			{
 				case TEXTUREFORMAT_COMPRESSED::DXT5:
-					glCompressedTexImage2D(GL_TEXTURE_2D, level, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, width, height, border, compressedImageSize, pixels);
+					glCompressedTexImage2D(type, level, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, width, height, border, compressedImageSize, pixels);
+					break;
+				case TEXTUREFORMAT_COMPRESSED::DXT1:
+					glCompressedTexImage2D(type, level, GL_COMPRESSED_RGB_S3TC_DXT1_EXT, width, height, border, compressedImageSize, pixels);
 					break;
 				default:
 					LOG(LOG_NOT_IMPLEMENTED,"upload texture in compressed format "<<compressedformat);
@@ -1321,7 +1467,14 @@ void EngineData::exec_glTexImage2D_GL_TEXTURE_2D(int32_t level,int32_t width, in
 			break;
 	}
 }
-
+void EngineData::exec_glTexImage2D_GL_TEXTURE_2D(int32_t level,int32_t width, int32_t height,int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat,uint32_t compressedImageSize, bool isRectangleTexture)
+{
+#if ENABLE_GLES2
+	glTexImage2Dintern(GL_TEXTURE_2D ,level, width, height, border, pixels, format, compressedformat,compressedImageSize);
+#else
+	glTexImage2Dintern(isRectangleTexture ? GL_TEXTURE_RECTANGLE : GL_TEXTURE_2D,level, width, height, border, pixels, format, compressedformat,compressedImageSize);
+#endif
+}
 void EngineData::exec_glDrawBuffer_GL_BACK()
 {
 	glDrawBuffer(GL_BACK);
@@ -1375,11 +1528,20 @@ void EngineData::exec_glGenerateMipmap_GL_TEXTURE_2D()
 {
 	glGenerateMipmap(GL_TEXTURE_2D);
 }
+void EngineData::exec_glGenerateMipmap_GL_TEXTURE_CUBE_MAP()
+{
+	glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+}
 
 void EngineData::exec_glReadPixels(int32_t width, int32_t height, void *buf)
 {
 	glPixelStorei(GL_PACK_ALIGNMENT, 1);
 	glReadPixels(0,0,width, height, GL_RGB, GL_UNSIGNED_BYTE, buf);
+}
+void EngineData::exec_glReadPixels_GL_BGRA(int32_t width, int32_t height,void *buf)
+{
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glReadPixels(0,0,width, height, GL_BGRA, GL_UNSIGNED_BYTE, buf);
 }
 void EngineData::exec_glBindTexture_GL_TEXTURE_CUBE_MAP(uint32_t id)
 {
@@ -1393,9 +1555,9 @@ void EngineData::exec_glTexParameteri_GL_TEXTURE_CUBE_MAP_GL_TEXTURE_MAG_FILTER_
 {
 	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 }
-void EngineData::exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(uint32_t side, int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels)
+void EngineData::exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(uint32_t side, int32_t level, int32_t width, int32_t height, int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat, uint32_t compressedImageSize)
 {
-	glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X+side, level, GL_RGBA8, width, height, border, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+	glTexImage2Dintern(GL_TEXTURE_CUBE_MAP_POSITIVE_X+side, level, width, height, border, pixels, format, compressedformat,compressedImageSize);
 }
 
 void EngineData::exec_glScissor(int32_t x, int32_t y, int32_t width, int32_t height)
@@ -1416,6 +1578,174 @@ void EngineData::exec_glColorMask(bool red, bool green, bool blue, bool alpha)
 void EngineData::exec_glStencilFunc_GL_ALWAYS()
 {
 	glStencilFunc(GL_ALWAYS, 0, 0xff);
+}
+
+void EngineData::exec_glStencilFunc_GL_NEVER()
+{
+	glStencilFunc(GL_NEVER, 0, 0xff);
+}
+
+void EngineData::exec_glStencilFunc_GL_EQUAL(int32_t ref, uint32_t mask)
+{
+	glStencilFunc(GL_EQUAL, ref, mask);
+}
+
+void EngineData::exec_glStencilOp_GL_INCR()
+{
+	glStencilOp(GL_KEEP, GL_KEEP, GL_INCR);
+}
+
+void EngineData::exec_glStencilOp_GL_DECR()
+{
+	glStencilOp(GL_KEEP, GL_KEEP, GL_DECR);
+}
+
+void EngineData::exec_glStencilOp_GL_KEEP()
+{
+	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+}
+
+void EngineData::exec_glStencilOpSeparate(TRIANGLE_FACE face, DEPTHSTENCIL_OP sfail, DEPTHSTENCIL_OP dpfail, DEPTHSTENCIL_OP dppass)
+{
+	GLenum glface=GL_FRONT;
+	switch (face)
+	{
+		case FACE_BACK:
+			glface=GL_BACK;
+			break;
+		case FACE_FRONT:
+			glface=GL_FRONT;
+			break;
+		case FACE_FRONT_AND_BACK:
+			glface=GL_FRONT_AND_BACK;
+			break;
+		case FACE_NONE:
+			glface=GL_NONE;
+			break;
+	}
+	GLenum glsfail=GL_KEEP;
+	switch (sfail)
+	{
+		case DEPTHSTENCIL_KEEP: 
+			glsfail=GL_KEEP;
+			break;
+		case DEPTHSTENCIL_ZERO:
+			glsfail=GL_ZERO;
+			break;
+		case DEPTHSTENCIL_REPLACE:
+			glsfail=GL_REPLACE;
+			break;
+		case DEPTHSTENCIL_INCR:
+			glsfail=GL_INCR;
+			break;
+		case DEPTHSTENCIL_INCR_WRAP:
+			glsfail=GL_INCR_WRAP;
+			break;
+		case DEPTHSTENCIL_DECR:
+			glsfail=GL_DECR;
+			break;
+		case DEPTHSTENCIL_DECR_WRAP:
+			glsfail=GL_DECR_WRAP;
+			break;
+		case DEPTHSTENCIL_INVERT:
+			glsfail=GL_INVERT;
+			break;
+	}
+	GLenum gldpfail=GL_KEEP;
+	switch (dpfail)
+	{
+		case DEPTHSTENCIL_KEEP: 
+			gldpfail=GL_KEEP;
+			break;
+		case DEPTHSTENCIL_ZERO:
+			gldpfail=GL_ZERO;
+			break;
+		case DEPTHSTENCIL_REPLACE:
+			gldpfail=GL_REPLACE;
+			break;
+		case DEPTHSTENCIL_INCR:
+			gldpfail=GL_INCR;
+			break;
+		case DEPTHSTENCIL_INCR_WRAP:
+			gldpfail=GL_INCR_WRAP;
+			break;
+		case DEPTHSTENCIL_DECR:
+			gldpfail=GL_DECR;
+			break;
+		case DEPTHSTENCIL_DECR_WRAP:
+			gldpfail=GL_DECR_WRAP;
+			break;
+		case DEPTHSTENCIL_INVERT:
+			gldpfail=GL_INVERT;
+			break;
+	}
+	GLenum gldppass=GL_KEEP;
+	switch (dppass)
+	{
+		case DEPTHSTENCIL_KEEP: 
+			gldppass=GL_KEEP;
+			break;
+		case DEPTHSTENCIL_ZERO:
+			gldppass=GL_ZERO;
+			break;
+		case DEPTHSTENCIL_REPLACE:
+			gldppass=GL_REPLACE;
+			break;
+		case DEPTHSTENCIL_INCR:
+			gldppass=GL_INCR;
+			break;
+		case DEPTHSTENCIL_INCR_WRAP:
+			gldppass=GL_INCR_WRAP;
+			break;
+		case DEPTHSTENCIL_DECR:
+			gldppass=GL_DECR;
+			break;
+		case DEPTHSTENCIL_DECR_WRAP:
+			gldppass=GL_DECR_WRAP;
+			break;
+		case DEPTHSTENCIL_INVERT:
+			gldppass=GL_INVERT;
+			break;
+	}
+	glStencilOpSeparate(glface, glsfail, gldpfail, gldppass);
+}
+
+void EngineData::exec_glStencilMask(uint32_t mask)
+{
+	glStencilMask(mask);
+}
+
+void EngineData::exec_glStencilFunc(DEPTHSTENCIL_FUNCTION func, uint32_t ref, uint32_t mask)
+{
+	uint32_t f = GL_ALWAYS;
+	switch (func)
+	{
+		case DEPTHSTENCIL_ALWAYS:
+			f = GL_ALWAYS;
+			break;
+		case DEPTHSTENCIL_EQUAL:
+			f = GL_EQUAL;
+			break;
+		case DEPTHSTENCIL_GREATER:
+			f = GL_GREATER;
+			break;
+		case DEPTHSTENCIL_GREATER_EQUAL:
+			f = GL_GEQUAL;
+			break;
+		case DEPTHSTENCIL_LESS:
+			f = GL_LESS;
+			break;
+		case DEPTHSTENCIL_LESS_EQUAL:
+			f = GL_LEQUAL;
+			break;
+		case DEPTHSTENCIL_NEVER:
+			f = GL_NEVER;
+			break;
+		case DEPTHSTENCIL_NOT_EQUAL:
+			f = GL_NOTEQUAL;
+			break;
+	}
+	glStencilFunc(f,ref,mask);
 }
 
 void audioCallback(void * userdata, uint8_t * stream, int len)
@@ -1536,23 +1866,18 @@ int EngineData::audio_getSampleRate()
 {
 	return 44100;
 }
-IDrawable *EngineData::getTextRenderDrawable(const TextData &_textData, const MATRIX &_m, int32_t _x, int32_t _y, int32_t _w, int32_t _h, int32_t _rx, int32_t _ry, int32_t _rw, int32_t _rh, float _r, float _xs, float _ys, bool _im, _NR<DisplayObject> _mask, float _s, float _a, const std::vector<IDrawable::MaskData> &_ms, float _redMultiplier, float _greenMultiplier, float _blueMultiplier, float _alphaMultiplier, float _redOffset, float _greenOffset, float _blueOffset, float _alphaOffset, SMOOTH_MODE smoothing)
+IDrawable *EngineData::getTextRenderDrawable(const TextData &_textData, const MATRIX &_m, int32_t _x, int32_t _y, int32_t _w, int32_t _h, float _xs, float _ys, bool _isMask, bool _cacheAsBitmap, float _s, float _a, const ColorTransformBase& _colortransform, SMOOTH_MODE smoothing,AS_BLENDMODE _blendmode)
 {
 	if (hasExternalFontRenderer)
-		return new externalFontRenderer(_textData,this, _x, _y, _w, _h, _rx,_ry,_rw,_rh,_r,_xs,_ys,_im, _mask, _a, _ms,
-										_redMultiplier,_greenMultiplier,_blueMultiplier,_alphaMultiplier,
-										_redOffset,_greenOffset,_blueOffset,_alphaOffset,
-										smoothing,_m);
+		return new externalFontRenderer(_textData,this, _x, _y, _w, _h,_xs,_ys,_isMask, _cacheAsBitmap, _a,
+										_colortransform, smoothing,_blendmode,_m);
 	return nullptr;
 }
 
-externalFontRenderer::externalFontRenderer(const TextData &_textData, EngineData *engine, int32_t x, int32_t y, int32_t w, int32_t h, int32_t rx, int32_t ry, int32_t rw, int32_t rh, float r, float xs, float ys, bool im, _NR<DisplayObject> _mask, float a, const std::vector<IDrawable::MaskData> &m,
-										   float _redMultiplier,float _greenMultiplier,float _blueMultiplier,float _alphaMultiplier,
-										   float _redOffset,float _greenOffset,float _blueOffset,float _alphaOffset,
-										   SMOOTH_MODE smoothing, const MATRIX &_m)
-	: IDrawable(w, h, x, y,rw,rh,rx,ry,r,xs,ys, 1, 1, im, _mask, a, m,
-				_redMultiplier,_greenMultiplier,_blueMultiplier,_alphaMultiplier,
-				_redOffset,_greenOffset,_blueOffset,_alphaOffset,smoothing,_m),m_engine(engine)
+externalFontRenderer::externalFontRenderer(const TextData &_textData, EngineData *engine, int32_t x, int32_t y, int32_t w, int32_t h, float xs, float ys, bool _isMask, bool _cacheAsBitmap, float a,
+										   const ColorTransformBase& _colortransform, SMOOTH_MODE smoothing,AS_BLENDMODE _blendmode, const MATRIX &_m)
+	: IDrawable(w, h, x, y,xs,ys, 1, 1, _isMask, _cacheAsBitmap, 1.0, a,
+				_colortransform,smoothing,_blendmode,_m),m_engine(engine)
 {
 	externalressource = engine->setupFontRenderer(_textData,a,smoothing);
 }

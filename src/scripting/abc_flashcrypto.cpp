@@ -19,11 +19,11 @@
 
 #include "scripting/flash/crypto/flashcrypto.h"
 
-#include "scripting/class.h"
+#include "scripting/toplevel/Global.h"
 #include "scripting/abc.h"
 using namespace lightspark;
 
 void ABCVm::registerClassesFlashCrypto(Global* builtin)
 {
-	builtin->registerBuiltin("generateRandomBytes","flash.crypto",_MR(Class<IFunction>::getFunction(m_sys,generateRandomBytes)));
+	builtin->registerBuiltin("generateRandomBytes","flash.crypto",_MR(m_sys->getBuiltinFunction(generateRandomBytes)));
 }

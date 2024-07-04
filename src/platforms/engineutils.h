@@ -20,12 +20,16 @@
 #ifndef PLATFORMS_ENGINEUTILS_H
 #define PLATFORMS_ENGINEUTILS_H 1
 
-#include <SDL2/SDL.h>
+#include <SDL.h>
 // on ppc SDL.h includes altivec.h, so we have to undefine vector
 #undef vector
+#include "forwards/tiny_string.h"
+#include "forwards/threading.h"
+#include "forwards/swftypes.h"
+#include "forwards/backends/graphics.h"
+#include "interfaces/threading.h"
 #include "compat.h"
 #include "threading.h"
-#include "tiny_string.h"
 #include "backends/graphics.h"
 
 #define LIGHTSPARK_AUDIO_BUFFERSIZE 512
@@ -54,27 +58,16 @@ class ByteArray;
 class NativeMenuItem;
 class InteractiveObject;
 
-enum DEPTH_FUNCTION { ALWAYS, EQUAL, GREATER, GREATER_EQUAL, LESS, LESS_EQUAL, NEVER, NOT_EQUAL };
-enum TRIANGLE_FACE { FACE_BACK, FACE_FRONT, FACE_FRONT_AND_BACK, FACE_NONE };
-enum BLEND_FACTOR { BLEND_ONE,BLEND_ZERO,BLEND_SRC_ALPHA,BLEND_SRC_COLOR,BLEND_DST_ALPHA,BLEND_DST_COLOR,BLEND_ONE_MINUS_SRC_ALPHA,BLEND_ONE_MINUS_SRC_COLOR,BLEND_ONE_MINUS_DST_ALPHA,BLEND_ONE_MINUS_DST_COLOR };
-enum VERTEXBUFFER_FORMAT { BYTES_4=0, FLOAT_1, FLOAT_2, FLOAT_3, FLOAT_4 };
-enum CLEARMASK { COLOR = 0x1, DEPTH = 0x2, STENCIL = 0x4 };
-enum TEXTUREFORMAT { BGRA, BGRA_PACKED, BGR_PACKED, COMPRESSED, COMPRESSED_ALPHA, RGBA_HALF_FLOAT,BGR };
-enum TEXTUREFORMAT_COMPRESSED { UNCOMPRESSED, DXT5 };
-
 // this is only used for font rendering in PPAPI plugin
 class externalFontRenderer : public IDrawable
 {
 	int32_t externalressource;
 	class EngineData* m_engine;
 public:
-	externalFontRenderer(const TextData &_textData, class EngineData* engine, int32_t x, int32_t y, int32_t w, int32_t h, int32_t rx, int32_t ry, int32_t rw, int32_t rh, float r, float xs, float ys, bool im, _NR<DisplayObject> _mask, float a, const std::vector<MaskData>& m,
-						 float _redMultiplier,float _greenMultiplier,float _blueMultiplier,float _alphaMultiplier,
-						 float _redOffset,float _greenOffset,float _blueOffset,float _alphaOffset,
-						 SMOOTH_MODE smoothing, const MATRIX &_m);
+	externalFontRenderer(const TextData &_textData, class EngineData* engine, int32_t x, int32_t y, int32_t w, int32_t h, float xs, float ys, bool _isMask, bool _cacheAsBitmap, float a,
+						 const ColorTransformBase& _colortransform, SMOOTH_MODE smoothing, AS_BLENDMODE _blendmode, const MATRIX &_m);
 	
 	uint8_t* getPixelBuffer(bool* isBufferOwner=nullptr, uint32_t* bufsize=nullptr) override;
-	void applyCairoMask(cairo_t* cr, int32_t offsetX, int32_t offsetY) const override {}
 };
 
 #define CONTEXTMENUWIDTH 200
@@ -90,11 +83,14 @@ private:
 	SDL_Renderer* contextmenurenderer;
 	SDL_Texture* contextmenutexture;
 	static SDL_Cursor* handCursor;
+	static SDL_Cursor* arrowCursor;
+	static SDL_Cursor* ibeamCursor;
 	uint8_t* contextmenupixels;
 	int32_t contextmenuheight;
 	void openContextMenuIntern(InteractiveObject *dispatcher);
 	ITickJob* sdleventtickjob;
 	std::string getsharedobjectfilename(const tiny_string &name);
+	virtual void glTexImage2Dintern(uint32_t type,int32_t level,int32_t width, int32_t height,int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat,uint32_t compressedImageSize);
 protected:
 	tiny_string sharedObjectDatapath;
 	int32_t contextmenucurrentitem;
@@ -110,8 +106,14 @@ public:
 	NVGcontext* nvgcontext;
 	static uint32_t userevent;
 	static SDL_Thread* mainLoopThread;
+	int x;
+	int y;
 	uint32_t width;
 	uint32_t height;
+	int old_x;
+	int old_y;
+	uint32_t old_width;
+	uint32_t old_height;
 	uint32_t origwidth;
 	uint32_t origheight;
 	bool needrenderthread;
@@ -120,6 +122,9 @@ public:
 	bool startInFullScreenMode;
 	double startscalefactor;
 	tiny_string driverInfoString;
+	tiny_string platformOS;
+	int maxTextureSize;
+	uint32_t context3dProfile;
 	std::vector<TEXTUREFORMAT_COMPRESSED> compressed_texture_formats;
 	EngineData();
 	virtual ~EngineData();
@@ -185,14 +190,18 @@ public:
 	static bool startSDLMain();
 
 	virtual bool FileExists(SystemState* sys,const tiny_string& filename, bool isfullpath);
+	virtual bool FileIsHidden(SystemState* sys,const tiny_string& filename, bool isfullpath);
+	virtual bool FileIsDirectory(SystemState* sys,const tiny_string& filename, bool isfullpath);
 	virtual uint32_t FileSize(SystemState* sys,const tiny_string& filename, bool isfullpath);
 	virtual tiny_string FileFullPath(SystemState* sys,const tiny_string& filename);
+	virtual tiny_string FileBasename(SystemState* sys,const tiny_string& filename, bool isfullpath);
 	virtual tiny_string FileRead(SystemState* sys,const tiny_string& filename, bool isfullpath);
 	virtual void FileWrite(SystemState* sys,const tiny_string& filename, const tiny_string& data, bool isfullpath);
 	virtual uint8_t FileReadUnsignedByte(SystemState* sys,const tiny_string &filename, uint32_t startpos, bool isfullpath);
 	virtual void FileReadByteArray(SystemState* sys,const tiny_string &filename,ByteArray* res, uint32_t startpos, uint32_t length, bool isfullpath);
 	virtual void FileWriteByteArray(SystemState* sys,const tiny_string& filename, ByteArray* data,uint32_t startpos, uint32_t length, bool isfullpath);
 	virtual bool FileCreateDirectory(SystemState* sys,const tiny_string& filename, bool isfullpath);
+	virtual bool FilGetDirectoryListing(SystemState* sys, const tiny_string &filename, bool isfullpath, std::vector<tiny_string>& filelist);
 	virtual bool FilePathIsAbsolute(const tiny_string& filename);
 	virtual tiny_string FileGetApplicationStorageDir();
 	
@@ -204,9 +213,14 @@ public:
 	static void hideMouseCursor(SystemState *sys);
 	static void setMouseHandCursor(SystemState *sys);
 	static void resetMouseHandCursor(SystemState *sys);
+	static void setMouseCursor(SystemState *sys, const tiny_string& name);
+	static tiny_string getMouseCursor(SystemState *sys);
 	virtual void setClipboardText(const std::string txt);
 	virtual bool getScreenData(SDL_DisplayMode* screen) = 0;
 	virtual double getScreenDPI() = 0;
+	virtual void setWindowPosition(int x, int y, uint32_t width, uint32_t height) {}
+	virtual void getWindowPosition(int* x, int* y) { *x=0; *y=0;}
+	virtual bool getAIRApplicationDescriptor(SystemState* sys,tiny_string& xmlstring) { return false;}
 	virtual StreamCache* createFileStreamCache(SystemState *sys);
 	
 	// OpenGL methods
@@ -219,6 +233,7 @@ public:
 	virtual void exec_glUniform1f(int location,float v0);
 	virtual void exec_glUniform2f(int location,float v0, float v1);
 	virtual void exec_glUniform4f(int location,float v0, float v1,float v2, float v3);
+	virtual void exec_glUniform1fv(int location,uint32_t size, float* v);
 	virtual void exec_glBindTexture_GL_TEXTURE_2D(uint32_t id);
 	virtual void exec_glVertexAttribPointer(uint32_t index, int32_t stride, const void* coords, VERTEXBUFFER_FORMAT format);
 	virtual void exec_glEnableVertexAttribArray(uint32_t index);
@@ -235,11 +250,12 @@ public:
 	virtual void exec_glEnable_GL_BLEND();
 	virtual void exec_glEnable_GL_DEPTH_TEST();
 	virtual void exec_glEnable_GL_STENCIL_TEST();
-	virtual void exec_glDepthFunc(DEPTH_FUNCTION depthfunc);
+	virtual void exec_glDepthFunc(DEPTHSTENCIL_FUNCTION depthfunc);
 	virtual void exec_glDisable_GL_DEPTH_TEST();
 	virtual void exec_glDisable_GL_STENCIL_TEST();
 	virtual void exec_glDisable_GL_TEXTURE_2D();
 	virtual void exec_glFlush();
+	virtual void exec_glFinish();
 	virtual uint32_t exec_glCreateShader_GL_FRAGMENT_SHADER();
 	virtual uint32_t exec_glCreateShader_GL_VERTEX_SHADER();
 	virtual void exec_glShaderSource(uint32_t shader, int32_t count, const char **name, int32_t* length);
@@ -269,6 +285,8 @@ public:
 	virtual void exec_glFramebufferRenderbuffer_GL_FRAMEBUFFER_GL_DEPTH_STENCIL_ATTACHMENT(uint32_t depthStencilRenderBuffer);
 	virtual void exec_glDeleteTextures(int32_t n,uint32_t* textures);
 	virtual void exec_glDeleteBuffers(uint32_t size, uint32_t* buffers);
+	virtual void exec_glDeleteFramebuffers(uint32_t size,uint32_t* buffers);
+	virtual void exec_glDeleteRenderbuffers(uint32_t size,uint32_t* buffers);
 	virtual void exec_glBlendFunc(BLEND_FACTOR src, BLEND_FACTOR dst);
 	virtual void exec_glCullFace(TRIANGLE_FACE mode);
 	virtual void exec_glActiveTexture_GL_TEXTURE0(uint32_t textureindex);
@@ -291,7 +309,7 @@ public:
 	virtual void exec_glSetTexParameters(int32_t lodbias, uint32_t dimension, uint32_t filter, uint32_t mipmap, uint32_t wrap);
 	virtual void exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_BYTE(int32_t level, int32_t width, int32_t height, int32_t border, const void* pixels, bool hasalpha);
 	virtual void exec_glTexImage2D_GL_TEXTURE_2D_GL_UNSIGNED_INT_8_8_8_8_HOST(int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels);
-	virtual void exec_glTexImage2D_GL_TEXTURE_2D(int32_t level, int32_t width, int32_t height, int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat, uint32_t compressedImageSize);
+	virtual void exec_glTexImage2D_GL_TEXTURE_2D(int32_t level, int32_t width, int32_t height, int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat, uint32_t compressedImageSize, bool isRectangleTexture);
 	virtual void exec_glDrawBuffer_GL_BACK();
 	virtual void exec_glClearColor(float red,float green,float blue,float alpha);
 	virtual void exec_glClearStencil(uint32_t stencil);
@@ -302,15 +320,25 @@ public:
 	virtual void exec_glTexSubImage2D_GL_TEXTURE_2D(int32_t level, int32_t xoffset, int32_t yoffset, int32_t width, int32_t height, const void* pixels);
 	virtual void exec_glGetIntegerv_GL_MAX_TEXTURE_SIZE(int32_t* data);
 	virtual void exec_glGenerateMipmap_GL_TEXTURE_2D();
+	virtual void exec_glGenerateMipmap_GL_TEXTURE_CUBE_MAP();
 	virtual void exec_glReadPixels(int32_t width, int32_t height,void* buf);
+	virtual void exec_glReadPixels_GL_BGRA(int32_t width, int32_t height, void *buf);
 	virtual void exec_glBindTexture_GL_TEXTURE_CUBE_MAP(uint32_t id);
 	virtual void exec_glTexParameteri_GL_TEXTURE_CUBE_MAP_GL_TEXTURE_MIN_FILTER_GL_LINEAR();
 	virtual void exec_glTexParameteri_GL_TEXTURE_CUBE_MAP_GL_TEXTURE_MAG_FILTER_GL_LINEAR();
-	virtual void exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(uint32_t side, int32_t level,int32_t width, int32_t height,int32_t border, const void* pixels);
+	virtual void exec_glTexImage2D_GL_TEXTURE_CUBE_MAP_POSITIVE_X_GL_UNSIGNED_BYTE(uint32_t side, int32_t level, int32_t width, int32_t height, int32_t border, void* pixels, TEXTUREFORMAT format, TEXTUREFORMAT_COMPRESSED compressedformat, uint32_t compressedImageSize);
 	virtual void exec_glScissor(int32_t x, int32_t y, int32_t width, int32_t height);
 	virtual void exec_glDisable_GL_SCISSOR_TEST();
 	virtual void exec_glColorMask(bool red, bool green, bool blue, bool alpha);
 	virtual void exec_glStencilFunc_GL_ALWAYS();
+	virtual void exec_glStencilFunc_GL_NEVER();
+	virtual void exec_glStencilFunc_GL_EQUAL(int32_t ref, uint32_t mask);
+	virtual void exec_glStencilOp_GL_DECR();
+	virtual void exec_glStencilOp_GL_INCR();
+	virtual void exec_glStencilOp_GL_KEEP();
+	virtual void exec_glStencilOpSeparate(TRIANGLE_FACE face, DEPTHSTENCIL_OP sfail, DEPTHSTENCIL_OP dpfail, DEPTHSTENCIL_OP dppass);
+	virtual void exec_glStencilMask(uint32_t mask);
+	virtual void exec_glStencilFunc (DEPTHSTENCIL_FUNCTION func, uint32_t ref, uint32_t mask);
 
 	// Audio handling
 	virtual int audio_StreamInit(AudioStream* s);
@@ -326,10 +354,12 @@ public:
 	// Text rendering
 	virtual uint8_t* getFontPixelBuffer(int32_t externalressource,int width,int height) { return nullptr; }
 	virtual int32_t setupFontRenderer(const TextData &_textData,float a, SMOOTH_MODE smoothing) { return 0; }
-	IDrawable* getTextRenderDrawable(const TextData& _textData, const MATRIX& _m, int32_t _x, int32_t _y, int32_t _w, int32_t _h, int32_t _rx, int32_t _ry, int32_t _rw, int32_t _rh, float _r, float _xs, float _ys, bool _im, _NR<DisplayObject> _mask, float _s, float _a, const std::vector<IDrawable::MaskData>& _ms,
-									 float _redMultiplier, float _greenMultiplier, float _blueMultiplier, float _alphaMultiplier,
-									 float _redOffset, float _greenOffset, float _blueOffset, float _alphaOffset,
-									 SMOOTH_MODE smoothing);
+	IDrawable* getTextRenderDrawable(const TextData& _textData, const MATRIX& _m, int32_t _x, int32_t _y, int32_t _w, int32_t _h, float _xs, float _ys,
+									 bool _isMask, bool _cacheAsBitmap,
+									 float _s, float _a,
+									 const ColorTransformBase& _colortransform,
+									 SMOOTH_MODE smoothing,
+									 AS_BLENDMODE _blendmode);
 };
 
 }

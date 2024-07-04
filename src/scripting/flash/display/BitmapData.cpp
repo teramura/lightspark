@@ -18,10 +18,12 @@
 **************************************************************************/
 
 #include "scripting/flash/display/BitmapData.h"
+#include "scripting/flash/display/Bitmap.h"
 #include "scripting/class.h"
 #include "scripting/argconv.h"
-#include "scripting/toplevel/toplevel.h"
 #include "scripting/flash/geom/flashgeom.h"
+#include "scripting/toplevel/Array.h"
+#include "scripting/toplevel/Boolean.h"
 #include "scripting/toplevel/Number.h"
 #include "scripting/toplevel/Integer.h"
 #include "scripting/toplevel/UInteger.h"
@@ -29,6 +31,8 @@
 #include "scripting/flash/errors/flasherrors.h"
 #include "scripting/flash/utils/ByteArray.h"
 #include "scripting/flash/filters/flashfilters.h"
+#include "scripting/flash/geom/Rectangle.h"
+#include "scripting/flash/geom/Point.h"
 #include "scripting/flash/system/flashsystem.h"
 #include "backends/rendering.h"
 #include "3rdparty/perlinnoise/PerlinNoise.hpp"
@@ -73,40 +77,41 @@ void BitmapData::sinit(Class_base* c)
 	CLASS_SETUP(c, ASObject, _constructor, CLASS_SEALED);
 	c->isReusable=true;
 	c->addImplementedInterface(InterfaceClass<IBitmapDrawable>::getClass(c->getSystemState()));
-	c->setDeclaredMethodByQName("draw","",Class<IFunction>::getFunction(c->getSystemState(),draw),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("dispose","",Class<IFunction>::getFunction(c->getSystemState(),dispose),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("getPixel","",Class<IFunction>::getFunction(c->getSystemState(),getPixel,2,Class<UInteger>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("getPixel32","",Class<IFunction>::getFunction(c->getSystemState(),getPixel32,2,Class<UInteger>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setPixel","",Class<IFunction>::getFunction(c->getSystemState(),setPixel),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setPixel32","",Class<IFunction>::getFunction(c->getSystemState(),setPixel32),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("copyPixels","",Class<IFunction>::getFunction(c->getSystemState(),copyPixels),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("fillRect","",Class<IFunction>::getFunction(c->getSystemState(),fillRect),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("generateFilterRect","",Class<IFunction>::getFunction(c->getSystemState(),generateFilterRect),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("hitTest","",Class<IFunction>::getFunction(c->getSystemState(),hitTest),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("scroll","",Class<IFunction>::getFunction(c->getSystemState(),scroll),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("clone","",Class<IFunction>::getFunction(c->getSystemState(),clone),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("copyChannel","",Class<IFunction>::getFunction(c->getSystemState(),copyChannel),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("lock","",Class<IFunction>::getFunction(c->getSystemState(),lock),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("unlock","",Class<IFunction>::getFunction(c->getSystemState(),unlock),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("floodFill","",Class<IFunction>::getFunction(c->getSystemState(),floodFill),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("histogram","",Class<IFunction>::getFunction(c->getSystemState(),histogram),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("getColorBoundsRect","",Class<IFunction>::getFunction(c->getSystemState(),getColorBoundsRect),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("getPixels","",Class<IFunction>::getFunction(c->getSystemState(),getPixels),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("getVector","",Class<IFunction>::getFunction(c->getSystemState(),getVector),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setPixels","",Class<IFunction>::getFunction(c->getSystemState(),setPixels),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("setVector","",Class<IFunction>::getFunction(c->getSystemState(),setVector),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("colorTransform","",Class<IFunction>::getFunction(c->getSystemState(),colorTransform),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("compare","",Class<IFunction>::getFunction(c->getSystemState(),compare),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("applyFilter","",Class<IFunction>::getFunction(c->getSystemState(),applyFilter),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("noise","",Class<IFunction>::getFunction(c->getSystemState(),noise),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("perlinNoise","",Class<IFunction>::getFunction(c->getSystemState(),perlinNoise),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("threshold","",Class<IFunction>::getFunction(c->getSystemState(),threshold),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("merge","",Class<IFunction>::getFunction(c->getSystemState(),threshold),NORMAL_METHOD,true);
-	c->setDeclaredMethodByQName("paletteMap","",Class<IFunction>::getFunction(c->getSystemState(),paletteMap),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("draw","",c->getSystemState()->getBuiltinFunction(draw),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("drawWithQuality","",c->getSystemState()->getBuiltinFunction(drawWithQuality),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("dispose","",c->getSystemState()->getBuiltinFunction(dispose),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getPixel","",c->getSystemState()->getBuiltinFunction(getPixel,2,Class<UInteger>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getPixel32","",c->getSystemState()->getBuiltinFunction(getPixel32,2,Class<UInteger>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setPixel","",c->getSystemState()->getBuiltinFunction(setPixel),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setPixel32","",c->getSystemState()->getBuiltinFunction(setPixel32),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("copyPixels","",c->getSystemState()->getBuiltinFunction(copyPixels),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("fillRect","",c->getSystemState()->getBuiltinFunction(fillRect),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("generateFilterRect","",c->getSystemState()->getBuiltinFunction(generateFilterRect),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("hitTest","",c->getSystemState()->getBuiltinFunction(hitTest,2,Class<Boolean>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("scroll","",c->getSystemState()->getBuiltinFunction(scroll),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("clone","",c->getSystemState()->getBuiltinFunction(clone,0,Class<BitmapData>::getRef(c->getSystemState()).getPtr()),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("copyChannel","",c->getSystemState()->getBuiltinFunction(copyChannel),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("lock","",c->getSystemState()->getBuiltinFunction(lock),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("unlock","",c->getSystemState()->getBuiltinFunction(unlock),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("floodFill","",c->getSystemState()->getBuiltinFunction(floodFill),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("histogram","",c->getSystemState()->getBuiltinFunction(histogram),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getColorBoundsRect","",c->getSystemState()->getBuiltinFunction(getColorBoundsRect),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getPixels","",c->getSystemState()->getBuiltinFunction(getPixels),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("getVector","",c->getSystemState()->getBuiltinFunction(getVector),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setPixels","",c->getSystemState()->getBuiltinFunction(setPixels),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("setVector","",c->getSystemState()->getBuiltinFunction(setVector),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("colorTransform","",c->getSystemState()->getBuiltinFunction(colorTransform),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("compare","",c->getSystemState()->getBuiltinFunction(compare),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("applyFilter","",c->getSystemState()->getBuiltinFunction(applyFilter),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("noise","",c->getSystemState()->getBuiltinFunction(noise),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("perlinNoise","",c->getSystemState()->getBuiltinFunction(perlinNoise),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("threshold","",c->getSystemState()->getBuiltinFunction(threshold),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("merge","",c->getSystemState()->getBuiltinFunction(threshold),NORMAL_METHOD,true);
+	c->setDeclaredMethodByQName("paletteMap","",c->getSystemState()->getBuiltinFunction(paletteMap),NORMAL_METHOD,true);
 	// properties
-	c->setDeclaredMethodByQName("height","",Class<IFunction>::getFunction(c->getSystemState(),_getHeight,0,Class<Integer>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("rect","",Class<IFunction>::getFunction(c->getSystemState(),getRect,0,Class<Rectangle>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
-	c->setDeclaredMethodByQName("width","",Class<IFunction>::getFunction(c->getSystemState(),_getWidth,0,Class<Integer>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("height","",c->getSystemState()->getBuiltinFunction(_getHeight,0,Class<Integer>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("rect","",c->getSystemState()->getBuiltinFunction(getRect,0,Class<Rectangle>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
+	c->setDeclaredMethodByQName("width","",c->getSystemState()->getBuiltinFunction(_getWidth,0,Class<Integer>::getRef(c->getSystemState()).getPtr()),GETTER_METHOD,true);
 	REGISTER_GETTER_RESULTTYPE(c,transparent,Boolean);
 
 	IBitmapDrawable::linkTraits(c);
@@ -152,12 +157,12 @@ void BitmapData::removeUser(Bitmap* b)
 	users.erase(b);
 }
 
+// needs to be called in renderThread
 void BitmapData::checkForUpload()
 {
 	if (!pixels.isNull() && needsupload)
 	{
-		if (pixels->checkTexture())
-			getSystemState()->getRenderThread()->addUploadJob(this->pixels.getPtr());
+		pixels->checkTextureForUpload(getSystemState());
 		needsupload=false;
 	}
 }
@@ -235,91 +240,14 @@ ASFUNCTIONBODY_ATOM(BitmapData,dispose)
 	th->notifyUsers();
 }
 
-void BitmapData::drawDisplayObject(DisplayObject* d, const MATRIX& initialMatrix, bool smoothing, bool forCachedBitmap, AS_BLENDMODE blendMode)
+void BitmapData::drawDisplayObject(DisplayObject* d, const MATRIX& initialMatrix, bool smoothing, AS_BLENDMODE blendMode, ColorTransformBase* ct)
 {
-	if (forCachedBitmap)
-		d->incRef();
-	//Create an InvalidateQueue to store all the hierarchy of objects that must be drawn
-	SoftwareInvalidateQueue queue(forCachedBitmap ? _MNR(d):NullRef);
-	d->hasChanged=true;
-	d->requestInvalidation(&queue);
-	if (forCachedBitmap)
-	{
-		uint8_t* p = pixels->getData();
-		memset(p,0,pixels->getWidth()*pixels->getHeight()*4);
-	}
-	CairoRenderContext ctxt(pixels->getData(), pixels->getWidth(), pixels->getHeight(),smoothing);
-	for(auto it=queue.queue.begin();it!=queue.queue.end();it++)
-	{
-		DisplayObject* target=(*it).getPtr();
-		//Get the drawable from each of the added objects
-		IDrawable* drawable=target->invalidate(d, initialMatrix,smoothing,&queue, nullptr);
-		if(drawable==nullptr)
-			continue;
-		if (forCachedBitmap && !target->isMask())
-			target->hasChanged=false;
-		//Compute the matrix for this object
-		bool isBufferOwner=true;
-		uint32_t bufsize=0;
-		uint8_t* buf=drawable->getPixelBuffer(&isBufferOwner,&bufsize);
-		if (!forCachedBitmap && !target->filters.isNull())
-		{
-			BitmapContainer bc(nullptr);
-			bc.fromRawData(buf,drawable->getWidth(),drawable->getHeight());
-			target->applyFilters(&bc,nullptr,RECT(0,bc.getWidth(),0,bc.getHeight()),0,0, drawable->getXScale(), drawable->getYScale());
-			memcpy(buf,bc.getData(),bufsize);
-		}
-		ColorTransform* ct = target->colorTransform.getPtr();
-		DisplayObjectContainer* p = target->getParent();
-		while (!ct && p && p!= d)
-		{
-			ct = p->colorTransform.getPtr();
-			p = p->getParent();
-		}
-		if (ct)
-		{
-			if (!isBufferOwner)
-			{
-				isBufferOwner=true;
-				uint8_t* buf2 = new uint8_t[bufsize];
-				memcpy(buf2,buf,bufsize);
-				buf=buf2;
-			}
-			ct->applyTransformation(buf,bufsize);
-		}
-		//Construct a CachedSurface using the data
-		CachedSurface& surface=ctxt.allocateCustomSurface(target,buf,isBufferOwner);
-		surface.tex->width=drawable->getWidth();
-		surface.tex->height=drawable->getHeight();
-		surface.xOffset=drawable->getXOffset();
-		surface.yOffset=drawable->getYOffset();
-		surface.xOffsetTransformed=drawable->getXOffsetTransformed();
-		surface.yOffsetTransformed=drawable->getYOffsetTransformed();
-		surface.widthTransformed=drawable->getWidthTransformed();
-		surface.heightTransformed=drawable->getHeightTransformed();
-		surface.rotation=drawable->getRotation();
-		surface.alpha = drawable->getAlpha();
-		surface.xscale = drawable->getXScale();
-		surface.yscale = drawable->getYScale();
-		surface.tex->xContentScale = drawable->getXContentScale();
-		surface.tex->yContentScale = drawable->getYContentScale();
-		surface.tex->xOffset = surface.xOffset;
-		surface.tex->yOffset = surface.yOffset;
-		surface.isMask=drawable->getIsMask();
-		surface.mask=drawable->getMask();
-		surface.matrix = drawable->getMatrix();
-		if (!forCachedBitmap)
-			surface.blendmode=blendMode;
-		surface.isValid=true;
-		surface.isInitialized=true;
-		delete drawable;
-	}
-	if (d->getMask())
-		d->getMask()->Render(ctxt,true);
-	d->Render(ctxt,true);
+	d->incRef();
+	getSystemState()->getRenderThread()->renderDisplayObjectToBimapContainer(_MNR(d),initialMatrix,smoothing,blendMode,ct,this->pixels);
+	this->notifyUsers();
 }
 
-ASFUNCTIONBODY_ATOM(BitmapData,draw)
+ASFUNCTIONBODY_ATOM(BitmapData,drawWithQuality)
 {
 	BitmapData* th = asAtomHandler::as<BitmapData>(obj);
 	if(th->pixels.isNull())
@@ -331,11 +259,12 @@ ASFUNCTIONBODY_ATOM(BitmapData,draw)
 	_NR<ASObject> drawable;
 	_NR<Matrix> matrix;
 	_NR<ColorTransform> ctransform;
-	tiny_string blendMode;
+	asAtom blendMode = asAtomHandler::invalidAtom;
 	_NR<Rectangle> clipRect;
 	bool smoothing;
-	ARG_CHECK(ARG_UNPACK(drawable) (matrix, NullRef) (ctransform, NullRef) (blendMode, "")
-					(clipRect, NullRef) (smoothing, false));
+	asAtom quality = asAtomHandler::invalidAtom;
+	ARG_CHECK(ARG_UNPACK(drawable) (matrix, NullRef) (ctransform, NullRef) (blendMode, asAtomHandler::fromStringID(BUILTIN_STRINGS::EMPTY))
+					(clipRect, NullRef) (smoothing, false)(quality,asAtomHandler::nullAtom));
 
 	if(!drawable->getClass() || !drawable->getClass()->isSubClass(InterfaceClass<IBitmapDrawable>::getClass(wrk->getSystemState())) )
 	{
@@ -345,56 +274,72 @@ ASFUNCTIONBODY_ATOM(BitmapData,draw)
 								   "IBitmapDrawable");
 		return;
 	}
+	if (!asAtomHandler::isNull(quality) && asAtomHandler::toString(quality,wrk)!="high")
+		LOG(LOG_NOT_IMPLEMENTED,"BitmapData.drawWithQuality parameter quality is ignored:"<<asAtomHandler::toDebugString(quality));
 
-	if(!clipRect.isNull())
-		LOG(LOG_NOT_IMPLEMENTED,"BitmapData.draw does not support clipRect parameter");
-
+	uint32_t blendModeID = BUILTIN_STRINGS::EMPTY;
+	if (asAtomHandler::isValid(blendMode) 
+		&& !asAtomHandler::isNull(blendMode)
+		&& !asAtomHandler::isUndefined(blendMode))
+		blendModeID = asAtomHandler::toStringId(blendMode,wrk);
 	if(drawable->is<BitmapData>())
 	{
+		if(blendModeID != BUILTIN_STRINGS::EMPTY)
+			LOG(LOG_NOT_IMPLEMENTED,"BitmapData.draw does not support blendMode parameter:"<<drawable->toDebugString()<<" "<<wrk->getSystemState()->getStringFromUniqueId(blendModeID));
 		BitmapData* data=drawable->as<BitmapData>();
 		//Compute the initial matrix, if any
 		MATRIX initialMatrix;
 		if(!matrix.isNull())
 			initialMatrix=matrix->getMATRIX();
-		CairoRenderContext ctxt(th->pixels->getData(), th->pixels->getWidth(), th->pixels->getHeight(),smoothing);
+		CairoRenderContext ctxt(th->pixels->getData(), th->pixels->getWidth(), th->pixels->getHeight(),false);
 		//Blit the data while transforming it
-		ctxt.transformedBlit(initialMatrix, data->pixels->getData(),
-				data->pixels->getWidth(), data->pixels->getHeight(),
-				CairoRenderContext::FILTER_NONE);
-		if (ctransform)
-			ctransform->applyTransformation(data->pixels->getData(),data->getBitmapContainer()->getWidth()*data->getBitmapContainer()->getHeight()*4);
+		if (clipRect.isNull())
+		{
+			ctxt.transformedBlit(initialMatrix, data->pixels.getPtr(),ctransform.getPtr(),
+								smoothing ? CairoRenderContext::FILTER_SMOOTH : CairoRenderContext::FILTER_NONE,0,0,th->pixels->getWidth(), th->pixels->getHeight());
+		}
+		else
+		{
+			ctxt.transformedBlit(initialMatrix, data->pixels.getPtr(),ctransform.getPtr(),
+								smoothing ? CairoRenderContext::FILTER_SMOOTH : CairoRenderContext::FILTER_NONE,clipRect->x,clipRect->y,clipRect->width,clipRect->height);
+		}
 	}
 	else if(drawable->is<DisplayObject>())
 	{
+		if(!clipRect.isNull())
+			LOG(LOG_NOT_IMPLEMENTED,"BitmapData.draw does not support clipRect parameter:"<<drawable->toDebugString()<<" "<<clipRect->x<<"/"<<clipRect->y<<" "<<clipRect->width<<"/"<<clipRect->height);
 		DisplayObject* d=drawable->as<DisplayObject>();
 		//Compute the initial matrix, if any
 		MATRIX initialMatrix;
 		if(!matrix.isNull())
 			initialMatrix=matrix->getMATRIX();
 		AS_BLENDMODE bl = BLENDMODE_NORMAL;
-		if (blendMode == "add") bl = BLENDMODE_ADD;
-		else if (blendMode == "alpha") bl = BLENDMODE_ALPHA;
-		else if (blendMode == "darken") bl = BLENDMODE_DARKEN;
-		else if (blendMode == "difference") bl = BLENDMODE_DIFFERENCE;
-		else if (blendMode == "erase") bl = BLENDMODE_ERASE;
-		else if (blendMode == "hardlight") bl = BLENDMODE_HARDLIGHT;
-		else if (blendMode == "invert") bl = BLENDMODE_INVERT;
-		else if (blendMode == "layer") bl = BLENDMODE_LAYER;
-		else if (blendMode == "lighten") bl = BLENDMODE_LIGHTEN;
-		else if (blendMode == "multiply") bl = BLENDMODE_MULTIPLY;
-		else if (blendMode == "overlay") bl = BLENDMODE_OVERLAY;
-		else if (blendMode == "screen") bl = BLENDMODE_SCREEN;
-		else if (blendMode == "subtract") bl = BLENDMODE_SUBTRACT;
-		
-		d->DrawToBitmap(th,initialMatrix,true,false,bl);
-		if (ctransform)
-			ctransform->applyTransformation(th->pixels->getData(),th->getBitmapContainer()->getWidth()*th->getBitmapContainer()->getHeight()*4);
+		switch(blendModeID)
+		{
+			case BUILTIN_STRINGS::STRING_ADD: bl = BLENDMODE_ADD; break;
+			case BUILTIN_STRINGS::STRING_ALPHA: bl = BLENDMODE_ALPHA; break;
+			case BUILTIN_STRINGS::STRING_DARKEN: bl = BLENDMODE_DARKEN; break;
+			case BUILTIN_STRINGS::STRING_DIFFERENCE: bl = BLENDMODE_DIFFERENCE; break;
+			case BUILTIN_STRINGS::STRING_ERASE: bl = BLENDMODE_ERASE; break;
+			case BUILTIN_STRINGS::STRING_HARDLIGHT: bl = BLENDMODE_HARDLIGHT; break;
+			case BUILTIN_STRINGS::STRING_INVERT: bl = BLENDMODE_INVERT; break;
+			case BUILTIN_STRINGS::STRING_LAYER: bl = BLENDMODE_LAYER; break;
+			case BUILTIN_STRINGS::STRING_LIGHTEN: bl = BLENDMODE_LIGHTEN; break;
+			case BUILTIN_STRINGS::STRING_MULTIPLY: bl = BLENDMODE_MULTIPLY; break;
+			case BUILTIN_STRINGS::STRING_OVERLAY: bl = BLENDMODE_OVERLAY; break;
+			case BUILTIN_STRINGS::STRING_SCREEN: bl = BLENDMODE_SCREEN; break;
+			case BUILTIN_STRINGS::STRING_SUBTRACT: bl = BLENDMODE_SUBTRACT; break;
+		}
+		th->drawDisplayObject(d, initialMatrix,smoothing,bl,ctransform.getPtr());
 	}
 	else
 		LOG(LOG_NOT_IMPLEMENTED,"BitmapData.draw does not support " << drawable->toDebugString());
 	th->notifyUsers();
 }
-
+ASFUNCTIONBODY_ATOM(BitmapData,draw)
+{
+	drawWithQuality(ret,wrk,obj,args,argslen);
+}
 ASFUNCTIONBODY_ATOM(BitmapData,getPixel)
 {
 	BitmapData* th = asAtomHandler::as<BitmapData>(obj);
@@ -708,10 +653,10 @@ ASFUNCTIONBODY_ATOM(BitmapData,clone)
 		createError<ArgumentError>(wrk,2015,"Disposed BitmapData");
 		return;
 	}
-
 	BitmapData* clone = Class<BitmapData>::getInstanceS(wrk,th->getWidth(),th->getHeight());
+	clone->transparent = th->transparent;
 	if (th->getBitmapContainer())
-		memcpy (clone->getBitmapContainer()->getData(),th->getBitmapContainer()->getData(),th->getWidth()*th->getHeight()*4);
+		th->getBitmapContainer()->clone(clone->getBitmapContainer().getPtr());
 	ret = asAtomHandler::fromObject(clone);
 }
 
@@ -1110,7 +1055,7 @@ ASFUNCTIONBODY_ATOM(BitmapData,colorTransform)
 	{
 		for (int32_t x=rect.Xmin; x<rect.Xmax; x++)
 		{
-			uint32_t pixel = th->pixels->getPixel(x, y);;
+			uint32_t pixel = th->pixels->getPixel(x, y);
 
 			int a, r, g, b;
 			a = ((pixel >> 24 )&0xff) * inputColorTransform->alphaMultiplier + inputColorTransform->alphaOffset;
@@ -1128,10 +1073,11 @@ ASFUNCTIONBODY_ATOM(BitmapData,colorTransform)
 			
 			pixel = (a<<24) | (r<<16) | (g<<8) | b;
 			
-			th->pixels->setPixel(x, y, pixel, th->transparent);
+			th->pixels->setPixel(x, y, pixel, th->transparent,false);
 			i++;
 		}
 	}
+	th->notifyUsers();
 }
 ASFUNCTIONBODY_ATOM(BitmapData,compare)
 {
